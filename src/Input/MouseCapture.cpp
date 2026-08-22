@@ -23,26 +23,36 @@ MouseCapture::~MouseCapture() {
 }
 
 void MouseCapture::Update() noexcept {
-    const bool hasFocus = window_ != nullptr && ::IsWindow(window_) != FALSE &&
-                          ::GetForegroundWindow() == window_ && ::IsIconic(window_) == FALSE;
-    if (!hasFocus) {
-        ReleaseCaptureForFocusLoss();
+    capturedThisFrame_ = false;
+    windowFocused_ = window_ != nullptr && ::IsWindow(window_) != FALSE &&
+                     ::GetForegroundWindow() == window_ && ::IsIconic(window_) == FALSE;
+    if (!captureEnabled_ || !windowFocused_) {
+        ReleaseCapture();
         return;
     }
 
     RECT clientScreenRect{};
     if (!TryGetClientScreenRect(clientScreenRect)) {
-        ReleaseCaptureForFocusLoss();
+        ReleaseCapture();
         return;
     }
 
     if (::ClipCursor(&clientScreenRect) == FALSE) {
-        ReleaseCaptureForFocusLoss();
+        ReleaseCapture();
         return;
     }
 
+    capturedThisFrame_ = !isCaptured_;
     SetCursorVisible(false);
     isCaptured_ = true;
+}
+
+void MouseCapture::SetCaptureEnabled(const bool enabled) noexcept {
+    captureEnabled_ = enabled;
+    capturedThisFrame_ = false;
+    if (!captureEnabled_) {
+        ReleaseCapture();
+    }
 }
 
 int MouseCapture::QueryCursorDisplayCount() noexcept {
@@ -78,7 +88,7 @@ void MouseCapture::RestoreCursorDisplayCount() noexcept {
     }
 }
 
-void MouseCapture::ReleaseCaptureForFocusLoss() noexcept {
+void MouseCapture::ReleaseCapture() noexcept {
     if (isCaptured_) {
         ::ClipCursor(nullptr);
         isCaptured_ = false;

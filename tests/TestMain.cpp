@@ -16,11 +16,13 @@ struct TestSuite {
 
 int main() {
     fps::tests::TestContext context;
-    constexpr std::array<TestSuite, 4> suites = {{
+    constexpr std::array<TestSuite, 6> suites = {{
         {"World", fps::tests::RunWorldTests},
         {"Collision", fps::tests::RunCollisionTests},
         {"Rendering.MapGeometry", fps::tests::RunMapGeometryTests},
         {"Gameplay.PlayerController", fps::tests::RunPlayerControllerTests},
+        {"Game.Flow", fps::tests::RunGameFlowTests},
+        {"Game.CampaignResources", fps::tests::RunCampaignResourceTests},
     }};
 
     for (const TestSuite& suite : suites) {

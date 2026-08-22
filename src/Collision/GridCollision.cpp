@@ -66,7 +66,9 @@ bool GridCollision::OverlapsSolid(
 
     for (std::size_t row = minimumRow; row <= maximumRow; ++row) {
         for (std::size_t column = minimumColumn; column <= maximumColumn; ++column) {
-            if (map.GetCell(row, column) != '#') {
+            if (!map.IsSolid(
+                    static_cast<std::ptrdiff_t>(row),
+                    static_cast<std::ptrdiff_t>(column))) {
                 continue;
             }
 

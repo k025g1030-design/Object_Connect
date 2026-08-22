@@ -48,7 +48,7 @@ void ExpectPlayerInitialized(
     return ParseValidMap(
         context,
         "#########\n"
-        "#.......#\n"
+        "#D......#\n"
         "#.......#\n"
         "#...P...#\n"
         "#.......#\n"
@@ -205,7 +205,7 @@ void TestPlayerCollision(TestContext& context) {
         "#####\n"
         "#P..#\n"
         "##..#\n"
-        "#...#\n"
+        "#..D#\n"
         "#####");
     const WorldSettings worldSettings{};
     PlayerController controller;
@@ -269,7 +269,7 @@ void TestInvalidPlayerSettings(TestContext& context) {
         largePlayerController.Configure(settings, error),
         "large finite collision radius is a valid setting by itself");
 
-    const GridMap map = ParseValidMap(context, "P");
+    const GridMap map = ParseValidMap(context, "PD");
     Player player;
     context.Expect(
         !largePlayerController.Initialize(player, map, {}, error),

@@ -6,14 +6,16 @@ C++20 と KamataEngine で構築した 2.5D 一人称視点 FPS の MVP です�
 
 現在の MVP には、以下の機能が含まれています。
 
-- テキストファイルから `#`、`.`、`P` のグリッドマップを読み込む
+- テキストの `#`、`.`、`P`、`E`、`D` を検証済み `TileType` に変換する
 - 通行可能セルと壁セルの境界に基づいて床と壁面を生成する
+- キーボード／マウス対応の開始メニュー、操作説明、ポーズメニュー
+- 順序付きの複数マップと、白い仮ドアによる次マップへの遷移
 - WASD による水平移動
 - マウスによる yaw／pitch の視点操作（pitch は XZ 移動に影響しない）
 - プレイヤーを表す円とグリッド壁の 2D コリジョン、壁沿いの移動、移動の分割によるすり抜け防止
 
-Weapon、Enemy、Raycast Combat、Damage、Enemy AI は、後続フェーズへ明示的に延期しています。
-今回は、これらの機能を妨げないモジュール境界のみを維持します。HUD、ジャンプ、階段、高低差、
+Weapon、Enemy entity、Raycast Combat、Damage、Enemy AI は、後続フェーズへ明示的に延期しています。
+`E` の Enemy spawn 座標は保存しますが、今回は敵を生成しません。HUD、ジャンプ、階段、高低差、
 複数階、天井も現在のスコープには含まれません。
 
 ## 必要な環境
@@ -74,31 +76,37 @@ CLion でこのディレクトリを開き、x64 Visual Studio ツールチェ�
 
 ## 操作
 
+- メニューの方向キーまたは `W`／`S`：項目選択
+- `Enter` または左クリック：決定
 - `W`／`S`：前進／後退
 - `A`／`D`：左／右へ平行移動
 - マウスの水平移動：Yaw
 - マウスの垂直移動：Pitch
-- `Esc`：ゲームを終了
+- `Esc`：プレイ中はポーズ、ポーズ中は再開、操作説明では戻る
 
-ゲームウィンドウがフォーカスを取得すると、カーソルをロックして非表示にします。フォーカスを失うか
-最小化されるとカーソルを解放し、再びフォーカスを取得したときに復元します。Input 層は物理キー、
-マウスの移動量、キャプチャ状態のみを報告し、WASD の Gameplay 上の意味は `PlayerController` が解釈します。
+カーソルはプレイ中だけロックして非表示にし、メニュー、操作説明、ポーズ中は解放して表示します。
+プレイ中にフォーカスを失うか最小化すると自動的にポーズし、再びフォーカスを取得しても自動再開はしません。
+ASCII UI と mouse hit-test は 1280×720 の同じ座標系を使うため、ゲームウィンドウの resize は無効です。
+Input 層は物理キー、マウス、フォーカスと capture 状態のみを報告し、メニューや WASD の意味は上位層が解釈します。
 
 ## マップ形式
 
-元のマップは `NoviceResources/maps/mvp_map.txt` にあり、ビルド後は
-`Resources/maps/mvp_map.txt` にデプロイされます。
+元のマップは `NoviceResources/maps/mvp_map.txt` と `mvp_map_02.txt` にあり、ビルド後は
+同じ相対パスで `Resources/maps/` にデプロイされます。`GameConfig::mapPaths` の順序が進行順です。
 
 ```text
 # = 通行不可の壁
 . = 通行可能な空間
 P = プレイヤーのスポーン位置（必ず 1 つだけ）
+E = 将来の敵スポーン位置（0 個以上）
+D = 次マップへの出口（必ず 1 つだけ）
 ```
 
-すべての行は同じ幅で、空であってはなりません。現在、`E`、`D`、その他の文字は受け付けません。
+すべての行は同じ幅で、空であってはなりません。`P`、`E`、`D` は通行可能で、未定義文字は拒否されます。
 列はワールドの `+X`、行はワールドの `+Z` に対応し、マップ範囲外は常に壁として扱います。
 
-`GridMap` は検証済みの Grid データのみを保持し、ファイルの読み取りとテキスト解析は
+文字から enum への変換は `GridMapLoader` だけが担当し、`GridMap` は `TileType` と marker 座標だけを保持します。
+ファイルの読み取りとテキスト解析は
 `GridMapLoader` が担当します。Rendering 用のジオメトリと Gameplay 用のコリジョンは、どちらも同じ
 `GridMap` を読み取りますが、互いにジオメトリを受け渡すことはありません。
 
@@ -115,8 +123,9 @@ MVP のマップモデルは次の場所にあります。
 
 - `NoviceResources/map_floor/`
 - `NoviceResources/map_wall/`
+- `NoviceResources/cube/`（`white1x1.png` を上書き適用する出口の仮モデル）
 
-どちらも 4 頂点／2 三角形で構成され、法線と UV を持つ単位四角形です。
+floor／wall は 4 頂点／2 三角形の単位四角形です。出口は既存 cube を扁平な門形に scale します。
 
 ## テスト
 
@@ -128,19 +137,19 @@ ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 ```
 
 テストソースは責務ごとに `World`、`Collision`、`Rendering.MapGeometry`、
-`Gameplay.PlayerController` の各テストスイートに分かれています。マップの解析／読み込み／エラー座標、
+`Gameplay.PlayerController`、`Game.Flow`、`Game.CampaignResources` の各テストスイートに分かれています。マップの enum 解析／読み込み／エラー座標、
 World の所有権／設定、マップ形状の生成、円／グリッドのコリジョン、壁沿いの移動、
-すり抜け防止、平面移動、Player の設定／コントローラーによる生入力の解釈を
+すり抜け防止、白い出口 geometry、平面移動、Player の設定、メニュー／ポーズ状態遷移、
+正式な 2 map の P/E/D 可達性を
 網羅しています。これらは GPU やウィンドウを必要としない契約テストです。
 
 2026-08-22 に Visual Studio 2026 x64 を使用して Debug と Release のフルビルドを完了しました。
 両構成とも MSVC `/W4 /WX /sdl /permissive-` を通過し、CTest もそれぞれ 1/1 で
-成功しています。両方の実行ファイルについて、起動、ゲームウィンドウの作成、正常終了のスモークテストも
-完了しています。また、元データと Debug／Release のデプロイ済みリソースをファイル単位で比較した
+成功しています。また、元データと Debug／Release のデプロイ済みリソースをファイル単位で比較した
 SHA-256 は一致しています。
 
-自動化環境では非表示の DirectX バックバッファを確実にキャプチャできないため、床／壁面の実際の視認性、
-WASD の操作感、マウス視点操作、フォーカス／カーソルキャプチャについては、引き続き手動での実行時回帰テストが
+自動化環境では非表示の DirectX バックバッファを確実にキャプチャできないため、床／壁面／白い出口の視認性、
+起動、メニューの hover/click、WASD、マウス視点、ポーズとカーソル capture は、引き続き手動での実行時回帰テストが
 必要です。ローカルでは Ninja プリセットの構成とビルドグラフを検証済みです。この Codex Windows
 実行環境では Ninja が MSVC の子プロセスを待機する際に停止するため、CLion/Ninja の完全なリンクが
 成功したとはしていません。Visual Studio ジェネレーターの Debug／Release ビルドは、この問題の影響を受けません。
@@ -155,14 +164,15 @@ include/RetroFPS/             公開 API
   World/                      GridMap、ローダー、World、設定
   Collision/                  XZ 上の円／グリッド照会
   Gameplay/Player/            Player の状態、設定、コントローラー
-  Rendering/                  Camera、マップ形状、レンダラーの契約
-  Game/                       Game ファサードと構成設定
+  Rendering/                  Camera、マップ形状、3D／ASCII UI レンダラーの契約
+  Game/                       Game、構成設定、engine-independent な GameFlow
 src/                          非公開実装とプラットフォーム固有の詳細
 tests/
   World/                      マップ読み込みと World の所有権／設定
   Collision/                  グリッドコリジョンと平面移動
   Rendering/                  CPU によるマップ形状生成
   Gameplay/                   Player の設定／コントローラーと生入力
+  Game/                       メニュー／ポーズ状態遷移
 Docs/Architecture.md          依存関係、所有権、拡張ガイド
 NoviceResources/              KamataEngine 互換の元リソース
 ```

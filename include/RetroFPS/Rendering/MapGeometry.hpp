@@ -10,6 +10,7 @@ namespace fps {
 enum class SurfaceType {
     Floor,
     Wall,
+    Door,
 };
 
 struct SurfaceTransform {

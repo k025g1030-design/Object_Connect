@@ -22,22 +22,37 @@ namespace {
 }
 
 void TestCircleGridQueries(TestContext& context) {
-    const GridMap singleCell = ParseValidMap(context, "P");
+    const GridMap singleCell = ParseValidMap(
+        context,
+        "#####\n"
+        "#P#D#\n"
+        "#####");
     context.Expect(
-        !GridCollision::OverlapsSolid(singleCell, {0.5f, 0.5f}, 0.49f),
+        !GridCollision::OverlapsSolid(singleCell, {1.5f, 1.5f}, 0.49f),
         "circle inside a walkable cell is clear");
     context.Expect(
-        !GridCollision::OverlapsSolid(singleCell, {0.5f, 0.5f}, 0.5f),
+        !GridCollision::OverlapsSolid(singleCell, {1.5f, 1.5f}, 0.5f),
         "exact circle-to-wall contact is not penetration");
     context.Expect(
-        GridCollision::OverlapsSolid(singleCell, {0.5f, 0.5f}, 0.51f),
-        "out-of-bounds space is solid");
+        GridCollision::OverlapsSolid(singleCell, {1.5f, 1.5f}, 0.51f),
+        "solid cells surrounding a walkable cell block penetration");
+
+    const GridMap markerMap = ParseValidMap(context, "P.ED");
+    context.Expect(
+        !GridCollision::OverlapsSolid(markerMap, {0.5f, 0.5f}, 0.2f),
+        "player spawn is non-solid");
+    context.Expect(
+        !GridCollision::OverlapsSolid(markerMap, {2.5f, 0.5f}, 0.2f),
+        "monster spawn is non-solid");
+    context.Expect(
+        !GridCollision::OverlapsSolid(markerMap, {3.5f, 0.5f}, 0.2f),
+        "next-map exit is non-solid");
 
     const GridMap cornerMap = ParseValidMap(
         context,
         "####\n"
         "#P.#\n"
-        "#.##\n"
+        "#D##\n"
         "####");
     context.Expect(
         GridCollision::OverlapsSolid(cornerMap, {1.85f, 1.85f}, 0.25f),
@@ -45,10 +60,14 @@ void TestCircleGridQueries(TestContext& context) {
 }
 
 void TestMovementResolution(TestContext& context) {
-    const GridMap singleCell = ParseValidMap(context, "P");
+    const GridMap singleCell = ParseValidMap(
+        context,
+        "#####\n"
+        "#P#D#\n"
+        "#####");
     const Float2 bounded =
-        GridCollision::MoveCircle(singleCell, {0.5f, 0.5f}, {10.0f, 0.0f}, 0.2f);
-    context.Expect(bounded.x <= 0.8001f, "substeps prevent tunneling through outer wall");
+        GridCollision::MoveCircle(singleCell, {1.5f, 1.5f}, {10.0f, 0.0f}, 0.2f);
+    context.Expect(bounded.x <= 1.8001f, "substeps prevent tunneling through a wall");
     context.Expect(
         !GridCollision::OverlapsSolid(singleCell, bounded, 0.2f),
         "bounded move result is clear");
@@ -56,7 +75,7 @@ void TestMovementResolution(TestContext& context) {
     const GridMap wallMap = ParseValidMap(
         context,
         "#####\n"
-        "#P#.#\n"
+        "#P#D#\n"
         "#.#.#\n"
         "#...#\n"
         "#####");
@@ -71,7 +90,7 @@ void TestMovementResolution(TestContext& context) {
     const GridMap sealedCornerMap = ParseValidMap(
         context,
         "#####\n"
-        "#P#.#\n"
+        "#P#D#\n"
         "##..#\n"
         "#...#\n"
         "#####");
@@ -86,7 +105,7 @@ void TestMovementResolution(TestContext& context) {
 }
 
 void TestInvalidCollisionArguments(TestContext& context) {
-    const GridMap map = ParseValidMap(context, "P");
+    const GridMap map = ParseValidMap(context, "PD");
     const float infinity = (std::numeric_limits<float>::infinity)();
     const float nan = (std::numeric_limits<float>::quiet_NaN)();
 
@@ -114,7 +133,7 @@ void TestInvalidCollisionArguments(TestContext& context) {
 
 void TestExtremeFiniteValues(TestContext& context) {
     const float tinyRadius = (std::numeric_limits<float>::denorm_min)();
-    const GridMap map = ParseValidMap(context, "P#");
+    const GridMap map = ParseValidMap(context, "P#D");
 
     context.Expect(
         GridCollision::OverlapsSolid(map, {1.5f, 0.5f}, tinyRadius),

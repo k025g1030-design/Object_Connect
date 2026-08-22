@@ -28,6 +28,27 @@ public:
         : std::runtime_error(MakeParseMessage(line, column, detail)) {}
 };
 
+[[nodiscard]] TileType DecodeTile(
+    const char cell, const std::size_t line, const std::size_t column) {
+    switch (cell) {
+    case '.':
+        return TileType::Floor;
+    case '#':
+        return TileType::Wall;
+    case 'P':
+        return TileType::PlayerSpawn;
+    case 'E':
+        return TileType::MonsterSpawn;
+    case 'D':
+        return TileType::NextMapExit;
+    default:
+        throw GridMapParseError(
+            line,
+            column,
+            "invalid cell; expected '#', '.', 'P', 'E', or 'D'");
+    }
+}
+
 } // namespace
 
 MapLoadResult GridMapLoader::Parse(const std::string_view text) {
@@ -36,34 +57,19 @@ MapLoadResult GridMapLoader::Parse(const std::string_view text) {
             throw GridMapParseError(1, 1, "map is empty");
         }
 
-        std::vector<std::string> rows;
-        std::optional<GridCoordinate> spawnCell;
+        std::vector<TileType> tiles;
+        std::optional<GridCoordinate> playerSpawnCell;
+        std::vector<GridCoordinate> monsterSpawnCells;
+        std::optional<GridCoordinate> nextMapExitCell;
         std::size_t expectedWidth = 0;
+        std::size_t height = 0;
 
         const auto parseLine = [&](const std::string_view line, const std::size_t lineNumber) {
             if (line.empty()) {
                 throw GridMapParseError(lineNumber, 1, "map rows must not be empty");
             }
 
-            for (std::size_t column = 0; column < line.size(); ++column) {
-                const char cell = line[column];
-                if (cell != '#' && cell != '.' && cell != 'P') {
-                    throw GridMapParseError(
-                        lineNumber, column + 1, "invalid cell; expected '#', '.', or 'P'");
-                }
-
-                if (cell == 'P') {
-                    if (spawnCell.has_value()) {
-                        throw GridMapParseError(
-                            lineNumber,
-                            column + 1,
-                            "map must contain exactly one player spawn 'P'");
-                    }
-                    spawnCell = GridCoordinate{rows.size(), column};
-                }
-            }
-
-            if (rows.empty()) {
+            if (height == 0) {
                 expectedWidth = line.size();
             } else if (line.size() != expectedWidth) {
                 const std::size_t mismatchColumn =
@@ -72,7 +78,39 @@ MapLoadResult GridMapLoader::Parse(const std::string_view text) {
                     lineNumber, mismatchColumn, "map rows must form a rectangle");
             }
 
-            rows.emplace_back(line);
+            for (std::size_t column = 0; column < line.size(); ++column) {
+                const TileType tile = DecodeTile(line[column], lineNumber, column + 1);
+                const GridCoordinate coordinate{height, column};
+                switch (tile) {
+                case TileType::PlayerSpawn:
+                    if (playerSpawnCell.has_value()) {
+                        throw GridMapParseError(
+                            lineNumber,
+                            column + 1,
+                            "map must contain exactly one player spawn 'P'");
+                    }
+                    playerSpawnCell = coordinate;
+                    break;
+                case TileType::MonsterSpawn:
+                    monsterSpawnCells.push_back(coordinate);
+                    break;
+                case TileType::NextMapExit:
+                    if (nextMapExitCell.has_value()) {
+                        throw GridMapParseError(
+                            lineNumber,
+                            column + 1,
+                            "map must contain exactly one next-map exit 'D'");
+                    }
+                    nextMapExitCell = coordinate;
+                    break;
+                case TileType::Floor:
+                case TileType::Wall:
+                    break;
+                }
+                tiles.push_back(tile);
+            }
+
+            ++height;
         };
 
         std::size_t lineStart = 0;
@@ -95,14 +133,25 @@ MapLoadResult GridMapLoader::Parse(const std::string_view text) {
             parseLine(text.substr(lineStart), lineNumber);
         }
 
-        if (rows.empty()) {
+        if (height == 0) {
             throw GridMapParseError(1, 1, "map is empty");
         }
-        if (!spawnCell.has_value()) {
+        if (!playerSpawnCell.has_value()) {
             throw GridMapParseError(1, 1, "map must contain exactly one player spawn 'P'");
         }
+        if (!nextMapExitCell.has_value()) {
+            throw GridMapParseError(1, 1, "map must contain exactly one next-map exit 'D'");
+        }
 
-        return {GridMap(std::move(rows), *spawnCell), {}};
+        return {
+            GridMap(
+                std::move(tiles),
+                expectedWidth,
+                height,
+                *playerSpawnCell,
+                std::move(monsterSpawnCells),
+                *nextMapExitCell),
+            {}};
     } catch (const std::exception& error) {
         return {std::nullopt, error.what()};
     }

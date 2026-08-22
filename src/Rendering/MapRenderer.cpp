@@ -6,6 +6,7 @@
 #include <KamataEngine.h>
 
 #include <array>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <system_error>
@@ -59,7 +60,37 @@ const std::filesystem::path kModelResourceRoot{"Resources"};
 [[nodiscard]] bool ValidateAssets(
     const MapRenderAssets& assets, std::string& error) {
     return ValidateModelAssets(assets.floorModelName, error) &&
-           ValidateModelAssets(assets.wallModelName, error);
+           ValidateModelAssets(assets.wallModelName, error) &&
+           ValidateModelAssets(assets.doorModelName, error);
+}
+
+[[nodiscard]] bool ValidateTextureAsset(
+    const std::string& texturePath,
+    std::string& error) {
+    const std::filesystem::path relativePath{texturePath};
+    if (texturePath.empty() || relativePath.has_root_path()) {
+        error = "Map texture paths must be non-empty and relative to Resources.";
+        return false;
+    }
+
+    for (const std::filesystem::path& component : relativePath) {
+        if (component == "..") {
+            error = "Map texture paths must remain within Resources.";
+            return false;
+        }
+    }
+
+    const std::filesystem::path asset = kModelResourceRoot / relativePath;
+    std::error_code fileError;
+    if (!std::filesystem::is_regular_file(asset, fileError)) {
+        error = "Missing required map rendering asset: " + asset.generic_string();
+        if (fileError) {
+            error += " (" + fileError.message() + ")";
+        }
+        return false;
+    }
+
+    return true;
 }
 
 [[nodiscard]] KamataEngine::Vector3 ToEngineVector(const Float3& value) noexcept {
@@ -69,11 +100,18 @@ const std::filesystem::path kModelResourceRoot{"Resources"};
 } // namespace
 
 struct MapRenderer::Impl {
+    struct RenderInstance final {
+        std::unique_ptr<KamataEngine::Object3d> object;
+        bool usesDoorTexture = false;
+    };
+
     // Object3d は Model への非所有ポインタを保持する。メンバーは宣言と逆順に
     // 破棄されるため、共有モデルより先にすべてのオブジェクトが破棄される。
     std::unique_ptr<KamataEngine::Model> floorModel;
     std::unique_ptr<KamataEngine::Model> wallModel;
-    std::vector<std::unique_ptr<KamataEngine::Object3d>> objects;
+    std::unique_ptr<KamataEngine::Model> doorModel;
+    std::uint32_t doorTextureHandle = 0;
+    std::vector<RenderInstance> objects;
 };
 
 MapRenderer::MapRenderer() noexcept = default;
@@ -89,7 +127,8 @@ bool MapRenderer::Initialize(
     Finalize();
     error.clear();
 
-    if (!ValidateAssets(assets, error)) {
+    if (!ValidateAssets(assets, error) ||
+        !ValidateTextureAsset(assets.doorTexturePath, error)) {
         return false;
     }
 
@@ -109,15 +148,29 @@ bool MapRenderer::Initialize(
             return false;
         }
 
+        implementation->doorModel.reset(
+            KamataEngine::Model::CreateFromOBJ(assets.doorModelName));
+        if (!implementation->doorModel) {
+            error = "KamataEngine failed to create the map door model.";
+            return false;
+        }
+        implementation->doorTextureHandle =
+            KamataEngine::TextureManager::Load(assets.doorTexturePath);
+
         implementation->objects.reserve(geometry.surfaces.size());
         for (const SurfaceInstance& surface : geometry.surfaces) {
             KamataEngine::Model* model = nullptr;
+            bool usesDoorTexture = false;
             switch (surface.type) {
             case SurfaceType::Floor:
                 model = implementation->floorModel.get();
                 break;
             case SurfaceType::Wall:
                 model = implementation->wallModel.get();
+                break;
+            case SurfaceType::Door:
+                model = implementation->doorModel.get();
+                usesDoorTexture = true;
                 break;
             default:
                 error = "Map geometry contains an unsupported surface type.";
@@ -130,7 +183,7 @@ bool MapRenderer::Initialize(
             object->SetRotation(ToEngineVector(surface.transform.rotationRadians));
             object->SetScale(ToEngineVector(surface.transform.scale));
             object->Update();
-            implementation->objects.push_back(std::move(object));
+            implementation->objects.push_back({std::move(object), usesDoorTexture});
         }
 
         impl_ = std::move(implementation);
@@ -156,8 +209,15 @@ void MapRenderer::Draw(const KamataEngine::Camera& camera) const {
         KamataEngine::Model::BlendMode::kNone,
         KamataEngine::Model::DepthTestMode::kOn);
 
-    for (const std::unique_ptr<KamataEngine::Object3d>& object : impl_->objects) {
-        object->Draw(camera);
+    for (const Impl::RenderInstance& instance : impl_->objects) {
+        if (instance.usesDoorTexture) {
+            instance.object->GetModel()->Draw(
+                instance.object->GetWorldTransform(),
+                camera,
+                impl_->doorTextureHandle);
+        } else {
+            instance.object->Draw(camera);
+        }
     }
 
     KamataEngine::Model::PostDraw();

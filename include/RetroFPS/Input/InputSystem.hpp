@@ -23,9 +23,11 @@ public:
 
     [[nodiscard]] bool Initialize(std::string& error);
     [[nodiscard]] InputState Sample() noexcept;
+    void SetMouseCaptureEnabled(bool enabled) noexcept;
     void Finalize() noexcept;
 
     [[nodiscard]] bool IsInitialized() const noexcept;
+    [[nodiscard]] bool IsMouseCaptureEnabled() const noexcept;
 
 private:
     std::unique_ptr<MouseCapture> mouseCapture_;

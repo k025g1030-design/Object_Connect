@@ -6,10 +6,12 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace fps::tests {
 namespace {
@@ -41,39 +43,90 @@ void ExpectParseError(
 }
 
 void TestGridMapParsing(TestContext& context) {
-    const GridMap map = ParseValidMap(context, "####\n#P.#\n####");
-    context.Expect(map.GetWidth() == 4, "map width");
+    const GridMap map = ParseValidMap(context, "#######\n#PE.ED#\n#######");
+    context.Expect(map.GetWidth() == 7, "map width");
     context.Expect(map.GetHeight() == 3, "map height");
-    context.Expect(map.GetSpawnCell().row == 1, "spawn row");
-    context.Expect(map.GetSpawnCell().column == 1, "spawn column");
-    context.Expect(map.GetCell(1, 1) == 'P', "spawn cell remains part of map data");
+    context.Expect(
+        map.GetPlayerSpawnCell() == GridCoordinate{1, 1},
+        "player spawn coordinate");
+    context.Expect(
+        map.GetSpawnCell() == map.GetPlayerSpawnCell(),
+        "legacy spawn-cell accessor uses the player spawn");
+    context.Expect(
+        map.GetTile(1, 1) == TileType::PlayerSpawn,
+        "player spawn remains typed map data");
+    context.Expect(map.GetTile(1, 2) == TileType::MonsterSpawn, "first monster tile");
+    context.Expect(map.GetTile(1, 3) == TileType::Floor, "floor tile");
+    context.Expect(map.GetTile(1, 5) == TileType::NextMapExit, "next-map exit tile");
+    context.Expect(
+        map.GetMonsterSpawnCells() ==
+            std::vector<GridCoordinate>{{1, 2}, {1, 4}},
+        "all monster spawns preserve map order");
+    context.Expect(
+        map.GetNextMapExitCell() == GridCoordinate{1, 5},
+        "next-map exit coordinate");
     context.Expect(map.IsWalkable(1, 1), "spawn is walkable");
-    context.Expect(map.IsWalkable(1, 2), "dot is walkable");
+    context.Expect(map.IsWalkable(1, 2), "monster spawn is walkable");
+    context.Expect(map.IsWalkable(1, 3), "floor is walkable");
+    context.Expect(map.IsWalkable(1, 5), "next-map exit is walkable");
     context.Expect(map.IsSolid(0, 0), "hash is solid");
     context.Expect(map.IsSolid(-1, 1), "negative row is solid");
-    context.Expect(map.IsSolid(1, 4), "out-of-bounds column is solid");
+    context.Expect(map.IsSolid(1, 7), "out-of-bounds column is solid");
 
     const Float2 spawnPosition = map.GetSpawnPosition(2.0f);
     context.Expect(NearlyEqual(spawnPosition.x, 3.0f), "columns map to +X cell centers");
     context.Expect(NearlyEqual(spawnPosition.z, 3.0f), "rows map to +Z cell centers");
+    const Float2 exitPosition = map.GetCellCenter(map.GetNextMapExitCell(), 2.0f);
+    context.Expect(NearlyEqual(exitPosition.x, 11.0f), "exit column maps to +X center");
+    context.Expect(NearlyEqual(exitPosition.z, 3.0f), "exit row maps to +Z center");
 
-    const GridMap crlfMap = ParseValidMap(context, "###\r\n#P#\r\n###\r\n");
+    const std::optional<GridCoordinate> spawnCoordinate =
+        map.TryGetCoordinateAtPosition(spawnPosition, 2.0f);
     context.Expect(
-        crlfMap.GetWidth() == 3 && crlfMap.GetHeight() == 3,
+        spawnCoordinate == GridCoordinate{1, 1},
+        "world position resolves to its containing grid coordinate");
+    context.Expect(
+        map.TryGetCoordinateAtPosition({4.0f, 2.0f}, 2.0f) == GridCoordinate{1, 2},
+        "cell-boundary positions resolve to the cell on the positive side");
+    context.Expect(
+        !map.TryGetCoordinateAtPosition({-0.01f, 1.0f}).has_value(),
+        "negative world position is outside the map");
+    context.Expect(
+        !map.TryGetCoordinateAtPosition({14.0f, 1.0f}, 2.0f).has_value(),
+        "position on the outer maximum boundary is outside the map");
+    context.Expect(
+        !map.TryGetCoordinateAtPosition(
+                {(std::numeric_limits<float>::quiet_NaN)(), 1.0f})
+             .has_value(),
+        "non-finite world position does not resolve to a cell");
+
+    const GridMap crlfMap = ParseValidMap(context, "####\r\n#PD#\r\n####\r\n");
+    context.Expect(
+        crlfMap.GetWidth() == 4 && crlfMap.GetHeight() == 3,
         "CRLF map parsing");
 
     context.ExpectThrows<std::out_of_range>(
-        [&map] { static_cast<void>(map.GetCell(3, 0)); },
-        "GetCell should reject an out-of-range row");
+        [&map] { static_cast<void>(map.GetTile(3, 0)); },
+        "GetTile should reject an out-of-range row");
+    context.ExpectThrows<std::out_of_range>(
+        [&map] { static_cast<void>(map.GetCellCenter({3, 0})); },
+        "cell-center conversion should reject an out-of-range coordinate");
     context.ExpectThrows<std::invalid_argument>(
         [&map] { static_cast<void>(map.GetSpawnPosition(0.0f)); },
         "spawn conversion should reject a non-positive cell size");
+    context.ExpectThrows<std::invalid_argument>(
+        [&map] {
+            static_cast<void>(map.TryGetCoordinateAtPosition({1.0f, 1.0f}, 0.0f));
+        },
+        "position conversion should reject a non-positive cell size");
 
     ExpectParseError(context, "", 1, 1);
     ExpectParseError(context, "P.\n#", 2, 2);
     ExpectParseError(context, "P@", 1, 2);
     ExpectParseError(context, "..", 1, 1);
-    ExpectParseError(context, "P.P", 1, 3);
+    ExpectParseError(context, "PDP", 1, 3);
+    ExpectParseError(context, "PDD", 1, 3);
+    ExpectParseError(context, "P.", 1, 1);
     ExpectParseError(context, "P\r", 1, 2);
 }
 
@@ -83,7 +136,7 @@ void TestGridMapLoading(TestContext& context) {
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         context.Expect(file.is_open(), "temporary map file should open");
-        file << "###\r\n#P#\r\n###\r\n";
+        file << "####\r\n#PD#\r\n####\r\n";
     }
 
     const MapLoadResult loaded = GridMapLoader::Load(path);
@@ -123,7 +176,7 @@ void TestWorldOwnership(TestContext& context) {
 
     const WorldSettings settings{2.0f, 3.0f};
     {
-        GridMap map = ParseValidMap(context, "P.");
+        GridMap map = ParseValidMap(context, "PD");
         world.Initialize(std::move(map), settings);
     }
 
@@ -139,7 +192,7 @@ void TestWorldOwnership(TestContext& context) {
     const WorldSettings invalidSettings{0.0f, 3.0f};
     context.ExpectThrows<std::invalid_argument>(
         [&context, &world, invalidSettings] {
-            world.Initialize(ParseValidMap(context, "P"), invalidSettings);
+            world.Initialize(ParseValidMap(context, "PD"), invalidSettings);
         },
         "World rejects an invalid replacement cell size");
     context.Expect(
@@ -159,7 +212,7 @@ void TestInvalidWorldSettings(TestContext& context) {
                                    const std::string_view description) {
         context.ExpectThrows<std::invalid_argument>(
             [&context, settings] {
-                World world(ParseValidMap(context, "P"), settings);
+                World world(ParseValidMap(context, "PD"), settings);
                 static_cast<void>(world);
             },
             description);

@@ -93,6 +93,10 @@ set(_required_project_resources
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/TerrainVS.hlsl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/TerrainPS.hlsl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/maps/mvp_map.txt"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/maps/mvp_map_02.txt"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/cube/cube.obj"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/cube/cube.mtl"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/cube/cube.jpg"
     "${PROJECT_RESOURCE_SOURCE_DIR}/map_floor/map_floor.obj"
     "${PROJECT_RESOURCE_SOURCE_DIR}/map_floor/map_floor.mtl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/map_wall/map_wall.obj"
@@ -179,6 +183,16 @@ target_link_libraries(retrofps_input_contract INTERFACE retrofps_public_options)
 add_library(RetroFPS::InputContract ALIAS retrofps_input_contract)
 
 add_library(
+    retrofps_game_flow STATIC
+    src/Game/GameFlow.cpp
+    include/RetroFPS/Game/GameFlow.hpp
+)
+target_link_libraries(retrofps_game_flow PUBLIC retrofps_public_options)
+target_compile_definitions(retrofps_game_flow PRIVATE NOMINMAX)
+configure_object_fps_target(retrofps_game_flow)
+add_library(RetroFPS::GameFlow ALIAS retrofps_game_flow)
+
+add_library(
     retrofps_world STATIC
     src/World/GridMap.cpp
     src/World/GridMapLoader.cpp
@@ -259,9 +273,11 @@ add_library(RetroFPS::Input ALIAS retrofps_input)
 add_library(
     retrofps_rendering STATIC
     src/Rendering/FirstPersonCamera.cpp
+    src/Rendering/GameUiRenderer.cpp
     src/Rendering/MapRenderer.cpp
     include/RetroFPS/Rendering/CameraSettings.hpp
     include/RetroFPS/Rendering/FirstPersonCamera.hpp
+    include/RetroFPS/Rendering/GameUiRenderer.hpp
     include/RetroFPS/Rendering/MapRenderAssets.hpp
     include/RetroFPS/Rendering/MapRenderer.hpp
 )
@@ -291,6 +307,7 @@ target_link_libraries(
     retrofps_game
     PUBLIC
         retrofps_gameplay
+        retrofps_game_flow
         retrofps_input
         retrofps_rendering
         retrofps_world
@@ -337,6 +354,7 @@ configure_object_fps_target(Object_FPS)
 set_target_properties(
     retrofps_world
     retrofps_collision
+    retrofps_game_flow
     retrofps_gameplay
     retrofps_map_geometry
     retrofps_input
@@ -399,6 +417,8 @@ if(BUILD_TESTING)
         tests/Collision/CollisionTests.cpp
         tests/Rendering/MapGeometryTests.cpp
         tests/Gameplay/PlayerControllerTests.cpp
+        tests/Game/GameFlowTests.cpp
+        tests/Game/CampaignResourceTests.cpp
     )
     target_include_directories(
         Object_FPS_CoreTests
@@ -410,9 +430,15 @@ if(BUILD_TESTING)
             retrofps_world
             retrofps_collision
             retrofps_gameplay
+            retrofps_game_flow
             retrofps_map_geometry
     )
-    target_compile_definitions(Object_FPS_CoreTests PRIVATE NOMINMAX)
+    target_compile_definitions(
+        Object_FPS_CoreTests
+        PRIVATE
+            NOMINMAX
+            RETROFPS_TEST_RESOURCE_ROOT="${PROJECT_RESOURCE_SOURCE_DIR}"
+    )
     configure_object_fps_target(Object_FPS_CoreTests)
     set_target_properties(
         Object_FPS_CoreTests

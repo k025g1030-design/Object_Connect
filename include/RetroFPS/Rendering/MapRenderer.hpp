@@ -26,6 +26,8 @@ public:
         const MapGeometry& geometry,
         const MapRenderAssets& assets,
         std::string& error);
+    // Door instances use the configured model with a white texture override;
+    // floor and wall instances use their model materials.
     void Draw(const KamataEngine::Camera& camera) const;
     void Finalize() noexcept;
 

@@ -19,6 +19,12 @@ struct WallDirection {
 };
 
 constexpr float kPi = std::numbers::pi_v<float>;
+constexpr float kDoorWidthInCells = 0.70f;
+constexpr float kDoorHeightInWalls = 0.80f;
+constexpr float kDoorDepthInCells = 0.12f;
+// Resources/cube/cube.obj spans -1 to +1 on every axis, so its scale is half
+// the requested world-space dimensions.
+constexpr float kCubeHalfExtent = 0.5f;
 constexpr std::array<WallDirection, 4> kWallDirections = {{
     {-1, 0, {0.0f, 0.0f, 1.0f}, 0.0f, {0.0f, -0.5f}},
     {0, 1, {-1.0f, 0.0f, 0.0f}, -kPi * 0.5f, {0.5f, 0.0f}},
@@ -42,7 +48,7 @@ MapGeometry MapGeometryGenerator::Generate(
     ValidateSettings(settings);
 
     MapGeometry geometry;
-    geometry.surfaces.reserve(map.GetWidth() * map.GetHeight() * 3);
+    geometry.surfaces.reserve(map.GetWidth() * map.GetHeight() * 4);
 
     for (std::size_t row = 0; row < map.GetHeight(); ++row) {
         for (std::size_t column = 0; column < map.GetWidth(); ++column) {
@@ -66,6 +72,25 @@ MapGeometry MapGeometryGenerator::Generate(
                 row,
                 column,
             });
+
+            if (map.GetTile(row, column) == TileType::NextMapExit) {
+                const float doorHeight = settings.wallHeight * kDoorHeightInWalls;
+                geometry.surfaces.push_back({
+                    SurfaceType::Door,
+                    {
+                        {centerX, doorHeight * 0.5f, centerZ},
+                        {0.0f, 0.0f, 0.0f},
+                        {
+                            settings.cellSize * kDoorWidthInCells * kCubeHalfExtent,
+                            doorHeight * kCubeHalfExtent,
+                            settings.cellSize * kDoorDepthInCells * kCubeHalfExtent,
+                        },
+                    },
+                    {0.0f, 0.0f, 1.0f},
+                    row,
+                    column,
+                });
+            }
 
             for (const WallDirection& direction : kWallDirections) {
                 if (!map.IsSolid(

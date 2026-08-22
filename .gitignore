@@ -1,7 +1,6 @@
 /.vs/
 /.run/
 /.idea/
-/Docs/
 /build/
 /cmake-build-*/
 /out/

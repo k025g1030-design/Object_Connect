@@ -49,5 +49,7 @@ void RunWorldTests(TestContext& context);
 void RunCollisionTests(TestContext& context);
 void RunMapGeometryTests(TestContext& context);
 void RunPlayerControllerTests(TestContext& context);
+void RunGameFlowTests(TestContext& context);
+void RunCampaignResourceTests(TestContext& context);
 
 } // namespace fps::tests

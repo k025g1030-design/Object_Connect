@@ -3,6 +3,7 @@
 #include "RetroFPS/Core/FrameTimer.hpp"
 #include "RetroFPS/Game/Game.hpp"
 
+#include <2d/DebugText.h>
 #include <KamataEngine.h>
 #include <Windows.h>
 
@@ -63,6 +64,12 @@ public:
     void Initialize() {
         KamataEngine::Initialize(kWindowTitle);
         initialized_ = true;
+
+        // KamataEngine::Initialize sets up Sprite, but DebugText is an optional
+        // service and must be initialized separately before its first Print.
+        KamataEngine::DebugText::GetInstance()->Initialize();
+        KamataEngine::WinApp::GetInstance()->SetSizeChangeMode(
+            KamataEngine::WinApp::SizeChangeMode::kNone);
     }
 
 private:
