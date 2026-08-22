@@ -4,7 +4,8 @@
 /build/
 /cmake-build-*/
 /out/
-/Docs/
+/Docs/*
+!/Docs/Architecture.md
 /target/
 /*.obj
 CMakeUserPresets.json

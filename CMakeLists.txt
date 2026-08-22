@@ -209,6 +209,16 @@ configure_object_fps_target(retrofps_world)
 add_library(RetroFPS::World ALIAS retrofps_world)
 
 add_library(
+    retrofps_map_scene STATIC
+    src/Game/MapSceneManager.cpp
+    include/RetroFPS/Game/MapSceneManager.hpp
+)
+target_link_libraries(retrofps_map_scene PUBLIC retrofps_world)
+target_compile_definitions(retrofps_map_scene PRIVATE NOMINMAX)
+configure_object_fps_target(retrofps_map_scene)
+add_library(RetroFPS::MapScene ALIAS retrofps_map_scene)
+
+add_library(
     retrofps_collision STATIC
     src/Collision/GridCollision.cpp
     include/RetroFPS/Collision/GridCollision.hpp
@@ -275,11 +285,13 @@ add_library(
     src/Rendering/FirstPersonCamera.cpp
     src/Rendering/GameUiRenderer.cpp
     src/Rendering/MapRenderer.cpp
+    src/Rendering/ScreenFadeRenderer.cpp
     include/RetroFPS/Rendering/CameraSettings.hpp
     include/RetroFPS/Rendering/FirstPersonCamera.hpp
     include/RetroFPS/Rendering/GameUiRenderer.hpp
     include/RetroFPS/Rendering/MapRenderAssets.hpp
     include/RetroFPS/Rendering/MapRenderer.hpp
+    include/RetroFPS/Rendering/ScreenFadeRenderer.hpp
 )
 target_include_directories(
     retrofps_rendering
@@ -309,6 +321,7 @@ target_link_libraries(
         retrofps_gameplay
         retrofps_game_flow
         retrofps_input
+        retrofps_map_scene
         retrofps_rendering
         retrofps_world
 )
@@ -354,6 +367,7 @@ configure_object_fps_target(Object_FPS)
 set_target_properties(
     retrofps_world
     retrofps_collision
+    retrofps_map_scene
     retrofps_game_flow
     retrofps_gameplay
     retrofps_map_geometry
@@ -418,6 +432,7 @@ if(BUILD_TESTING)
         tests/Rendering/MapGeometryTests.cpp
         tests/Gameplay/PlayerControllerTests.cpp
         tests/Game/GameFlowTests.cpp
+        tests/Game/MapSceneManagerTests.cpp
         tests/Game/CampaignResourceTests.cpp
     )
     target_include_directories(
@@ -431,6 +446,7 @@ if(BUILD_TESTING)
             retrofps_collision
             retrofps_gameplay
             retrofps_game_flow
+            retrofps_map_scene
             retrofps_map_geometry
     )
     target_compile_definitions(

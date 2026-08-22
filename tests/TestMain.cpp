@@ -16,12 +16,13 @@ struct TestSuite {
 
 int main() {
     fps::tests::TestContext context;
-    constexpr std::array<TestSuite, 6> suites = {{
+    constexpr std::array<TestSuite, 7> suites = {{
         {"World", fps::tests::RunWorldTests},
         {"Collision", fps::tests::RunCollisionTests},
         {"Rendering.MapGeometry", fps::tests::RunMapGeometryTests},
         {"Gameplay.PlayerController", fps::tests::RunPlayerControllerTests},
         {"Game.Flow", fps::tests::RunGameFlowTests},
+        {"Game.MapSceneManager", fps::tests::RunMapSceneManagerTests},
         {"Game.CampaignResources", fps::tests::RunCampaignResourceTests},
     }};
 
@@ -29,8 +30,8 @@ int main() {
         try {
             suite.run(context);
         } catch (const std::exception& exception) {
-            context.Fail(
-                std::string{"Unhandled exception in "} + suite.name + ": " + exception.what());
+            context.Fail(std::string{"Unhandled exception in "} + suite.name + ": " +
+                         exception.what());
         } catch (...) {
             context.Fail(std::string{"Unhandled unknown exception in "} + suite.name);
         }

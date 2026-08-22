@@ -1,6 +1,5 @@
 #include "../TestSupport.hpp"
 
-#include "RetroFPS/Game/GameConfig.hpp"
 #include "RetroFPS/Game/GameFlow.hpp"
 
 namespace fps::tests {
@@ -31,16 +30,20 @@ void TestMainMenu(TestContext& context) {
     clickStart.hoveredItem = 0;
     clickStart.mousePrimaryPressed = true;
     const GameFlowResult started = flow.Update(clickStart);
-    context.Expect(started.action == GameFlowAction::StartGame, "mouse starts game");
-    context.Expect(flow.GetScreen() == GameScreen::Playing, "start enters playing");
-    context.Expect(!started.simulateGameplay, "start transition does not simulate gameplay");
+    context.Expect(started.action == GameFlowAction::RequestStartGame, "mouse requests game start");
+    context.Expect(!started.screenChanged, "start request defers the screen change");
+    context.Expect(flow.GetScreen() == GameScreen::MainMenu,
+                   "start request keeps the main menu active until committed");
+    context.Expect(!started.simulateGameplay, "start request does not simulate gameplay");
+
+    flow.EnterPlaying();
+    context.Expect(flow.GetScreen() == GameScreen::Playing, "start commit enters playing");
+    context.Expect(flow.GetSelectedItem() == 0, "start commit resets menu selection");
 }
 
 void TestPauseAndFocus(TestContext& context) {
     GameFlow flow;
-    GameFlowInput start{};
-    start.confirmPressed = true;
-    static_cast<void>(flow.Update(start));
+    flow.EnterPlaying();
 
     GameFlowInput pause{};
     pause.escapePressed = true;
@@ -69,10 +72,83 @@ void TestPauseAndFocus(TestContext& context) {
     mainMenu.hoveredItem = 1;
     mainMenu.mousePrimaryPressed = true;
     const GameFlowResult reset = flow.Update(mainMenu);
-    context.Expect(
-        reset.action == GameFlowAction::ResetToMainMenu,
-        "pause menu requests gameplay reset");
-    context.Expect(flow.GetScreen() == GameScreen::MainMenu, "pause menu returns to main menu");
+    context.Expect(reset.action == GameFlowAction::RequestMainMenu,
+                   "pause menu requests a return to the main menu");
+    context.Expect(!reset.screenChanged, "main-menu request defers the screen change");
+    context.Expect(flow.GetScreen() == GameScreen::Paused,
+                   "main-menu request keeps the pause screen active until committed");
+
+    flow.ReturnToMainMenu();
+    context.Expect(flow.GetScreen() == GameScreen::MainMenu,
+                   "main-menu commit leaves the pause screen");
+}
+
+void TestExplicitScreenCommits(TestContext& context) {
+    GameFlow flow;
+    flow.EnterPlaying();
+    context.Expect(flow.GetScreen() == GameScreen::Playing, "playing can be committed directly");
+
+    flow.EnterPaused();
+    context.Expect(flow.GetScreen() == GameScreen::Paused, "pause can be committed directly");
+    context.Expect(flow.GetSelectedItem() == 0, "pause commit selects resume");
+
+    flow.ReturnToMainMenu();
+    context.Expect(flow.GetScreen() == GameScreen::MainMenu, "main menu can be committed directly");
+    context.Expect(flow.GetSelectedItem() == 0, "main-menu commit selects start");
+}
+
+void TestResults(TestContext& context) {
+    GameFlow flow;
+    flow.EnterResults();
+    context.Expect(flow.GetScreen() == GameScreen::Results, "results can be committed directly");
+    context.Expect(flow.GetSelectedItem() == 0, "results selects its main-menu item");
+
+    const GameFlowResult idle = flow.Update({});
+    context.Expect(!idle.simulateGameplay, "results frames do not simulate gameplay");
+
+    GameFlowInput navigation{};
+    navigation.previousPressed = true;
+    static_cast<void>(flow.Update(navigation));
+    navigation.previousPressed = false;
+    navigation.nextPressed = true;
+    static_cast<void>(flow.Update(navigation));
+    context.Expect(flow.GetSelectedItem() == 0, "results navigation keeps the only item selected");
+
+    GameFlowInput escape{};
+    escape.escapePressed = true;
+    const GameFlowResult ignoredEscape = flow.Update(escape);
+    context.Expect(ignoredEscape.action == GameFlowAction::None, "results ignores escape");
+    context.Expect(!ignoredEscape.screenChanged, "escape does not leave results");
+    context.Expect(flow.GetScreen() == GameScreen::Results, "results remains active after escape");
+
+    GameFlowInput focusLost{};
+    focusLost.focusLost = true;
+    const GameFlowResult ignoredFocusLoss = flow.Update(focusLost);
+    context.Expect(ignoredFocusLoss.action == GameFlowAction::None, "results ignores focus loss");
+    context.Expect(!ignoredFocusLoss.screenChanged, "focus loss does not leave results");
+    context.Expect(flow.GetScreen() == GameScreen::Results,
+                   "results remains active after focus loss");
+
+    GameFlowInput confirm{};
+    confirm.confirmPressed = true;
+    const GameFlowResult confirmed = flow.Update(confirm);
+    context.Expect(confirmed.action == GameFlowAction::RequestMainMenu,
+                   "results enter requests the main menu");
+    context.Expect(!confirmed.screenChanged, "results enter defers the screen change");
+    context.Expect(flow.GetScreen() == GameScreen::Results,
+                   "results remains active until the main menu is committed");
+
+    GameFlow clickedFlow;
+    clickedFlow.EnterResults();
+    GameFlowInput click{};
+    click.hoveredItem = 0;
+    click.mousePrimaryPressed = true;
+    const GameFlowResult clicked = clickedFlow.Update(click);
+    context.Expect(clicked.action == GameFlowAction::RequestMainMenu,
+                   "results main-menu button requests the main menu");
+    context.Expect(!clicked.screenChanged, "results click defers the screen change");
+    context.Expect(clickedFlow.GetScreen() == GameScreen::Results,
+                   "results click keeps the screen active until committed");
 }
 
 void TestSelectionAndQuit(TestContext& context) {
@@ -91,32 +167,14 @@ void TestSelectionAndQuit(TestContext& context) {
     context.Expect(flow.GetSelectedItem() == 0, "returning to main resets selection");
 }
 
-void TestMapProgression(TestContext& context) {
-    const GameConfig defaultConfig{};
-    context.Expect(defaultConfig.mapPaths.size() == 2, "default campaign has two maps");
-    if (defaultConfig.mapPaths.size() == 2) {
-        context.Expect(
-            defaultConfig.mapPaths[0].filename() == "mvp_map.txt",
-            "default campaign starts with the MVP map");
-        context.Expect(
-            defaultConfig.mapPaths[1].filename() == "mvp_map_02.txt",
-            "default campaign includes the second map");
-    }
-
-    const std::optional<std::size_t> secondMap = TryGetNextMapIndex(0, 2);
-    context.Expect(secondMap == 1, "first map advances to the second map");
-    context.Expect(!TryGetNextMapIndex(1, 2).has_value(), "last map completes campaign");
-    context.Expect(!TryGetNextMapIndex(0, 1).has_value(), "single-map campaign completes");
-    context.Expect(!TryGetNextMapIndex(2, 2).has_value(), "invalid map index cannot advance");
-}
-
 } // namespace
 
 void RunGameFlowTests(TestContext& context) {
     TestMainMenu(context);
     TestPauseAndFocus(context);
+    TestExplicitScreenCommits(context);
+    TestResults(context);
     TestSelectionAndQuit(context);
-    TestMapProgression(context);
 }
 
 } // namespace fps::tests

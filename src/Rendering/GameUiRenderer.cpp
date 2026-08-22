@@ -24,8 +24,8 @@ struct UiRect final {
     float height;
 
     [[nodiscard]] bool Contains(const UiPoint point) const noexcept {
-        return point.x >= left && point.x < left + width &&
-               point.y >= top && point.y < top + height;
+        return point.x >= left && point.x < left + width && point.y >= top &&
+               point.y < top + height;
     }
 };
 
@@ -37,6 +37,7 @@ struct MenuItem final {
 constexpr float kMenuLeft = 400.0f;
 constexpr float kMenuWidth = 480.0f;
 constexpr float kItemHeight = 54.0f;
+constexpr float kMenuTextScale = 1.7f;
 
 constexpr std::array<MenuItem, 3> kMainMenuItems = {{
     {"START GAME", {kMenuLeft, 280.0f, kMenuWidth, kItemHeight}},
@@ -54,6 +55,10 @@ constexpr std::array<MenuItem, 3> kPauseMenuItems = {{
     {"EXIT GAME", {kMenuLeft, 424.0f, kMenuWidth, kItemHeight}},
 }};
 
+constexpr std::array<MenuItem, 1> kResultsItems = {{
+    {"MAIN MENU", {kMenuLeft, 333.0f, kMenuWidth, kItemHeight}},
+}};
+
 [[nodiscard]] std::span<const MenuItem> GetItems(const GameUiScreen screen) noexcept {
     switch (screen) {
     case GameUiScreen::MainMenu:
@@ -62,24 +67,20 @@ constexpr std::array<MenuItem, 3> kPauseMenuItems = {{
         return kControlsItems;
     case GameUiScreen::PauseMenu:
         return kPauseMenuItems;
+    case GameUiScreen::Results:
+        return kResultsItems;
     default:
         return {};
     }
 }
 
-void PrintText(
-    KamataEngine::DebugText& debugText,
-    const std::string_view text,
-    const float x,
-    const float y,
-    const float scale) {
+void PrintText(KamataEngine::DebugText& debugText, const std::string_view text, const float x,
+               const float y, const float scale) {
     debugText.Print(std::string{text}, x, y, scale);
 }
 
-void QueueScreenText(
-    KamataEngine::DebugText& debugText,
-    const GameUiScreen screen,
-    const std::size_t selectedIndex) {
+void QueueScreenText(KamataEngine::DebugText& debugText, const GameUiScreen screen,
+                     const std::size_t selectedIndex) {
     switch (screen) {
     case GameUiScreen::MainMenu:
         PrintText(debugText, "OBJECT FPS", 485.0f, 125.0f, 2.5f);
@@ -94,6 +95,8 @@ void QueueScreenText(
     case GameUiScreen::PauseMenu:
         PrintText(debugText, "PAUSED", 535.0f, 130.0f, 2.5f);
         break;
+    case GameUiScreen::Results:
+        break;
     default:
         break;
     }
@@ -102,23 +105,21 @@ void QueueScreenText(
     for (std::size_t index = 0; index < items.size(); ++index) {
         const MenuItem& item = items[index];
         if (index == selectedIndex) {
-            PrintText(debugText, ">", item.bounds.left + 16.0f, item.bounds.top + 10.0f, 1.7f);
+            PrintText(debugText, ">", item.bounds.left + 16.0f, item.bounds.top + 10.0f,
+                      kMenuTextScale);
         }
-        PrintText(
-            debugText,
-            item.label,
-            item.bounds.left + 54.0f,
-            item.bounds.top + 10.0f,
-            1.7f);
+        const float labelWidth =
+            static_cast<float>(item.label.size() * KamataEngine::DebugText::kFontWidth) *
+            kMenuTextScale;
+        const float labelX = screen == GameUiScreen::Results
+                                 ? item.bounds.left + (item.bounds.width - labelWidth) * 0.5f
+                                 : item.bounds.left + 54.0f;
+        PrintText(debugText, item.label, labelX, item.bounds.top + 10.0f, kMenuTextScale);
     }
 
-    if (screen != GameUiScreen::Controls) {
-        PrintText(
-            debugText,
-            "UP/DOWN OR W/S - SELECT    ENTER/LEFT CLICK - CONFIRM",
-            305.0f,
-            640.0f,
-            1.0f);
+    if (screen == GameUiScreen::MainMenu || screen == GameUiScreen::PauseMenu) {
+        PrintText(debugText, "UP/DOWN OR W/S - SELECT    ENTER/LEFT CLICK - CONFIRM", 305.0f,
+                  640.0f, 1.0f);
     }
 }
 
@@ -132,9 +133,7 @@ struct GameUiRenderer::Impl final {
 
 GameUiRenderer::GameUiRenderer() noexcept = default;
 
-GameUiRenderer::~GameUiRenderer() {
-    Finalize();
-}
+GameUiRenderer::~GameUiRenderer() { Finalize(); }
 
 bool GameUiRenderer::Initialize(std::string& error) {
     Finalize();
@@ -145,10 +144,10 @@ bool GameUiRenderer::Initialize(std::string& error) {
         next->debugText = KamataEngine::DebugText::GetInstance();
 
         const uint32_t whiteTexture = KamataEngine::TextureManager::Load("white1x1.png");
-        next->background.reset(KamataEngine::Sprite::Create(
-            whiteTexture, {0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.92f}));
-        next->selection.reset(KamataEngine::Sprite::Create(
-            whiteTexture, {0.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 0.22f}));
+        next->background.reset(
+            KamataEngine::Sprite::Create(whiteTexture, {0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.92f}));
+        next->selection.reset(
+            KamataEngine::Sprite::Create(whiteTexture, {0.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 0.22f}));
         if (next->debugText == nullptr || !next->background || !next->selection) {
             error = "KamataEngine failed to create the game UI resources.";
             return false;
@@ -171,8 +170,7 @@ bool GameUiRenderer::Initialize(std::string& error) {
     return false;
 }
 
-void GameUiRenderer::Draw(
-    const GameUiScreen screen, const std::size_t selectedIndex) const {
+void GameUiRenderer::Draw(const GameUiScreen screen, const std::size_t selectedIndex) const {
     if (!impl_) {
         return;
     }
@@ -190,9 +188,8 @@ void GameUiRenderer::Draw(
 
     QueueScreenText(*impl_->debugText, screen, selectedIndex);
 
-    KamataEngine::Sprite::PreDraw(
-        KamataEngine::DirectXCommon::GetInstance()->GetCommandList(),
-        KamataEngine::Sprite::BlendMode::kNormal);
+    KamataEngine::Sprite::PreDraw(KamataEngine::DirectXCommon::GetInstance()->GetCommandList(),
+                                  KamataEngine::Sprite::BlendMode::kNormal);
     impl_->background->Draw();
     if (hasSelection) {
         impl_->selection->Draw();
@@ -201,12 +198,10 @@ void GameUiRenderer::Draw(
     KamataEngine::Sprite::PostDraw();
 }
 
-void GameUiRenderer::Finalize() noexcept {
-    impl_.reset();
-}
+void GameUiRenderer::Finalize() noexcept { impl_.reset(); }
 
-std::optional<std::size_t> GameUiRenderer::HitTest(
-    const GameUiScreen screen, const UiPoint point) const noexcept {
+std::optional<std::size_t> GameUiRenderer::HitTest(const GameUiScreen screen,
+                                                   const UiPoint point) const noexcept {
     if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
         return std::nullopt;
     }
@@ -224,8 +219,6 @@ std::size_t GameUiRenderer::GetItemCount(const GameUiScreen screen) noexcept {
     return GetItems(screen).size();
 }
 
-bool GameUiRenderer::IsInitialized() const noexcept {
-    return impl_ != nullptr;
-}
+bool GameUiRenderer::IsInitialized() const noexcept { return impl_ != nullptr; }
 
 } // namespace fps

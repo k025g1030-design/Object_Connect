@@ -5,20 +5,18 @@
 
 namespace fps {
 
-[[nodiscard]] std::optional<std::size_t> TryGetNextMapIndex(
-    std::size_t currentMapIndex, std::size_t mapCount) noexcept;
-
 enum class GameScreen {
     MainMenu,
     Controls,
     Playing,
     Paused,
+    Results,
 };
 
 enum class GameFlowAction {
     None,
-    StartGame,
-    ResetToMainMenu,
+    RequestStartGame,
+    RequestMainMenu,
     QuitGame,
 };
 
@@ -43,6 +41,9 @@ struct GameFlowResult final {
 class GameFlow final {
 public:
     [[nodiscard]] GameFlowResult Update(const GameFlowInput& input) noexcept;
+    void EnterPlaying() noexcept;
+    void EnterPaused() noexcept;
+    void EnterResults() noexcept;
     void ReturnToMainMenu() noexcept;
 
     [[nodiscard]] GameScreen GetScreen() const noexcept { return screen_; }

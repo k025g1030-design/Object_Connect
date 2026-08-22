@@ -1,6 +1,7 @@
 #include "RetroFPS/Game/Game.hpp"
 
 #include "RetroFPS/Game/GameFlow.hpp"
+#include "RetroFPS/Game/MapSceneManager.hpp"
 #include "RetroFPS/Gameplay/Player/Player.hpp"
 #include "RetroFPS/Gameplay/Player/PlayerController.hpp"
 #include "RetroFPS/Input/InputState.hpp"
@@ -9,6 +10,7 @@
 #include "RetroFPS/Rendering/GameUiRenderer.hpp"
 #include "RetroFPS/Rendering/MapGeometryGenerator.hpp"
 #include "RetroFPS/Rendering/MapRenderer.hpp"
+#include "RetroFPS/Rendering/ScreenFadeRenderer.hpp"
 #include "RetroFPS/World/GridMapLoader.hpp"
 #include "RetroFPS/World/World.hpp"
 
@@ -33,27 +35,28 @@ namespace {
         return GameUiScreen::Controls;
     case GameScreen::Paused:
         return GameUiScreen::PauseMenu;
+    case GameScreen::Results:
+        return GameUiScreen::Results;
     case GameScreen::Playing:
         return std::nullopt;
     }
     return std::nullopt;
 }
 
-[[nodiscard]] bool MousePositionChanged(
-    const MouseState& mouse,
-    const bool hasPreviousPosition,
-    const UiPoint previousPosition) noexcept {
+[[nodiscard]] bool MousePositionChanged(const MouseState& mouse, const bool hasPreviousPosition,
+                                        const UiPoint previousPosition) noexcept {
     if (!hasPreviousPosition) {
         return true;
     }
     return mouse.positionX != previousPosition.x || mouse.positionY != previousPosition.y;
 }
 
-[[nodiscard]] bool SegmentIntersectsCell(
-    const Float2 start,
-    const Float2 end,
-    const GridCoordinate cell,
-    const float cellSize) noexcept {
+[[nodiscard]] bool IsMovementHeld(const KeyboardState& keyboard) noexcept {
+    return keyboard.w || keyboard.a || keyboard.s || keyboard.d;
+}
+
+[[nodiscard]] bool SegmentIntersectsCell(const Float2 start, const Float2 end,
+                                         const GridCoordinate cell, const float cellSize) noexcept {
     const double minimumX = static_cast<double>(cell.column) * cellSize;
     const double maximumX = minimumX + cellSize;
     const double minimumZ = static_cast<double>(cell.row) * cellSize;
@@ -63,11 +66,8 @@ namespace {
     double minimumTime = 0.0;
     double maximumTime = 1.0;
 
-    const auto clipAxis = [&minimumTime, &maximumTime](
-                              const double origin,
-                              const double delta,
-                              const double minimum,
-                              const double maximum) {
+    const auto clipAxis = [&minimumTime, &maximumTime](const double origin, const double delta,
+                                                       const double minimum, const double maximum) {
         if (delta == 0.0) {
             return origin >= minimum && origin <= maximum;
         }
@@ -94,32 +94,27 @@ struct Game::Impl final {
         Player player;
         MapRenderer renderer;
 
-        void Update(
-            const PlayerController& controller,
-            const InputState& inputState,
-            const float deltaSeconds) {
-            controller.Update(
-                player,
-                inputState,
-                deltaSeconds,
-                world.GetMap(),
-                world.GetSettings());
+        void Update(const PlayerController& controller, const InputState& inputState,
+                    const float deltaSeconds) {
+            controller.Update(player, inputState, deltaSeconds, world.GetMap(),
+                              world.GetSettings());
         }
     };
 
     GameConfig config;
-    std::vector<GridMap> maps;
+    MapSceneManager mapScenes;
     std::unique_ptr<LevelSession> level;
     PlayerController playerController;
     FirstPersonCamera camera;
     GameUiRenderer ui;
+    ScreenFadeRenderer screenFade;
     InputSystem input;
     GameFlow flow;
-    std::size_t currentMapIndex = 0;
     UiPoint previousMousePosition{};
     bool hasPreviousMousePosition = false;
     bool windowWasFocused = false;
     bool firstLevelPrepared = false;
+    bool movementReleaseRequired = false;
     bool shouldQuit = false;
 
     [[nodiscard]] bool Initialize(const GameConfig& requestedConfig, std::string& error) {
@@ -129,8 +124,8 @@ struct Game::Impl final {
         }
 
         config = requestedConfig;
-        maps.clear();
-        maps.reserve(config.mapPaths.size());
+        std::vector<GridMap> loadedMaps;
+        loadedMaps.reserve(config.mapPaths.size());
         for (std::size_t index = 0; index < config.mapPaths.size(); ++index) {
             MapLoadResult mapResult = GridMapLoader::Load(config.mapPaths[index]);
             if (!mapResult) {
@@ -138,7 +133,10 @@ struct Game::Impl final {
                         config.mapPaths[index].generic_string() + "'): " + mapResult.error;
                 return false;
             }
-            maps.push_back(std::move(*mapResult.map));
+            loadedMaps.push_back(std::move(*mapResult.map));
+        }
+        if (!mapScenes.Initialize(std::move(loadedMaps), config.mapTransition, error)) {
+            return false;
         }
 
         if (!playerController.Configure(config.player, error)) {
@@ -153,42 +151,51 @@ struct Game::Impl final {
         if (!ui.Initialize(error)) {
             return false;
         }
+        if (!screenFade.Initialize(error)) {
+            return false;
+        }
         if (!input.Initialize(error)) {
             return false;
         }
         input.SetMouseCaptureEnabled(false);
 
-        // Build the first level during startup so map rendering asset failures use
-        // Game::Initialize's existing error-reporting path. It remains hidden behind
-        // the main menu until START GAME is chosen.
-        if (!LoadLevel(0, error)) {
+        // Build the first level during startup so map rendering asset failures
+        // use Game::Initialize's existing error-reporting path. It remains
+        // hidden behind the main menu until START GAME is chosen.
+        std::unique_ptr<LevelSession> firstLevel = BuildLevel(0, error);
+        if (!firstLevel) {
             return false;
         }
+        level = std::move(firstLevel);
+        SyncCamera();
         firstLevelPrepared = true;
 
         flow.ReturnToMainMenu();
         hasPreviousMousePosition = false;
         windowWasFocused = false;
+        movementReleaseRequired = false;
         shouldQuit = false;
         return true;
     }
 
     [[nodiscard]] bool PreflightMaps(std::string& error) const {
-        for (std::size_t index = 0; index < maps.size(); ++index) {
+        for (std::size_t index = 0; index < mapScenes.GetMapCount(); ++index) {
             try {
-                const World candidateWorld{maps[index], config.world};
+                const GridMap* const map = mapScenes.TryGetMap(index);
+                if (map == nullptr) {
+                    error = "Map manager lost a preloaded map definition.";
+                    return false;
+                }
+                const World candidateWorld{*map, config.world};
                 Player candidatePlayer;
-                if (!playerController.Initialize(
-                        candidatePlayer,
-                        candidateWorld.GetMap(),
-                        candidateWorld.GetSettings(),
-                        error)) {
+                if (!playerController.Initialize(candidatePlayer, candidateWorld.GetMap(),
+                                                 candidateWorld.GetSettings(), error)) {
                     error = "Map " + std::to_string(index + 1) +
                             " failed player-spawn validation: " + error;
                     return false;
                 }
-                static_cast<void>(MapGeometryGenerator::Generate(
-                    candidateWorld.GetMap(), candidateWorld.GetSettings()));
+                static_cast<void>(MapGeometryGenerator::Generate(candidateWorld.GetMap(),
+                                                                 candidateWorld.GetSettings()));
             } catch (const std::exception& exception) {
                 error = "Map " + std::to_string(index + 1) +
                         " failed preflight validation: " + exception.what();
@@ -202,24 +209,23 @@ struct Game::Impl final {
         return true;
     }
 
-    [[nodiscard]] bool LoadLevel(const std::size_t mapIndex, std::string& error) {
+    [[nodiscard]] std::unique_ptr<LevelSession> BuildLevel(const std::size_t mapIndex,
+                                                           std::string& error) {
         error.clear();
-        if (mapIndex >= maps.size()) {
+        const GridMap* const map = mapScenes.TryGetMap(mapIndex);
+        if (map == nullptr) {
             error = "Requested map index is outside the configured map list.";
-            return false;
+            return nullptr;
         }
 
         try {
             auto candidate = std::make_unique<LevelSession>();
-            candidate->world.Initialize(maps[mapIndex], config.world);
-            if (!playerController.Initialize(
-                    candidate->player,
-                    candidate->world.GetMap(),
-                    candidate->world.GetSettings(),
-                    error)) {
+            candidate->world.Initialize(*map, config.world);
+            if (!playerController.Initialize(candidate->player, candidate->world.GetMap(),
+                                             candidate->world.GetSettings(), error)) {
                 error = "Failed to initialize map " + std::to_string(mapIndex + 1) +
                         " player: " + error;
-                return false;
+                return nullptr;
             }
 
             const MapGeometry geometry = MapGeometryGenerator::Generate(
@@ -227,13 +233,10 @@ struct Game::Impl final {
             if (!candidate->renderer.Initialize(geometry, config.mapRendering, error)) {
                 error = "Failed to initialize map " + std::to_string(mapIndex + 1) +
                         " rendering: " + error;
-                return false;
+                return nullptr;
             }
 
-            level = std::move(candidate);
-            currentMapIndex = mapIndex;
-            SyncCamera();
-            return true;
+            return candidate;
         } catch (const std::exception& exception) {
             error = "Failed to create map " + std::to_string(mapIndex + 1) + ": ";
             error += exception.what();
@@ -241,42 +244,63 @@ struct Game::Impl final {
             error = "Failed to create map " + std::to_string(mapIndex + 1) +
                     " because of an unknown error.";
         }
-        return false;
+        return nullptr;
     }
 
-    void LoadLevelOrThrow(const std::size_t mapIndex) {
+    [[nodiscard]] std::unique_ptr<LevelSession> BuildLevelOrThrow(const std::size_t mapIndex) {
         std::string error;
-        if (!LoadLevel(mapIndex, error)) {
+        std::unique_ptr<LevelSession> candidate = BuildLevel(mapIndex, error);
+        if (!candidate) {
             throw std::runtime_error(error);
         }
+        return candidate;
     }
 
     void Update(const float deltaSeconds) {
-        const GameScreen screenBeforeInput = flow.GetScreen();
         const InputState inputState = input.Sample();
         const bool focusGained = !windowWasFocused && inputState.windowFocused;
+        const bool transitionLockedAtFrameStart = mapScenes.IsInputLocked();
+
+        if (transitionLockedAtFrameStart) {
+            windowWasFocused = inputState.windowFocused;
+            hasPreviousMousePosition = false;
+
+            const MapSceneUpdateResult transitionResult = mapScenes.Update(deltaSeconds);
+            if (transitionResult.commitRequested) {
+                CommitPendingScene();
+            }
+            if (transitionResult.completedThisFrame && flow.GetScreen() == GameScreen::Playing &&
+                !inputState.windowFocused) {
+                flow.EnterPaused();
+                input.SetMouseCaptureEnabled(false);
+            }
+            if (transitionResult.completedThisFrame) {
+                movementReleaseRequired = true;
+            }
+            return;
+        }
+
+        const GameScreen screenBeforeInput = flow.GetScreen();
 
         GameFlowInput flowInput{};
         if (!focusGained) {
             flowInput.previousPressed =
                 inputState.keyboard.upPressed || inputState.keyboard.wPressed;
-            flowInput.nextPressed =
-                inputState.keyboard.downPressed || inputState.keyboard.sPressed;
+            flowInput.nextPressed = inputState.keyboard.downPressed || inputState.keyboard.sPressed;
             flowInput.confirmPressed = inputState.keyboard.enterPressed;
             flowInput.escapePressed = inputState.keyboard.escapePressed;
             flowInput.mousePrimaryPressed = inputState.mouse.leftPressed;
         }
-        flowInput.focusLost = screenBeforeInput == GameScreen::Playing &&
-                              windowWasFocused && !inputState.windowFocused;
+        flowInput.focusLost = screenBeforeInput == GameScreen::Playing && windowWasFocused &&
+                              !inputState.windowFocused;
 
         const std::optional<GameUiScreen> uiScreen = ToUiScreen(screenBeforeInput);
         if (uiScreen.has_value()) {
-            const bool mouseMoved = MousePositionChanged(
-                inputState.mouse, hasPreviousMousePosition, previousMousePosition);
+            const bool mouseMoved = MousePositionChanged(inputState.mouse, hasPreviousMousePosition,
+                                                         previousMousePosition);
             if (mouseMoved || inputState.mouse.leftPressed) {
-                flowInput.hoveredItem = ui.HitTest(
-                    *uiScreen,
-                    {inputState.mouse.positionX, inputState.mouse.positionY});
+                flowInput.hoveredItem =
+                    ui.HitTest(*uiScreen, {inputState.mouse.positionX, inputState.mouse.positionY});
             }
         }
 
@@ -296,17 +320,16 @@ struct Game::Impl final {
         switch (flowResult.action) {
         case GameFlowAction::None:
             break;
-        case GameFlowAction::StartGame:
-            if (!firstLevelPrepared) {
-                LoadLevelOrThrow(0);
+        case GameFlowAction::RequestStartGame:
+            if (!mapScenes.BeginFirstMap()) {
+                throw std::logic_error("Map manager rejected the first-map transition.");
             }
-            firstLevelPrepared = false;
-            break;
-        case GameFlowAction::ResetToMainMenu:
-            level.reset();
-            currentMapIndex = 0;
-            firstLevelPrepared = false;
-            break;
+            return;
+        case GameFlowAction::RequestMainMenu:
+            if (!mapScenes.BeginMainMenu()) {
+                throw std::logic_error("Map manager rejected the main-menu transition.");
+            }
+            return;
         case GameFlowAction::QuitGame:
             shouldQuit = true;
             return;
@@ -316,10 +339,63 @@ struct Game::Impl final {
             return;
         }
 
+        InputState gameplayInput = inputState;
+        if (movementReleaseRequired) {
+            if (inputState.windowFocused && !IsMovementHeld(inputState.keyboard)) {
+                movementReleaseRequired = false;
+            }
+            gameplayInput.keyboard.w = false;
+            gameplayInput.keyboard.a = false;
+            gameplayInput.keyboard.s = false;
+            gameplayInput.keyboard.d = false;
+        }
+
         const Float2 previousPlayerPosition = level->player.GetPositionXZ();
-        level->Update(playerController, inputState, deltaSeconds);
+        level->Update(playerController, gameplayInput, deltaSeconds);
         SyncCamera();
         HandleMapExit(previousPlayerPosition);
+    }
+
+    void CommitPendingScene() {
+        const std::optional<MapSceneDestination> destination = mapScenes.GetCommitDestination();
+        if (!destination.has_value()) {
+            throw std::logic_error("Map transition requested a commit without a destination.");
+        }
+
+        switch (destination->kind) {
+        case MapSceneDestinationKind::Map: {
+            const bool canUsePreparedFirstLevel = firstLevelPrepared && level &&
+                                                  destination->mapIndex == 0 &&
+                                                  !mapScenes.GetActiveMapIndex().has_value();
+            if (!canUsePreparedFirstLevel) {
+                std::unique_ptr<LevelSession> candidate = BuildLevelOrThrow(destination->mapIndex);
+                level = std::move(candidate);
+            }
+
+            firstLevelPrepared = false;
+            SyncCamera();
+            flow.EnterPlaying();
+            input.SetMouseCaptureEnabled(true);
+            break;
+        }
+        case MapSceneDestinationKind::Results:
+            level.reset();
+            firstLevelPrepared = false;
+            flow.EnterResults();
+            input.SetMouseCaptureEnabled(false);
+            break;
+        case MapSceneDestinationKind::MainMenu:
+            level.reset();
+            firstLevelPrepared = false;
+            flow.ReturnToMainMenu();
+            input.SetMouseCaptureEnabled(false);
+            break;
+        }
+
+        hasPreviousMousePosition = false;
+        if (!mapScenes.CompleteCommit()) {
+            throw std::logic_error("Map manager rejected a completed scene commit.");
+        }
     }
 
     void HandleMapExit(const Float2 previousPlayerPosition) {
@@ -330,31 +406,19 @@ struct Game::Impl final {
         const GridMap& map = level->world.GetMap();
         const std::optional<GridCoordinate> coordinate = map.TryGetCoordinateAtPosition(
             level->player.GetPositionXZ(), level->world.GetSettings().cellSize);
-        const bool endedOnExit = coordinate.has_value() &&
-                                  map.GetTile(coordinate->row, coordinate->column) ==
-                                      TileType::NextMapExit;
-        const bool crossedExit = SegmentIntersectsCell(
-            previousPlayerPosition,
-            level->player.GetPositionXZ(),
-            map.GetNextMapExitCell(),
-            level->world.GetSettings().cellSize);
+        const bool endedOnExit =
+            coordinate.has_value() &&
+            map.GetTile(coordinate->row, coordinate->column) == TileType::NextMapExit;
+        const bool crossedExit =
+            SegmentIntersectsCell(previousPlayerPosition, level->player.GetPositionXZ(),
+                                  map.GetNextMapExitCell(), level->world.GetSettings().cellSize);
         if (!endedOnExit && !crossedExit) {
             return;
         }
 
-        const std::optional<std::size_t> nextMapIndex =
-            TryGetNextMapIndex(currentMapIndex, maps.size());
-        if (nextMapIndex.has_value()) {
-            LoadLevelOrThrow(*nextMapIndex);
-            return;
+        if (!mapScenes.BeginNextOrResults()) {
+            throw std::logic_error("Map manager rejected the exit transition.");
         }
-
-        level.reset();
-        currentMapIndex = 0;
-        firstLevelPrepared = false;
-        flow.ReturnToMainMenu();
-        input.SetMouseCaptureEnabled(false);
-        hasPreviousMousePosition = false;
     }
 
     void Draw() const {
@@ -367,6 +431,8 @@ struct Game::Impl final {
         if (uiScreen.has_value()) {
             ui.Draw(*uiScreen, flow.GetSelectedItem());
         }
+
+        screenFade.Draw(mapScenes.GetFadeOpacity());
     }
 
     void SyncCamera() {
@@ -374,22 +440,16 @@ struct Game::Impl final {
             return;
         }
         const Float2 position = level->player.GetPositionXZ();
-        camera.Sync(
-            {position.x, playerController.GetSettings().eyeHeight, position.z},
-            level->player.GetYawRadians(),
-            level->player.GetPitchRadians());
+        camera.Sync({position.x, playerController.GetSettings().eyeHeight, position.z},
+                    level->player.GetYawRadians(), level->player.GetPitchRadians());
     }
 };
 
 Game::Game() noexcept = default;
 
-Game::~Game() {
-    Finalize();
-}
+Game::~Game() { Finalize(); }
 
-bool Game::Initialize(std::string& error) {
-    return Initialize(GameConfig{}, error);
-}
+bool Game::Initialize(std::string& error) { return Initialize(GameConfig{}, error); }
 
 bool Game::Initialize(const GameConfig& config, std::string& error) {
     Finalize();
@@ -425,16 +485,10 @@ void Game::Draw() const {
     }
 }
 
-void Game::Finalize() noexcept {
-    impl_.reset();
-}
+void Game::Finalize() noexcept { impl_.reset(); }
 
-bool Game::ShouldQuit() const noexcept {
-    return impl_ && impl_->shouldQuit;
-}
+bool Game::ShouldQuit() const noexcept { return impl_ && impl_->shouldQuit; }
 
-bool Game::IsInitialized() const noexcept {
-    return impl_ != nullptr;
-}
+bool Game::IsInitialized() const noexcept { return impl_ != nullptr; }
 
 } // namespace fps

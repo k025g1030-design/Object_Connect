@@ -11,6 +11,7 @@ enum class GameUiScreen {
     MainMenu,
     Controls,
     PauseMenu,
+    Results,
 };
 
 struct UiPoint final {
@@ -20,7 +21,7 @@ struct UiPoint final {
 
 // ASCII menu presentation and mouse hit testing. Item indices are ordered as drawn:
 // MainMenu = Start, Controls, Exit; Controls = Back;
-// PauseMenu = Resume, Main Menu, Exit Game.
+// PauseMenu = Resume, Main Menu, Exit Game; Results = Main Menu.
 class GameUiRenderer final {
 public:
     GameUiRenderer() noexcept;
@@ -35,8 +36,8 @@ public:
     void Draw(GameUiScreen screen, std::size_t selectedIndex) const;
     void Finalize() noexcept;
 
-    [[nodiscard]] std::optional<std::size_t> HitTest(
-        GameUiScreen screen, UiPoint point) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> HitTest(GameUiScreen screen,
+                                                     UiPoint point) const noexcept;
     [[nodiscard]] static std::size_t GetItemCount(GameUiScreen screen) noexcept;
     [[nodiscard]] bool IsInitialized() const noexcept;
 

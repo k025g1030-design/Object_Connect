@@ -40,8 +40,8 @@ private:
     int failureCount_ = 0;
 };
 
-[[nodiscard]] inline bool NearlyEqual(
-    const float left, const float right, const float tolerance = 0.0001f) noexcept {
+[[nodiscard]] inline bool NearlyEqual(const float left, const float right,
+                                      const float tolerance = 0.0001f) noexcept {
     return std::fabs(left - right) <= tolerance;
 }
 
@@ -50,6 +50,7 @@ void RunCollisionTests(TestContext& context);
 void RunMapGeometryTests(TestContext& context);
 void RunPlayerControllerTests(TestContext& context);
 void RunGameFlowTests(TestContext& context);
+void RunMapSceneManagerTests(TestContext& context);
 void RunCampaignResourceTests(TestContext& context);
 
 } // namespace fps::tests

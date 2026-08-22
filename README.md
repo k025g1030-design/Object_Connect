@@ -8,8 +8,8 @@ C++20 と KamataEngine で構築した 2.5D 一人称視点 FPS の MVP です�
 
 - テキストの `#`、`.`、`P`、`E`、`D` を検証済み `TileType` に変換する
 - 通行可能セルと壁セルの境界に基づいて床と壁面を生成する
-- キーボード／マウス対応の開始メニュー、操作説明、ポーズメニュー
-- 順序付きの複数マップと、白い仮ドアによる次マップへの遷移
+- キーボード／マウス対応の開始メニュー、操作説明、ポーズメニュー、`Results` シーン
+- 順序付きの複数マップ、白い仮ドア、公開 `MapSceneManager` による黒い scene fade
 - WASD による水平移動
 - マウスによる yaw／pitch の視点操作（pitch は XZ 移動に影響しない）
 - プレイヤーを表す円とグリッド壁の 2D コリジョン、壁沿いの移動、移動の分割によるすり抜け防止
@@ -84,22 +84,34 @@ CLion でこのディレクトリを開き、x64 Visual Studio ツールチェ�
 - マウスの垂直移動：Pitch
 - `Esc`：プレイ中はポーズ、ポーズ中は再開、操作説明では戻る
 
+最後のマップを完了すると、独立した `Results` シーンへ切り替わります。`Results` には中央の
+`MAIN MENU` ボタンだけを表示し、`Enter` または左クリックでメインメニューへ戻ります。
+`Results` では `Esc` は何も行いません。
+
 カーソルはプレイ中だけロックして非表示にし、メニュー、操作説明、ポーズ中は解放して表示します。
 プレイ中にフォーカスを失うか最小化すると自動的にポーズし、再びフォーカスを取得しても自動再開はしません。
 ASCII UI と mouse hit-test は 1280×720 の同じ座標系を使うため、ゲームウィンドウの resize は無効です。
 Input 層は物理キー、マウス、フォーカスと capture 状態のみを報告し、メニューや WASD の意味は上位層が解釈します。
 
+開始、次マップ、最終マップから `Results`、`Results`／ポーズからメインメニューへの切り替えは、
+同じ公開 `MapSceneManager` を使い、標準で 0.4 秒 fade-out、0.4 秒 fade-in します。
+`Results` への全黒 commit 時に active level は破棄され、`Results` は 3D level を保持しません。
+切り替え中はプレイヤー、カメラと将来の全 simulation が停止し、Esc や
+メニュー入力も破棄されます。切り替え中にフォーカスを失っても animation は継続し、完了時にも
+未フォーカスで遷移先が gameplay の場合だけ、その後 Paused になります。
+
 ## マップ形式
 
 元のマップは `NoviceResources/maps/mvp_map.txt` と `mvp_map_02.txt` にあり、ビルド後は
-同じ相対パスで `Resources/maps/` にデプロイされます。`GameConfig::mapPaths` の順序が進行順です。
+同じ相対パスで `Resources/maps/` にデプロイされます。`GameConfig::mapPaths` の順序が進行順で、
+`GameConfig::mapTransition` が公開 scene transition の fade 時間を設定します。
 
 ```text
 # = 通行不可の壁
 . = 通行可能な空間
 P = プレイヤーのスポーン位置（必ず 1 つだけ）
 E = 将来の敵スポーン位置（0 個以上）
-D = 次マップへの出口（必ず 1 つだけ）
+D = 次マップへの出口。最終マップでは Results への出口（必ず 1 つだけ）
 ```
 
 すべての行は同じ幅で、空であってはなりません。`P`、`E`、`D` は通行可能で、未定義文字は拒否されます。
@@ -137,9 +149,10 @@ ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 ```
 
 テストソースは責務ごとに `World`、`Collision`、`Rendering.MapGeometry`、
-`Gameplay.PlayerController`、`Game.Flow`、`Game.CampaignResources` の各テストスイートに分かれています。マップの enum 解析／読み込み／エラー座標、
+`Gameplay.PlayerController`、`Game.Flow`、`Game.MapSceneManager`、`Game.CampaignResources` の各テストスイートに分かれています。マップの enum 解析／読み込み／エラー座標、
 World の所有権／設定、マップ形状の生成、円／グリッドのコリジョン、壁沿いの移動、
-すり抜け防止、白い出口 geometry、平面移動、Player の設定、メニュー／ポーズ状態遷移、
+すり抜け防止、白い出口 geometry、平面移動、Player の設定、メニュー／ポーズ／Results の状態遷移、
+fade phase／opacity／commit barrier／input lock と最終マップから Results への progression、
 正式な 2 map の P/E/D 可達性を
 網羅しています。これらは GPU やウィンドウを必要としない契約テストです。
 
@@ -149,7 +162,7 @@ World の所有権／設定、マップ形状の生成、円／グリッドの�
 SHA-256 は一致しています。
 
 自動化環境では非表示の DirectX バックバッファを確実にキャプチャできないため、床／壁面／白い出口の視認性、
-起動、メニューの hover/click、WASD、マウス視点、ポーズとカーソル capture は、引き続き手動での実行時回帰テストが
+起動、メニュー／Results の hover/click、WASD、マウス視点、ポーズ、scene fade とカーソル capture は、引き続き手動での実行時回帰テストが
 必要です。ローカルでは Ninja プリセットの構成とビルドグラフを検証済みです。この Codex Windows
 実行環境では Ninja が MSVC の子プロセスを待機する際に停止するため、CLion/Ninja の完全なリンクが
 成功したとはしていません。Visual Studio ジェネレーターの Debug／Release ビルドは、この問題の影響を受けません。
@@ -164,15 +177,15 @@ include/RetroFPS/             公開 API
   World/                      GridMap、ローダー、World、設定
   Collision/                  XZ 上の円／グリッド照会
   Gameplay/Player/            Player の状態、設定、コントローラー
-  Rendering/                  Camera、マップ形状、3D／ASCII UI レンダラーの契約
-  Game/                       Game、構成設定、engine-independent な GameFlow
+  Rendering/                  Camera、マップ形状、3D／ASCII UI／screen fade の契約
+  Game/                       Game、構成設定、GameFlow、公開 MapSceneManager
 src/                          非公開実装とプラットフォーム固有の詳細
 tests/
   World/                      マップ読み込みと World の所有権／設定
   Collision/                  グリッドコリジョンと平面移動
   Rendering/                  CPU によるマップ形状生成
   Gameplay/                   Player の設定／コントローラーと生入力
-  Game/                       メニュー／ポーズ状態遷移
+  Game/                       メニュー／ポーズ／Results／Map scene transition
 Docs/Architecture.md          依存関係、所有権、拡張ガイド
 NoviceResources/              KamataEngine 互換の元リソース
 ```

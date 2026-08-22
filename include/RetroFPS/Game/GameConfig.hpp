@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RetroFPS/Game/MapSceneManager.hpp"
 #include "RetroFPS/Gameplay/Player/PlayerSettings.hpp"
 #include "RetroFPS/Rendering/CameraSettings.hpp"
 #include "RetroFPS/Rendering/MapRenderAssets.hpp"
@@ -21,6 +22,7 @@ struct GameConfig final {
     PlayerSettings player{};
     CameraSettings camera{};
     MapRenderAssets mapRendering{};
+    MapSceneTransitionSettings mapTransition{};
 };
 
 } // namespace fps
