@@ -1,0 +1,67 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2026-x64",
+      "displayName": "Visual Studio 2026 - x64",
+      "description": "Configure Object_FPS with the Visual Studio 2026 generator.",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2026-x64",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+      }
+    },
+    {
+      "name": "clion-debug",
+      "displayName": "CLion / Ninja - Debug",
+      "description": "Debug profile for CLion with an x64 Visual Studio toolchain.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/clion-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
+    },
+    {
+      "name": "clion-release",
+      "displayName": "CLion / Ninja - Release",
+      "description": "Release profile for CLion with an x64 Visual Studio toolchain.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/clion-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "displayName": "Build Debug",
+      "configurePreset": "vs2026-x64",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release",
+      "displayName": "Build Release",
+      "configurePreset": "vs2026-x64",
+      "configuration": "Release"
+    },
+    {
+      "name": "clion-debug",
+      "displayName": "Build with CLion / Ninja - Debug",
+      "configurePreset": "clion-debug"
+    },
+    {
+      "name": "clion-release",
+      "displayName": "Build with CLion / Ninja - Release",
+      "configurePreset": "clion-release"
+    }
+  ]
+}

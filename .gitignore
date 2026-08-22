@@ -1,0 +1,12 @@
+/.vs/
+/.run/
+/.idea/
+/Docs/
+/build/
+/cmake-build-*/
+/out/
+/target/
+/*.obj
+CMakeUserPresets.json
+*.user
+*.ps1
