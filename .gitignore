@@ -4,6 +4,7 @@
 /build/
 /cmake-build-*/
 /out/
+/Docs/
 /target/
 /*.obj
 CMakeUserPresets.json
