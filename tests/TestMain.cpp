@@ -16,14 +16,23 @@ struct TestSuite {
 
 int main() {
     fps::tests::TestContext context;
-    constexpr std::array<TestSuite, 7> suites = {{
+    constexpr std::array<TestSuite, 16> suites = {{
         {"World", fps::tests::RunWorldTests},
         {"Collision", fps::tests::RunCollisionTests},
+        {"Collision.Combat", fps::tests::RunCombatCollisionTests},
         {"Rendering.MapGeometry", fps::tests::RunMapGeometryTests},
+        {"Rendering.EnemyBillboard", fps::tests::RunEnemyBillboardTests},
         {"Gameplay.PlayerController", fps::tests::RunPlayerControllerTests},
+        {"Gameplay.PlayerCombatState", fps::tests::RunPlayerCombatStateTests},
+        {"Gameplay.WeaponController", fps::tests::RunWeaponControllerTests},
+        {"Gameplay.ProjectileSystem", fps::tests::RunProjectileSystemTests},
+        {"Gameplay.EnemySystem", fps::tests::RunEnemySystemTests},
+        {"Gameplay.EnemySpawnDirector", fps::tests::RunEnemySpawnDirectorTests},
+        {"Data.GameDataCatalog", fps::tests::RunGameDataCatalogTests},
         {"Game.Flow", fps::tests::RunGameFlowTests},
         {"Game.MapSceneManager", fps::tests::RunMapSceneManagerTests},
         {"Game.CampaignResources", fps::tests::RunCampaignResourceTests},
+        {"Game.CampaignRunState", fps::tests::RunCampaignRunStateTests},
     }};
 
     for (const TestSuite& suite : suites) {

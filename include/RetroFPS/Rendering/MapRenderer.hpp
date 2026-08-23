@@ -29,9 +29,11 @@ public:
     // Door instances use the configured model with a white texture override;
     // floor and wall instances use their model materials.
     void Draw(const KamataEngine::Camera& camera) const;
+    void SetDoorVisible(bool visible) noexcept;
     void Finalize() noexcept;
 
     [[nodiscard]] bool IsInitialized() const noexcept;
+    [[nodiscard]] bool IsDoorVisible() const noexcept;
 
 private:
     struct Impl;

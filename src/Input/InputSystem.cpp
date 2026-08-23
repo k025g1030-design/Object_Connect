@@ -53,6 +53,7 @@ InputState InputSystem::Sample() noexcept {
     state.keyboard.sPressed = input->TriggerKey(static_cast<BYTE>(DIK_S));
     state.keyboard.upPressed = input->TriggerKey(static_cast<BYTE>(DIK_UP));
     state.keyboard.downPressed = input->TriggerKey(static_cast<BYTE>(DIK_DOWN));
+    state.keyboard.rPressed = input->TriggerKey(static_cast<BYTE>(DIK_R));
     state.keyboard.enterPressed =
         input->TriggerKey(static_cast<BYTE>(DIK_RETURN)) ||
         input->TriggerKey(static_cast<BYTE>(DIK_NUMPADENTER));
@@ -61,6 +62,7 @@ InputState InputSystem::Sample() noexcept {
     const KamataEngine::Vector2& mousePosition = input->GetMousePosition();
     state.mouse.positionX = mousePosition.x;
     state.mouse.positionY = mousePosition.y;
+    state.mouse.leftHeld = input->IsPressMouse(0);
     state.mouse.leftPressed = input->IsTriggerMouse(0);
 
     if (!state.mouse.captured || mouseCapture_->WasCapturedThisFrame()) {

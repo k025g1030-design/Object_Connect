@@ -12,8 +12,20 @@ bool ValidatePlayerSettings(
         error = "player eye height must be finite and non-negative";
         return false;
     }
+    if (!std::isfinite(settings.bodyHeight) || settings.bodyHeight <= 0.0f) {
+        error = "player body height must be finite and greater than zero";
+        return false;
+    }
     if (!std::isfinite(settings.collisionRadius) || settings.collisionRadius <= 0.0f) {
         error = "player collision radius must be finite and greater than zero";
+        return false;
+    }
+    if (settings.bodyHeight < settings.collisionRadius * 2.0f) {
+        error = "player body height must not be smaller than the collision diameter";
+        return false;
+    }
+    if (settings.eyeHeight > settings.bodyHeight) {
+        error = "player eye height must not exceed the body height";
         return false;
     }
     if (!std::isfinite(settings.movementSpeed) || settings.movementSpeed < 0.0f) {

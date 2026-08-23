@@ -94,6 +94,9 @@ set(_required_project_resources
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/TerrainPS.hlsl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/maps/mvp_map.txt"
     "${PROJECT_RESOURCE_SOURCE_DIR}/maps/mvp_map_02.txt"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/data/enemies.csv"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/data/weapons.csv"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/data/levels.csv"
     "${PROJECT_RESOURCE_SOURCE_DIR}/cube/cube.obj"
     "${PROJECT_RESOURCE_SOURCE_DIR}/cube/cube.mtl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/cube/cube.jpg"
@@ -193,6 +196,16 @@ configure_object_fps_target(retrofps_game_flow)
 add_library(RetroFPS::GameFlow ALIAS retrofps_game_flow)
 
 add_library(
+    retrofps_campaign_state STATIC
+    src/Game/CampaignRunState.cpp
+    include/RetroFPS/Game/CampaignRunState.hpp
+)
+target_link_libraries(retrofps_campaign_state PUBLIC retrofps_public_options)
+target_compile_definitions(retrofps_campaign_state PRIVATE NOMINMAX)
+configure_object_fps_target(retrofps_campaign_state)
+add_library(RetroFPS::CampaignState ALIAS retrofps_campaign_state)
+
+add_library(
     retrofps_world STATIC
     src/World/GridMap.cpp
     src/World/GridMapLoader.cpp
@@ -209,6 +222,18 @@ configure_object_fps_target(retrofps_world)
 add_library(RetroFPS::World ALIAS retrofps_world)
 
 add_library(
+    retrofps_data STATIC
+    src/Data/Csv.cpp
+    src/Data/GameData.cpp
+    include/RetroFPS/Data/Csv.hpp
+    include/RetroFPS/Data/GameData.hpp
+)
+target_link_libraries(retrofps_data PUBLIC retrofps_world)
+target_compile_definitions(retrofps_data PRIVATE NOMINMAX)
+configure_object_fps_target(retrofps_data)
+add_library(RetroFPS::Data ALIAS retrofps_data)
+
+add_library(
     retrofps_map_scene STATIC
     src/Game/MapSceneManager.cpp
     include/RetroFPS/Game/MapSceneManager.hpp
@@ -220,7 +245,9 @@ add_library(RetroFPS::MapScene ALIAS retrofps_map_scene)
 
 add_library(
     retrofps_collision STATIC
+    src/Collision/CombatCollision.cpp
     src/Collision/GridCollision.cpp
+    include/RetroFPS/Collision/CombatCollision.hpp
     include/RetroFPS/Collision/GridCollision.hpp
 )
 target_link_libraries(retrofps_collision PUBLIC retrofps_math retrofps_world)
@@ -230,14 +257,21 @@ add_library(RetroFPS::Collision ALIAS retrofps_collision)
 
 add_library(
     retrofps_gameplay STATIC
+    src/Gameplay/Combat/ProjectileSystem.cpp
     src/Gameplay/Player/PlanarMovement.cpp
     src/Gameplay/Player/Player.cpp
+    src/Gameplay/Player/PlayerCombatState.cpp
     src/Gameplay/Player/PlayerController.cpp
     src/Gameplay/Player/PlayerSettings.cpp
+    src/Gameplay/Weapon/WeaponController.cpp
+    include/RetroFPS/Gameplay/Combat/ProjectileSystem.hpp
     include/RetroFPS/Gameplay/Player/PlanarMovement.hpp
     include/RetroFPS/Gameplay/Player/Player.hpp
+    include/RetroFPS/Gameplay/Player/PlayerCombatState.hpp
     include/RetroFPS/Gameplay/Player/PlayerController.hpp
     include/RetroFPS/Gameplay/Player/PlayerSettings.hpp
+    include/RetroFPS/Gameplay/Weapon/WeaponController.hpp
+    include/RetroFPS/Gameplay/Weapon/WeaponState.hpp
     include/RetroFPS/Input/InputState.hpp
 )
 target_link_libraries(
@@ -247,10 +281,30 @@ target_link_libraries(
         retrofps_input_contract
         retrofps_world
         retrofps_collision
+        retrofps_data
 )
 target_compile_definitions(retrofps_gameplay PRIVATE NOMINMAX)
 configure_object_fps_target(retrofps_gameplay)
 add_library(RetroFPS::Gameplay ALIAS retrofps_gameplay)
+
+add_library(
+    retrofps_enemy_ai STATIC
+    src/Gameplay/Enemy/EnemySpawnDirector.cpp
+    src/Gameplay/Enemy/EnemySystem.cpp
+    include/RetroFPS/Gameplay/Enemy/EnemySpawnDirector.hpp
+    include/RetroFPS/Gameplay/Enemy/EnemySystem.hpp
+)
+target_link_libraries(
+    retrofps_enemy_ai
+    PUBLIC
+        retrofps_math
+        retrofps_world
+        retrofps_collision
+        retrofps_data
+)
+target_compile_definitions(retrofps_enemy_ai PRIVATE NOMINMAX)
+configure_object_fps_target(retrofps_enemy_ai)
+add_library(RetroFPS::EnemyAI ALIAS retrofps_enemy_ai)
 
 add_library(
     retrofps_map_geometry STATIC
@@ -282,15 +336,22 @@ add_library(RetroFPS::Input ALIAS retrofps_input)
 
 add_library(
     retrofps_rendering STATIC
+    src/Rendering/EnemyBillboardRenderer.cpp
     src/Rendering/FirstPersonCamera.cpp
+    src/Rendering/GameHudRenderer.cpp
     src/Rendering/GameUiRenderer.cpp
     src/Rendering/MapRenderer.cpp
+    src/Rendering/ProjectileRenderer.cpp
     src/Rendering/ScreenFadeRenderer.cpp
     include/RetroFPS/Rendering/CameraSettings.hpp
+    include/RetroFPS/Rendering/EnemyBillboardRenderer.hpp
+    include/RetroFPS/Rendering/EnemyRenderSettings.hpp
     include/RetroFPS/Rendering/FirstPersonCamera.hpp
+    include/RetroFPS/Rendering/GameHudRenderer.hpp
     include/RetroFPS/Rendering/GameUiRenderer.hpp
     include/RetroFPS/Rendering/MapRenderAssets.hpp
     include/RetroFPS/Rendering/MapRenderer.hpp
+    include/RetroFPS/Rendering/ProjectileRenderer.hpp
     include/RetroFPS/Rendering/ScreenFadeRenderer.hpp
 )
 target_include_directories(
@@ -299,7 +360,7 @@ target_include_directories(
 )
 target_link_libraries(
     retrofps_rendering
-    PUBLIC retrofps_math retrofps_map_geometry
+    PUBLIC retrofps_math retrofps_map_geometry retrofps_enemy_ai retrofps_gameplay
     PRIVATE KamataEngine::KamataEngine DirectXTex::DirectXTex d3dcompiler
 )
 target_compile_definitions(
@@ -319,6 +380,8 @@ target_link_libraries(
     retrofps_game
     PUBLIC
         retrofps_gameplay
+        retrofps_campaign_state
+        retrofps_enemy_ai
         retrofps_game_flow
         retrofps_input
         retrofps_map_scene
@@ -370,6 +433,7 @@ set_target_properties(
     retrofps_map_scene
     retrofps_game_flow
     retrofps_gameplay
+    retrofps_enemy_ai
     retrofps_map_geometry
     retrofps_input
     retrofps_rendering
@@ -429,11 +493,20 @@ if(BUILD_TESTING)
         tests/TestSupport.hpp
         tests/World/WorldTests.cpp
         tests/Collision/CollisionTests.cpp
+        tests/Collision/CombatCollisionTests.cpp
         tests/Rendering/MapGeometryTests.cpp
+        tests/Rendering/EnemyBillboardTests.cpp
         tests/Gameplay/PlayerControllerTests.cpp
+        tests/Gameplay/PlayerCombatStateTests.cpp
+        tests/Gameplay/WeaponControllerTests.cpp
+        tests/Gameplay/ProjectileSystemTests.cpp
+        tests/Gameplay/EnemySystemTests.cpp
+        tests/Gameplay/EnemySpawnDirectorTests.cpp
+        tests/Data/GameDataCatalogTests.cpp
         tests/Game/GameFlowTests.cpp
         tests/Game/MapSceneManagerTests.cpp
         tests/Game/CampaignResourceTests.cpp
+        tests/Game/CampaignRunStateTests.cpp
     )
     target_include_directories(
         Object_FPS_CoreTests
@@ -443,9 +516,12 @@ if(BUILD_TESTING)
         Object_FPS_CoreTests
         PRIVATE
             retrofps_world
+            retrofps_data
             retrofps_collision
             retrofps_gameplay
+            retrofps_enemy_ai
             retrofps_game_flow
+            retrofps_campaign_state
             retrofps_map_scene
             retrofps_map_geometry
     )

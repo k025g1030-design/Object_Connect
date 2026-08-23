@@ -3,6 +3,7 @@
 #include "RetroFPS/Collision/GridCollision.hpp"
 #include "RetroFPS/World/GridMapLoader.hpp"
 
+#include <array>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -37,13 +38,13 @@ void TestCircleGridQueries(TestContext& context) {
         GridCollision::OverlapsSolid(singleCell, {1.5f, 1.5f}, 0.51f),
         "solid cells surrounding a walkable cell block penetration");
 
-    const GridMap markerMap = ParseValidMap(context, "P.ED");
+    const GridMap markerMap = ParseValidMap(context, "P.MD");
     context.Expect(
         !GridCollision::OverlapsSolid(markerMap, {0.5f, 0.5f}, 0.2f),
         "player spawn is non-solid");
     context.Expect(
         !GridCollision::OverlapsSolid(markerMap, {2.5f, 0.5f}, 0.2f),
-        "monster spawn is non-solid");
+        "enemy spawn is non-solid");
     context.Expect(
         !GridCollision::OverlapsSolid(markerMap, {3.5f, 0.5f}, 0.2f),
         "next-map exit is non-solid");
@@ -57,6 +58,19 @@ void TestCircleGridQueries(TestContext& context) {
     context.Expect(
         GridCollision::OverlapsSolid(cornerMap, {1.85f, 1.85f}, 0.25f),
         "nearest-point test detects a circle against a solid-cell corner");
+}
+
+void TestCircleObstacleQueries(TestContext& context) {
+    const CircleObstacle obstacle{{2.0f, 1.5f}, 0.3f};
+    context.Expect(
+        !GridCollision::OverlapsCircle({1.5f, 1.5f}, 0.2f, obstacle),
+        "exactly tangent circles do not overlap");
+    context.Expect(
+        GridCollision::OverlapsCircle({1.5001f, 1.5f}, 0.2f, obstacle),
+        "circle penetration is detected");
+    context.Expect(
+        !GridCollision::OverlapsCircle({1.4f, 1.5f}, 0.2f, obstacle),
+        "separated circles do not overlap");
 }
 
 void TestMovementResolution(TestContext& context) {
@@ -104,6 +118,94 @@ void TestMovementResolution(TestContext& context) {
         "corner-resolved movement remains outside solid cells");
 }
 
+void TestDynamicCircleMovement(TestContext& context) {
+    const GridMap openMap = ParseValidMap(
+        context,
+        "###########\n"
+        "#P.......D#\n"
+        "#.........#\n"
+        "#.........#\n"
+        "###########");
+    const std::array blockers{
+        CircleObstacle{{4.5f, 2.5f}, 0.3f},
+        CircleObstacle{{7.0f, 2.5f}, 0.4f},
+    };
+
+    const Float2 highSpeed = GridCollision::MoveCircle(
+        openMap, {1.5f, 2.5f}, {8.0f, 0.0f}, 0.2f, blockers);
+    context.Expect(
+        NearlyEqual(highSpeed.x, 4.0f, 0.0002f),
+        "swept circle stops at the nearest blocker without tunneling");
+    context.Expect(
+        !GridCollision::OverlapsCircle(highSpeed, 0.2f, blockers.front()),
+        "swept circle result does not penetrate the blocker");
+
+    const std::array tangentBlocker{
+        CircleObstacle{{4.5f, 2.5f}, 0.3f},
+    };
+    const Float2 inward = GridCollision::MoveCircle(
+        openMap, {4.0f, 2.5f}, {1.0f, 0.0f}, 0.2f, tangentBlocker);
+    context.Expect(
+        NearlyEqual(inward.x, 4.0f) && NearlyEqual(inward.z, 2.5f),
+        "movement into a tangent blocker is rejected");
+
+    const Float2 outward = GridCollision::MoveCircle(
+        openMap, {4.0f, 2.5f}, {-1.0f, 0.0f}, 0.2f, tangentBlocker);
+    context.Expect(
+        NearlyEqual(outward.x, 3.0f) && NearlyEqual(outward.z, 2.5f),
+        "movement away from a tangent blocker is allowed");
+
+    const Float2 tangential = GridCollision::MoveCircle(
+        openMap, {4.0f, 2.5f}, {0.0f, 1.0f}, 0.2f, tangentBlocker);
+    context.Expect(
+        NearlyEqual(tangential.x, 4.0f) && NearlyEqual(tangential.z, 3.5f),
+        "movement tangent to a circle is allowed");
+
+    const Float2 slide = GridCollision::MoveCircle(
+        openMap, {3.5f, 2.5f}, {2.0f, 1.0f}, 0.2f, tangentBlocker);
+    context.Expect(
+        slide.x > 4.0f && slide.z > 3.0f,
+        "axis resolution slides around a circular blocker");
+    context.Expect(
+        !GridCollision::OverlapsCircle(slide, 0.2f, tangentBlocker.front()),
+        "circular sliding remains outside the blocker");
+
+    context.ExpectThrows<std::invalid_argument>(
+        [&openMap, &tangentBlocker] {
+            static_cast<void>(GridCollision::MoveCircle(
+                openMap,
+                {4.25f, 2.5f},
+                {-1.0f, 0.0f},
+                0.2f,
+                tangentBlocker));
+        },
+        "movement rejects a start that overlaps a dynamic blocker");
+}
+
+void TestWallsAndDynamicCircles(TestContext& context) {
+    const GridMap map = ParseValidMap(
+        context,
+        "#######\n"
+        "#P#..D#\n"
+        "#.#...#\n"
+        "#.....#\n"
+        "#######");
+    const std::array blocker{
+        CircleObstacle{{1.5f, 2.5f}, 0.5f},
+    };
+    const Float2 blocked = GridCollision::MoveCircle(
+        map, {1.5f, 1.5f}, {2.0f, 2.0f}, 0.2f, blocker);
+    context.Expect(
+        blocked.x <= 1.8001f && blocked.z < 2.0f,
+        "a wall and a circle can jointly block both movement axes");
+    context.Expect(
+        !GridCollision::OverlapsSolid(map, blocked, 0.2f),
+        "joint wall and circle resolution remains outside the wall");
+    context.Expect(
+        !GridCollision::OverlapsCircle(blocked, 0.2f, blocker.front()),
+        "joint wall and circle resolution remains outside the circle");
+}
+
 void TestInvalidCollisionArguments(TestContext& context) {
     const GridMap map = ParseValidMap(context, "PD");
     const float infinity = (std::numeric_limits<float>::infinity)();
@@ -129,6 +231,32 @@ void TestInvalidCollisionArguments(TestContext& context) {
                 GridCollision::MoveCircle(map, {0.5f, 0.5f}, {nan, 0.0f}, 0.2f));
         },
         "movement rejects a non-finite displacement");
+
+    context.ExpectThrows<std::invalid_argument>(
+        [nan] {
+            static_cast<void>(GridCollision::OverlapsCircle(
+                {0.5f, 0.5f}, 0.2f, {{nan, 0.5f}, 0.2f}));
+        },
+        "circle query rejects a non-finite obstacle center");
+    context.ExpectThrows<std::invalid_argument>(
+        [] {
+            static_cast<void>(GridCollision::OverlapsCircle(
+                {0.5f, 0.5f}, 0.2f, {{1.0f, 0.5f}, 0.0f}));
+        },
+        "circle query rejects a non-positive obstacle radius");
+    context.ExpectThrows<std::invalid_argument>(
+        [&map, infinity] {
+            const std::array invalidBlocker{
+                CircleObstacle{{1.0f, 0.5f}, infinity},
+            };
+            static_cast<void>(GridCollision::MoveCircle(
+                map,
+                {0.5f, 0.5f},
+                {0.0f, 0.0f},
+                0.2f,
+                invalidBlocker));
+        },
+        "movement validates dynamic blockers even without displacement");
 }
 
 void TestExtremeFiniteValues(TestContext& context) {
@@ -157,7 +285,10 @@ void TestExtremeFiniteValues(TestContext& context) {
 
 void RunCollisionTests(TestContext& context) {
     TestCircleGridQueries(context);
+    TestCircleObstacleQueries(context);
     TestMovementResolution(context);
+    TestDynamicCircleMovement(context);
+    TestWallsAndDynamicCircles(context);
     TestInvalidCollisionArguments(context);
     TestExtremeFiniteValues(context);
 }

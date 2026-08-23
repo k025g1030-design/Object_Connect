@@ -1,0 +1,3 @@
+level_id,level_name,map_path,next_level_id,ranged_enemy_count,melee_enemy_count,active_enemy_limit,clear_kill_count
+room_01,ROOM 1,maps/mvp_map.txt,room_02,2,2,2,3
+room_02,ROOM 2,maps/mvp_map_02.txt,,3,3,3,5

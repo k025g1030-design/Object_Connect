@@ -1,0 +1,2 @@
+weapon_id,damage,magazine_size,reserve_ammo,recoil,automatic,fire_interval_seconds,reload_seconds,texture_name
+starter_pistol,25,12,48,1.5,false,0.20,1.50,white1x1.png

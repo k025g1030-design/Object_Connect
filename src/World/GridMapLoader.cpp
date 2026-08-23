@@ -37,15 +37,17 @@ public:
         return TileType::Wall;
     case 'P':
         return TileType::PlayerSpawn;
-    case 'E':
-        return TileType::MonsterSpawn;
+    case 'M':
+        return TileType::MeleeEnemySpawn;
+    case 'R':
+        return TileType::RangedEnemySpawn;
     case 'D':
         return TileType::NextMapExit;
     default:
         throw GridMapParseError(
             line,
             column,
-            "invalid cell; expected '#', '.', 'P', 'E', or 'D'");
+            "invalid cell; expected '#', '.', 'P', 'M', 'R', or 'D'");
     }
 }
 
@@ -59,7 +61,7 @@ MapLoadResult GridMapLoader::Parse(const std::string_view text) {
 
         std::vector<TileType> tiles;
         std::optional<GridCoordinate> playerSpawnCell;
-        std::vector<GridCoordinate> monsterSpawnCells;
+        std::vector<EnemySpawnPoint> enemySpawnPoints;
         std::optional<GridCoordinate> nextMapExitCell;
         std::size_t expectedWidth = 0;
         std::size_t height = 0;
@@ -91,8 +93,11 @@ MapLoadResult GridMapLoader::Parse(const std::string_view text) {
                     }
                     playerSpawnCell = coordinate;
                     break;
-                case TileType::MonsterSpawn:
-                    monsterSpawnCells.push_back(coordinate);
+                case TileType::MeleeEnemySpawn:
+                    enemySpawnPoints.push_back({EnemyKind::Melee, coordinate});
+                    break;
+                case TileType::RangedEnemySpawn:
+                    enemySpawnPoints.push_back({EnemyKind::Ranged, coordinate});
                     break;
                 case TileType::NextMapExit:
                     if (nextMapExitCell.has_value()) {
@@ -149,7 +154,7 @@ MapLoadResult GridMapLoader::Parse(const std::string_view text) {
                 expectedWidth,
                 height,
                 *playerSpawnCell,
-                std::move(monsterSpawnCells),
+                std::move(enemySpawnPoints),
                 *nextMapExitCell),
             {}};
     } catch (const std::exception& error) {

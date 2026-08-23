@@ -11,6 +11,7 @@ struct KeyboardState final {
     bool sPressed = false;
     bool upPressed = false;
     bool downPressed = false;
+    bool rPressed = false;
     bool enterPressed = false;
     bool escapePressed = false;
 };
@@ -20,6 +21,7 @@ struct MouseState final {
     float positionY = 0.0f;
     float deltaX = 0.0f;
     float deltaY = 0.0f;
+    bool leftHeld = false;
     bool leftPressed = false;
     bool captured = false;
 };

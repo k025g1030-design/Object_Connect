@@ -111,6 +111,7 @@ struct MapRenderer::Impl {
     std::unique_ptr<KamataEngine::Model> wallModel;
     std::unique_ptr<KamataEngine::Model> doorModel;
     std::uint32_t doorTextureHandle = 0;
+    bool doorVisible = true;
     std::vector<RenderInstance> objects;
 };
 
@@ -211,6 +212,9 @@ void MapRenderer::Draw(const KamataEngine::Camera& camera) const {
 
     for (const Impl::RenderInstance& instance : impl_->objects) {
         if (instance.usesDoorTexture) {
+            if (!impl_->doorVisible) {
+                continue;
+            }
             instance.object->GetModel()->Draw(
                 instance.object->GetWorldTransform(),
                 camera,
@@ -223,12 +227,22 @@ void MapRenderer::Draw(const KamataEngine::Camera& camera) const {
     KamataEngine::Model::PostDraw();
 }
 
+void MapRenderer::SetDoorVisible(const bool visible) noexcept {
+    if (impl_) {
+        impl_->doorVisible = visible;
+    }
+}
+
 void MapRenderer::Finalize() noexcept {
     impl_.reset();
 }
 
 bool MapRenderer::IsInitialized() const noexcept {
     return impl_ != nullptr;
+}
+
+bool MapRenderer::IsDoorVisible() const noexcept {
+    return impl_ && impl_->doorVisible;
 }
 
 } // namespace fps

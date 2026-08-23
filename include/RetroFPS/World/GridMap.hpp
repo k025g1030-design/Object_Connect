@@ -15,8 +15,14 @@ enum class TileType : std::uint8_t {
     Floor,
     Wall,
     PlayerSpawn,
-    MonsterSpawn,
+    MeleeEnemySpawn,
+    RangedEnemySpawn,
     NextMapExit,
+};
+
+enum class EnemyKind : std::uint8_t {
+    Melee,
+    Ranged,
 };
 
 struct GridCoordinate {
@@ -26,6 +32,13 @@ struct GridCoordinate {
     [[nodiscard]] bool operator==(const GridCoordinate&) const noexcept = default;
 };
 
+struct EnemySpawnPoint {
+    EnemyKind kind = EnemyKind::Melee;
+    GridCoordinate cell{};
+
+    [[nodiscard]] bool operator==(const EnemySpawnPoint&) const noexcept = default;
+};
+
 class GridMap final {
 public:
     [[nodiscard]] std::size_t GetWidth() const noexcept { return width_; }
@@ -33,8 +46,8 @@ public:
     [[nodiscard]] GridCoordinate GetPlayerSpawnCell() const noexcept {
         return playerSpawnCell_;
     }
-    [[nodiscard]] const std::vector<GridCoordinate>& GetMonsterSpawnCells() const noexcept {
-        return monsterSpawnCells_;
+    [[nodiscard]] const std::vector<EnemySpawnPoint>& GetEnemySpawnPoints() const noexcept {
+        return enemySpawnPoints_;
     }
     [[nodiscard]] GridCoordinate GetNextMapExitCell() const noexcept {
         return nextMapExitCell_;
@@ -62,14 +75,14 @@ private:
         std::size_t width,
         std::size_t height,
         GridCoordinate playerSpawnCell,
-        std::vector<GridCoordinate> monsterSpawnCells,
+        std::vector<EnemySpawnPoint> enemySpawnPoints,
         GridCoordinate nextMapExitCell);
 
     std::vector<TileType> tiles_;
     std::size_t width_ = 0;
     std::size_t height_ = 0;
     GridCoordinate playerSpawnCell_{};
-    std::vector<GridCoordinate> monsterSpawnCells_;
+    std::vector<EnemySpawnPoint> enemySpawnPoints_;
     GridCoordinate nextMapExitCell_{};
 };
 

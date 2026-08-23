@@ -11,13 +11,13 @@ GridMap::GridMap(
     const std::size_t width,
     const std::size_t height,
     const GridCoordinate playerSpawnCell,
-    std::vector<GridCoordinate> monsterSpawnCells,
+    std::vector<EnemySpawnPoint> enemySpawnPoints,
     const GridCoordinate nextMapExitCell)
     : tiles_(std::move(tiles)),
       width_(width),
       height_(height),
       playerSpawnCell_(playerSpawnCell),
-      monsterSpawnCells_(std::move(monsterSpawnCells)),
+      enemySpawnPoints_(std::move(enemySpawnPoints)),
       nextMapExitCell_(nextMapExitCell) {}
 
 Float2 GridMap::GetSpawnPosition(const float cellSize) const {

@@ -56,7 +56,7 @@ constexpr std::array<MenuItem, 3> kPauseMenuItems = {{
 }};
 
 constexpr std::array<MenuItem, 1> kResultsItems = {{
-    {"MAIN MENU", {kMenuLeft, 333.0f, kMenuWidth, kItemHeight}},
+    {"MAIN MENU", {kMenuLeft, 560.0f, kMenuWidth, kItemHeight}},
 }};
 
 [[nodiscard]] std::span<const MenuItem> GetItems(const GameUiScreen screen) noexcept {
@@ -80,22 +80,43 @@ void PrintText(KamataEngine::DebugText& debugText, const std::string_view text, 
 }
 
 void QueueScreenText(KamataEngine::DebugText& debugText, const GameUiScreen screen,
-                     const std::size_t selectedIndex) {
+                     const std::size_t selectedIndex, const ResultsUiView* const results) {
     switch (screen) {
     case GameUiScreen::MainMenu:
         PrintText(debugText, "OBJECT FPS", 485.0f, 125.0f, 2.5f);
         break;
     case GameUiScreen::Controls:
-        PrintText(debugText, "CONTROLS", 505.0f, 90.0f, 2.2f);
-        PrintText(debugText, "WASD       MOVE", 445.0f, 205.0f, 1.5f);
-        PrintText(debugText, "MOUSE      LOOK", 445.0f, 255.0f, 1.5f);
-        PrintText(debugText, "ESC        PAUSE / RESUME", 445.0f, 305.0f, 1.5f);
-        PrintText(debugText, "ESC/ENTER  BACK", 445.0f, 380.0f, 1.25f);
+        PrintText(debugText, "CONTROLS", 505.0f, 70.0f, 2.2f);
+        PrintText(debugText, "WASD        MOVE", 425.0f, 160.0f, 1.5f);
+        PrintText(debugText, "MOUSE       LOOK", 425.0f, 205.0f, 1.5f);
+        PrintText(debugText, "LEFT MOUSE  SHOOT", 425.0f, 250.0f, 1.5f);
+        PrintText(debugText, "R           RELOAD", 425.0f, 295.0f, 1.5f);
+        PrintText(debugText, "ESC         PAUSE / RESUME", 425.0f, 340.0f, 1.5f);
+        PrintText(debugText, "ESC/ENTER   BACK", 425.0f, 410.0f, 1.25f);
         break;
     case GameUiScreen::PauseMenu:
         PrintText(debugText, "PAUSED", 535.0f, 130.0f, 2.5f);
         break;
     case GameUiScreen::Results:
+        PrintText(
+            debugText,
+            results != nullptr && results->campaignCompleted ? "MISSION COMPLETE" : "GAME OVER",
+            results != nullptr && results->campaignCompleted ? 425.0f : 505.0f,
+            82.0f,
+            2.2f);
+        if (results != nullptr) {
+            float y = 190.0f;
+            for (const ResultRoomEntry& room : results->rooms) {
+                PrintText(debugText, room.levelName, 410.0f, y, 1.45f);
+                PrintText(
+                    debugText,
+                    "KILLS " + std::to_string(room.kills),
+                    730.0f,
+                    y,
+                    1.45f);
+                y += 52.0f;
+            }
+        }
         break;
     default:
         break;
@@ -170,7 +191,10 @@ bool GameUiRenderer::Initialize(std::string& error) {
     return false;
 }
 
-void GameUiRenderer::Draw(const GameUiScreen screen, const std::size_t selectedIndex) const {
+void GameUiRenderer::Draw(
+    const GameUiScreen screen,
+    const std::size_t selectedIndex,
+    const ResultsUiView* const results) const {
     if (!impl_) {
         return;
     }
@@ -186,7 +210,7 @@ void GameUiRenderer::Draw(const GameUiScreen screen, const std::size_t selectedI
         impl_->selection->SetSize({bounds.width, bounds.height});
     }
 
-    QueueScreenText(*impl_->debugText, screen, selectedIndex);
+    QueueScreenText(*impl_->debugText, screen, selectedIndex, results);
 
     KamataEngine::Sprite::PreDraw(KamataEngine::DirectXCommon::GetInstance()->GetCommandList(),
                                   KamataEngine::Sprite::BlendMode::kNormal);

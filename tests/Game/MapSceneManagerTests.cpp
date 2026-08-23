@@ -24,7 +24,7 @@ namespace {
 [[nodiscard]] std::vector<GridMap> MakeMaps(TestContext& context) {
     std::vector<GridMap> maps;
     maps.push_back(ParseMap(context, "PD"));
-    maps.push_back(ParseMap(context, "P.ED"));
+    maps.push_back(ParseMap(context, "P.MD"));
     return maps;
 }
 

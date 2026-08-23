@@ -47,10 +47,19 @@ private:
 
 void RunWorldTests(TestContext& context);
 void RunCollisionTests(TestContext& context);
+void RunCombatCollisionTests(TestContext& context);
 void RunMapGeometryTests(TestContext& context);
+void RunEnemyBillboardTests(TestContext& context);
 void RunPlayerControllerTests(TestContext& context);
+void RunPlayerCombatStateTests(TestContext& context);
+void RunWeaponControllerTests(TestContext& context);
+void RunProjectileSystemTests(TestContext& context);
+void RunEnemySystemTests(TestContext& context);
+void RunEnemySpawnDirectorTests(TestContext& context);
+void RunGameDataCatalogTests(TestContext& context);
 void RunGameFlowTests(TestContext& context);
 void RunMapSceneManagerTests(TestContext& context);
 void RunCampaignResourceTests(TestContext& context);
+void RunCampaignRunStateTests(TestContext& context);
 
 } // namespace fps::tests

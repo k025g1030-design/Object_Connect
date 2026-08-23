@@ -43,8 +43,8 @@ void ExpectParseError(
 }
 
 void TestGridMapParsing(TestContext& context) {
-    const GridMap map = ParseValidMap(context, "#######\n#PE.ED#\n#######");
-    context.Expect(map.GetWidth() == 7, "map width");
+    const GridMap map = ParseValidMap(context, "########\n#PM.R.D#\n########");
+    context.Expect(map.GetWidth() == 8, "map width");
     context.Expect(map.GetHeight() == 3, "map height");
     context.Expect(
         map.GetPlayerSpawnCell() == GridCoordinate{1, 1},
@@ -55,29 +55,38 @@ void TestGridMapParsing(TestContext& context) {
     context.Expect(
         map.GetTile(1, 1) == TileType::PlayerSpawn,
         "player spawn remains typed map data");
-    context.Expect(map.GetTile(1, 2) == TileType::MonsterSpawn, "first monster tile");
+    context.Expect(
+        map.GetTile(1, 2) == TileType::MeleeEnemySpawn,
+        "melee enemy spawn remains typed map data");
     context.Expect(map.GetTile(1, 3) == TileType::Floor, "floor tile");
-    context.Expect(map.GetTile(1, 5) == TileType::NextMapExit, "next-map exit tile");
     context.Expect(
-        map.GetMonsterSpawnCells() ==
-            std::vector<GridCoordinate>{{1, 2}, {1, 4}},
-        "all monster spawns preserve map order");
+        map.GetTile(1, 4) == TileType::RangedEnemySpawn,
+        "ranged enemy spawn remains typed map data");
+    context.Expect(map.GetTile(1, 6) == TileType::NextMapExit, "next-map exit tile");
     context.Expect(
-        map.GetNextMapExitCell() == GridCoordinate{1, 5},
+        map.GetEnemySpawnPoints() ==
+            std::vector<EnemySpawnPoint>{
+                {EnemyKind::Melee, {1, 2}},
+                {EnemyKind::Ranged, {1, 4}},
+            },
+        "typed enemy spawns preserve row-major map order");
+    context.Expect(
+        map.GetNextMapExitCell() == GridCoordinate{1, 6},
         "next-map exit coordinate");
     context.Expect(map.IsWalkable(1, 1), "spawn is walkable");
-    context.Expect(map.IsWalkable(1, 2), "monster spawn is walkable");
+    context.Expect(map.IsWalkable(1, 2), "melee enemy spawn is walkable");
     context.Expect(map.IsWalkable(1, 3), "floor is walkable");
-    context.Expect(map.IsWalkable(1, 5), "next-map exit is walkable");
+    context.Expect(map.IsWalkable(1, 4), "ranged enemy spawn is walkable");
+    context.Expect(map.IsWalkable(1, 6), "next-map exit is walkable");
     context.Expect(map.IsSolid(0, 0), "hash is solid");
     context.Expect(map.IsSolid(-1, 1), "negative row is solid");
-    context.Expect(map.IsSolid(1, 7), "out-of-bounds column is solid");
+    context.Expect(map.IsSolid(1, 8), "out-of-bounds column is solid");
 
     const Float2 spawnPosition = map.GetSpawnPosition(2.0f);
     context.Expect(NearlyEqual(spawnPosition.x, 3.0f), "columns map to +X cell centers");
     context.Expect(NearlyEqual(spawnPosition.z, 3.0f), "rows map to +Z cell centers");
     const Float2 exitPosition = map.GetCellCenter(map.GetNextMapExitCell(), 2.0f);
-    context.Expect(NearlyEqual(exitPosition.x, 11.0f), "exit column maps to +X center");
+    context.Expect(NearlyEqual(exitPosition.x, 13.0f), "exit column maps to +X center");
     context.Expect(NearlyEqual(exitPosition.z, 3.0f), "exit row maps to +Z center");
 
     const std::optional<GridCoordinate> spawnCoordinate =
@@ -92,8 +101,25 @@ void TestGridMapParsing(TestContext& context) {
         !map.TryGetCoordinateAtPosition({-0.01f, 1.0f}).has_value(),
         "negative world position is outside the map");
     context.Expect(
-        !map.TryGetCoordinateAtPosition({14.0f, 1.0f}, 2.0f).has_value(),
+        !map.TryGetCoordinateAtPosition({16.0f, 1.0f}, 2.0f).has_value(),
         "position on the outer maximum boundary is outside the map");
+
+    const GridMap noEnemies = ParseValidMap(context, "PD");
+    context.Expect(
+        noEnemies.GetEnemySpawnPoints().empty(),
+        "maps may contain zero enemy spawn points");
+
+    const GridMap rowMajorEnemies =
+        ParseValidMap(context, "PM.R\nR.MD");
+    context.Expect(
+        rowMajorEnemies.GetEnemySpawnPoints() ==
+            std::vector<EnemySpawnPoint>{
+                {EnemyKind::Melee, {0, 1}},
+                {EnemyKind::Ranged, {0, 3}},
+                {EnemyKind::Ranged, {1, 0}},
+                {EnemyKind::Melee, {1, 2}},
+            },
+        "enemy spawn points use row-major order across rows");
     context.Expect(
         !map.TryGetCoordinateAtPosition(
                 {(std::numeric_limits<float>::quiet_NaN)(), 1.0f})
@@ -123,6 +149,7 @@ void TestGridMapParsing(TestContext& context) {
     ExpectParseError(context, "", 1, 1);
     ExpectParseError(context, "P.\n#", 2, 2);
     ExpectParseError(context, "P@", 1, 2);
+    ExpectParseError(context, "PED", 1, 2);
     ExpectParseError(context, "..", 1, 1);
     ExpectParseError(context, "PDP", 1, 3);
     ExpectParseError(context, "PDD", 1, 3);

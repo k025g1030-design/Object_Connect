@@ -8,6 +8,7 @@
 #include "RetroFPS/World/GridMapLoader.hpp"
 #include "RetroFPS/World/WorldSettings.hpp"
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -227,6 +228,36 @@ void TestPlayerCollision(TestContext& context) {
         "PlayerController collision result never penetrates a solid cell");
 }
 
+void TestPlayerDynamicCollision(TestContext& context) {
+    const GridMap map = MakeOpenMovementMap(context);
+    const WorldSettings worldSettings{};
+    PlayerController controller;
+    Player player;
+    ExpectPlayerInitialized(context, controller, player, map, worldSettings);
+
+    const Float2 spawn = player.GetPositionXZ();
+    const std::array blockers{
+        CircleObstacle{{spawn.x, spawn.z + 1.0f}, 0.2f},
+    };
+    InputState input{};
+    input.keyboard.w = true;
+    controller.Update(player, input, 1.0f, map, worldSettings, blockers);
+
+    const Float2 position = player.GetPositionXZ();
+    context.Expect(
+        NearlyEqual(position.x, spawn.x),
+        "dynamic blocker does not introduce lateral player movement");
+    context.Expect(
+        NearlyEqual(position.z, spawn.z + 0.55f, 0.0002f),
+        "PlayerController stops at the dynamic blocker's surface");
+    context.Expect(
+        !GridCollision::OverlapsCircle(
+            position,
+            controller.GetSettings().collisionRadius,
+            blockers.front()),
+        "PlayerController never penetrates a dynamic blocker");
+}
+
 void TestInvalidPlayerSettings(TestContext& context) {
     const auto expectInvalid = [&context](
                                    const PlayerSettings settings,
@@ -284,6 +315,7 @@ void RunPlayerControllerTests(TestContext& context) {
     TestRawInputAndWasd(context);
     TestYawAndPitch(context);
     TestPlayerCollision(context);
+    TestPlayerDynamicCollision(context);
     TestInvalidPlayerSettings(context);
 }
 

@@ -76,9 +76,11 @@ void PlayerController::Update(
     const InputState& input,
     const float deltaSeconds,
     const GridMap& map,
-    const WorldSettings& worldSettings) const {
+    const WorldSettings& worldSettings,
+    const std::span<const CircleObstacle> dynamicBlockers) const {
     float yawRadians = player.GetYawRadians();
-    float pitchRadians = player.GetPitchRadians();
+    float pitchRadians = player.GetAimPitchRadians();
+    const float recoilDegrees = player.GetRecoilDegrees();
 
     if (input.mouse.captured) {
         if (std::isfinite(input.mouse.deltaX)) {
@@ -95,6 +97,7 @@ void PlayerController::Update(
                 maxPitchRadians);
         }
         player.SetLookAngles(yawRadians, pitchRadians);
+        static_cast<void>(SetVerticalRecoilDegrees(player, recoilDegrees));
     }
 
     if (!std::isfinite(deltaSeconds) || deltaSeconds <= 0.0f) {
@@ -115,7 +118,29 @@ void PlayerController::Update(
         player.GetPositionXZ(),
         displacement,
         settings_.collisionRadius,
+        dynamicBlockers,
         worldSettings.cellSize));
+}
+
+bool PlayerController::SetVerticalRecoilDegrees(
+    Player& player, const float recoilDegrees) const noexcept {
+    if (!std::isfinite(recoilDegrees) || recoilDegrees < 0.0f) {
+        return false;
+    }
+
+    const float maximumPitchRadians = settings_.maxPitchDegrees * kDegreesToRadians;
+    const float requestedRecoilRadians = -recoilDegrees * kDegreesToRadians;
+    const float aimPitchRadians = player.GetAimPitchRadians();
+    const float effectivePitchRadians = std::clamp(
+        aimPitchRadians + requestedRecoilRadians,
+        -maximumPitchRadians,
+        maximumPitchRadians);
+    player.SetRecoilPitchRadians(effectivePitchRadians - aimPitchRadians);
+    return true;
+}
+
+void PlayerController::ClearVerticalRecoil(Player& player) const noexcept {
+    player.SetRecoilPitchRadians(0.0f);
 }
 
 } // namespace fps

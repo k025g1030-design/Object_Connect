@@ -1,6 +1,6 @@
 #include "../TestSupport.hpp"
 
-#include "RetroFPS/Game/GameConfig.hpp"
+#include "RetroFPS/Data/GameData.hpp"
 #include "RetroFPS/World/GridMapLoader.hpp"
 
 #include <array>
@@ -80,23 +80,41 @@ namespace {
 }
 
 void TestCampaignResources(TestContext& context) {
-    const GameConfig config{};
-    context.Expect(config.mapPaths.size() == 2, "default campaign contains two maps");
+    const std::filesystem::path resourceRoot{RETROFPS_TEST_RESOURCE_ROOT};
+    const GameDataPaths paths{
+        resourceRoot / "data/enemies.csv",
+        resourceRoot / "data/weapons.csv",
+        resourceRoot / "data/levels.csv",
+        resourceRoot,
+    };
+    GameDataLoadResult data = GameDataLoader::Load(paths);
+    context.Expect(data.Succeeded(), "default campaign data loads from source resources");
+    if (!data.catalog.has_value()) {
+        throw std::runtime_error("campaign data failed to load: " + data.error);
+    }
+    const std::span<const LevelDefinition> levels = data.catalog->levels.GetDefinitions();
+    context.Expect(levels.size() == 2, "default campaign contains two maps");
 
-    for (const std::filesystem::path& mapPath : config.mapPaths) {
-        const GridMap map = LoadCampaignMap(context, mapPath);
+    for (const LevelDefinition& level : levels) {
+        const GridMap map = LoadCampaignMap(context, level.mapPath);
         const GridCoordinate playerSpawn = map.GetPlayerSpawnCell();
         context.Expect(
             IsReachable(map, playerSpawn, map.GetNextMapExitCell()),
             "campaign exit should be reachable from player spawn");
         context.Expect(
-            !map.GetMonsterSpawnCells().empty(),
-            "sample campaign map should demonstrate monster spawn data");
-        for (const GridCoordinate monsterSpawn : map.GetMonsterSpawnCells()) {
+            map.GetEnemySpawnPoints().size() == 2,
+            "sample campaign map should demonstrate both enemy spawn types");
+        bool hasMelee = false;
+        bool hasRanged = false;
+        for (const EnemySpawnPoint& enemySpawn : map.GetEnemySpawnPoints()) {
+            hasMelee = hasMelee || enemySpawn.kind == EnemyKind::Melee;
+            hasRanged = hasRanged || enemySpawn.kind == EnemyKind::Ranged;
             context.Expect(
-                IsReachable(map, playerSpawn, monsterSpawn),
-                "monster spawn should be reachable from player spawn");
+                IsReachable(map, playerSpawn, enemySpawn.cell),
+                "enemy spawn should be reachable from player spawn");
         }
+        context.Expect(hasMelee, "sample campaign map should contain a melee enemy");
+        context.Expect(hasRanged, "sample campaign map should contain a ranged enemy");
     }
 }
 
