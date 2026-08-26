@@ -108,7 +108,7 @@ bool GameHudRenderer::Initialize(const std::string& weaponTexturePath, std::stri
                         : KamataEngine::Vector4{1.0f, 1.0f, 1.0f, 1.0f},
             {1.0f, 1.0f}));
         if (next->weapon) {
-            next->weapon->SetSize({420.0f, 180.0f});
+            next->weapon->SetSize({420.0f, 280.0f});
             next->weapon->SetRotation(kWeaponRotation);
         }
 

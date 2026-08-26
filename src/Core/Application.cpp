@@ -17,7 +17,7 @@
 namespace fps {
 namespace {
 
-constexpr const wchar_t* kWindowTitle = L"Object_FPS - 2.5D FPS MVP";
+constexpr const wchar_t* kWindowTitle = L"GC2B_08_ラ_ケツブン Object_FPS";
 
 [[nodiscard]] bool SetExecutableWorkingDirectory(std::wstring& error) {
     std::vector<wchar_t> executablePath(32768, L'\0');
@@ -68,8 +68,10 @@ public:
         // KamataEngine::Initialize sets up Sprite, but DebugText is an optional
         // service and must be initialized separately before its first Print.
         KamataEngine::DebugText::GetInstance()->Initialize();
+        //KamataEngine::WinApp::GetInstance()->SetFullscreen(true);
         KamataEngine::WinApp::GetInstance()->SetSizeChangeMode(
             KamataEngine::WinApp::SizeChangeMode::kNone);
+
     }
 
 private:
