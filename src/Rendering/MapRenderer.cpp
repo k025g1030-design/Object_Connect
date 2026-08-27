@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <stdexcept>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -97,6 +98,20 @@ const std::filesystem::path kModelResourceRoot{"Resources"};
     return {value.x, value.y, value.z};
 }
 
+void MakeUnlitWhite(KamataEngine::Model& model) {
+    for (const std::unique_ptr<KamataEngine::Mesh>& mesh : model.GetMeshes()) {
+        KamataEngine::Material* material = mesh ? mesh->GetMaterial() : nullptr;
+        if (material == nullptr) {
+            throw std::runtime_error("Map model contains a mesh without a material.");
+        }
+        material->ambient_ = {1.0f, 1.0f, 1.0f};
+        material->diffuse_ = {0.0f, 0.0f, 0.0f};
+        material->specular_ = {0.0f, 0.0f, 0.0f};
+        material->alpha_ = 1.0f;
+        material->Update();
+    }
+}
+
 } // namespace
 
 struct MapRenderer::Impl {
@@ -155,6 +170,9 @@ bool MapRenderer::Initialize(
             error = "KamataEngine failed to create the map door model.";
             return false;
         }
+        MakeUnlitWhite(*implementation->floorModel);
+        MakeUnlitWhite(*implementation->wallModel);
+        MakeUnlitWhite(*implementation->doorModel);
         implementation->doorTextureHandle =
             KamataEngine::TextureManager::Load(assets.doorTexturePath);
 

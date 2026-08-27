@@ -22,7 +22,9 @@
 #include "RetroFPS/Rendering/MapGeometryGenerator.hpp"
 #include "RetroFPS/Rendering/MapRenderer.hpp"
 #include "RetroFPS/Rendering/ProjectileRenderer.hpp"
+#include "RetroFPS/Rendering/ScenePostProcessRenderer.hpp"
 #include "RetroFPS/Rendering/ScreenFadeRenderer.hpp"
+#include "RetroFPS/Rendering/SkySphereRenderer.hpp"
 #include "RetroFPS/World/GridMapLoader.hpp"
 #include "RetroFPS/World/World.hpp"
 
@@ -215,6 +217,8 @@ struct Game::Impl final {
     WeaponState weaponState;
     CampaignRunState campaign;
     FirstPersonCamera camera;
+    SkySphereRenderer sky;
+    ScenePostProcessRenderer scenePostProcess;
     GameHudRenderer hud;
     GameUiRenderer ui;
     ScreenFadeRenderer screenFade;
@@ -274,6 +278,8 @@ struct Game::Impl final {
         }
         if (!campaign.Initialize(campaignRooms, error) || !PreflightMaps(error) ||
             !camera.Initialize(config.camera, error) ||
+            !sky.Initialize(config.skyRendering, config.camera.farClip, error) ||
+            !scenePostProcess.Initialize(config.scenePostProcess, error) ||
             !hud.Initialize(weaponDefinition.texturePath, error) || !ui.Initialize(error) ||
             !screenFade.Initialize(error) || !input.Initialize(error)) {
             return false;
@@ -519,7 +525,10 @@ struct Game::Impl final {
             candidate->doorVisible = false;
             candidate->renderer.SetDoorVisible(false);
             if (!candidate->enemyRenderer.Initialize(
-                    candidate->enemies.GetSnapshots(), config.enemyRendering, error)) {
+                    candidate->enemies.GetSnapshots(),
+                    dataCatalog.enemies.GetDefinitions(),
+                    config.enemyRendering,
+                    error)) {
                 error = "Failed to initialize level '" + orderedLevels[mapIndex].id +
                         "' enemy rendering: " + error;
                 return nullptr;
@@ -1012,9 +1021,12 @@ struct Game::Impl final {
     void Draw() const {
         const GameScreen screen = flow.GetScreen();
         if ((screen == GameScreen::Playing || screen == GameScreen::Paused) && level) {
+            scenePostProcess.BeginScene();
+            sky.Draw(camera.GetNativeCamera());
             level->renderer.Draw(camera.GetNativeCamera());
             level->enemyRenderer.Draw(camera.GetNativeCamera());
             level->projectileRenderer.Draw(camera.GetNativeCamera());
+            scenePostProcess.Composite();
             hud.Draw(MakeHudState());
         }
 
@@ -1038,10 +1050,13 @@ struct Game::Impl final {
             return;
         }
         const Float2 position = level->player.GetPositionXZ();
+        const Float3 cameraPosition{
+            position.x, playerController.GetSettings().eyeHeight, position.z};
         camera.Sync(
-            {position.x, playerController.GetSettings().eyeHeight, position.z},
+            cameraPosition,
             level->player.GetYawRadians(),
             level->player.GetPitchRadians());
+        sky.Sync(cameraPosition);
     }
 };
 

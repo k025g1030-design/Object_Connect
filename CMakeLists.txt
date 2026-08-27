@@ -83,6 +83,8 @@ set(_required_project_resources
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/Obj.hlsli"
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/ObjVS.hlsl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/ObjPS.hlsl"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/ScenePostVS.hlsl"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/ScenePostPS.hlsl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/Primitive.hlsli"
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/PrimitiveVS.hlsl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/shaders/PrimitivePS.hlsl"
@@ -95,6 +97,7 @@ set(_required_project_resources
     "${PROJECT_RESOURCE_SOURCE_DIR}/maps/mvp_map.txt"
     "${PROJECT_RESOURCE_SOURCE_DIR}/maps/mvp_map_02.txt"
     "${PROJECT_RESOURCE_SOURCE_DIR}/data/enemies.csv"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/data/enemy_animation_clips.csv"
     "${PROJECT_RESOURCE_SOURCE_DIR}/data/weapons.csv"
     "${PROJECT_RESOURCE_SOURCE_DIR}/data/levels.csv"
     "${PROJECT_RESOURCE_SOURCE_DIR}/cube/cube.obj"
@@ -104,6 +107,9 @@ set(_required_project_resources
     "${PROJECT_RESOURCE_SOURCE_DIR}/map_floor/map_floor.mtl"
     "${PROJECT_RESOURCE_SOURCE_DIR}/map_wall/map_wall.obj"
     "${PROJECT_RESOURCE_SOURCE_DIR}/map_wall/map_wall.mtl"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/assets/textures/sky/sky_sphere.png"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/assets/textures/enemies/blood_dog_sheet_full.png"
+    "${PROJECT_RESOURCE_SOURCE_DIR}/assets/textures/enemies/spitter_sheet_full.png"
 )
 
 foreach(_required_path IN LISTS _required_project_resources)
@@ -342,7 +348,9 @@ add_library(
     src/Rendering/GameUiRenderer.cpp
     src/Rendering/MapRenderer.cpp
     src/Rendering/ProjectileRenderer.cpp
+    src/Rendering/ScenePostProcessRenderer.cpp
     src/Rendering/ScreenFadeRenderer.cpp
+    src/Rendering/SkySphereRenderer.cpp
     include/RetroFPS/Rendering/CameraSettings.hpp
     include/RetroFPS/Rendering/EnemyBillboardRenderer.hpp
     include/RetroFPS/Rendering/EnemyRenderSettings.hpp
@@ -352,7 +360,10 @@ add_library(
     include/RetroFPS/Rendering/MapRenderAssets.hpp
     include/RetroFPS/Rendering/MapRenderer.hpp
     include/RetroFPS/Rendering/ProjectileRenderer.hpp
+    include/RetroFPS/Rendering/ScenePostProcessRenderer.hpp
+    include/RetroFPS/Rendering/ScenePostProcessSettings.hpp
     include/RetroFPS/Rendering/ScreenFadeRenderer.hpp
+    include/RetroFPS/Rendering/SkySphereRenderer.hpp
 )
 target_include_directories(
     retrofps_rendering
@@ -361,7 +372,7 @@ target_include_directories(
 target_link_libraries(
     retrofps_rendering
     PUBLIC retrofps_math retrofps_map_geometry retrofps_enemy_ai retrofps_gameplay
-    PRIVATE KamataEngine::KamataEngine DirectXTex::DirectXTex d3dcompiler
+    PRIVATE KamataEngine::KamataEngine DirectXTex::DirectXTex d3d12 d3dcompiler dxgi
 )
 target_compile_definitions(
     retrofps_rendering
@@ -496,6 +507,7 @@ if(BUILD_TESTING)
         tests/Collision/CombatCollisionTests.cpp
         tests/Rendering/MapGeometryTests.cpp
         tests/Rendering/EnemyBillboardTests.cpp
+        tests/Rendering/ScenePostProcessTests.cpp
         tests/Gameplay/PlayerControllerTests.cpp
         tests/Gameplay/PlayerCombatStateTests.cpp
         tests/Gameplay/WeaponControllerTests.cpp

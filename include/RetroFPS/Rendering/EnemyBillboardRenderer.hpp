@@ -30,6 +30,7 @@ public:
 
     [[nodiscard]] bool Initialize(
         std::span<const EnemySnapshot> snapshots,
+        std::span<const EnemyDefinition> definitions,
         const EnemyRenderSettings& settings,
         std::string& error);
     void Sync(std::span<const EnemySnapshot> snapshots, Float2 viewerPosition);

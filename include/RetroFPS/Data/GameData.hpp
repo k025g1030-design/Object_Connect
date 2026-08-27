@@ -16,6 +16,27 @@ using EnemyDefinitionId = std::string;
 using WeaponDefinitionId = std::string;
 using LevelDefinitionId = std::string;
 
+struct EnemyAnimationPixelPoint final {
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+};
+
+struct EnemyAnimationClipDefinition final {
+    std::uint32_t originXpx = 0;
+    std::uint32_t originYpx = 0;
+    std::uint32_t frameCount = 0;
+    float secondsPerFrame = 0.0f;
+    std::optional<std::uint32_t> eventFrameIndex;
+    std::optional<EnemyAnimationPixelPoint> muzzlePixel;
+};
+
+struct EnemyAnimationSetDefinition final {
+    EnemyAnimationClipDefinition idle;
+    EnemyAnimationClipDefinition moving;
+    EnemyAnimationClipDefinition attacking;
+    EnemyAnimationClipDefinition dead;
+};
+
 struct EnemyDefinition final {
     EnemyDefinitionId id;
     EnemyKind kind = EnemyKind::Melee;
@@ -23,8 +44,14 @@ struct EnemyDefinition final {
     float attackIntervalSeconds = 0.0f;
     float maxHealth = 0.0f;
     float defense = 0.0f;
+    float hitboxRadius = 0.0f;
     float hitboxHeight = 0.0f;
+    float renderWidth = 0.0f;
+    float renderHeight = 0.0f;
     std::string texturePath;
+    std::uint32_t frameWidthPixels = 0;
+    std::uint32_t frameHeightPixels = 0;
+    EnemyAnimationSetDefinition animations;
 };
 
 struct WeaponDefinition final {
@@ -97,6 +124,8 @@ struct GameDataCatalog final {
 
 struct GameDataPaths final {
     std::filesystem::path enemiesCsvPath{"Resources/data/enemies.csv"};
+    std::filesystem::path enemyAnimationClipsCsvPath{
+        "Resources/data/enemy_animation_clips.csv"};
     std::filesystem::path weaponsCsvPath{"Resources/data/weapons.csv"};
     std::filesystem::path levelsCsvPath{"Resources/data/levels.csv"};
     std::filesystem::path resourceRoot{"Resources"};
@@ -115,6 +144,7 @@ public:
     [[nodiscard]] static GameDataLoadResult Load(const GameDataPaths& paths);
     [[nodiscard]] static GameDataLoadResult Parse(
         std::string_view enemiesCsv,
+        std::string_view enemyAnimationClipsCsv,
         std::string_view weaponsCsv,
         std::string_view levelsCsv,
         const std::filesystem::path& resourceRoot);

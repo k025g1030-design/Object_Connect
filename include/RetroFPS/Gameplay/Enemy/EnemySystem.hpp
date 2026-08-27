@@ -62,7 +62,6 @@ struct EnemySnapshot final {
     float defense = 0.0f;
     float hitFlashRemainingSeconds = 0.0f;
     float stateElapsedSeconds = 0.0f;
-    std::string texturePath;
 };
 
 struct EnemyAttackEvent final {
@@ -156,8 +155,8 @@ public:
         return attackEvents_;
     }
     [[nodiscard]] std::vector<CircleObstacle> CollectAliveColliders() const;
-    // Includes live instances and dead instances that are still flashing, so a
-    // wave spawner cannot reuse a visibly occupied slot.
+    // Includes live instances and dead instances whose death animation remains
+    // visible, so a wave spawner cannot reuse an occupied slot.
     [[nodiscard]] std::vector<CircleObstacle> CollectOccupiedColliders() const;
 
     // Applies max(1, raw damage - definition defense). Unknown/dead enemies and
@@ -189,6 +188,7 @@ private:
         float hitFlashRemainingSeconds = 0.0f;
         float stateElapsedSeconds = 0.0f;
         float attackCooldownSeconds = 0.0f;
+        bool attackEventEmitted = false;
         float repathElapsedSeconds = 0.0f;
         float stuckElapsedSeconds = 0.0f;
         NavigationPurpose navigationPurpose = NavigationPurpose::None;

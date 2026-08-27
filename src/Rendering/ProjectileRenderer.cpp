@@ -12,6 +12,23 @@
 #include <vector>
 
 namespace fps {
+namespace {
+
+void MakeUnlitWhite(KamataEngine::Model& model) {
+    for (const std::unique_ptr<KamataEngine::Mesh>& mesh : model.GetMeshes()) {
+        KamataEngine::Material* material = mesh ? mesh->GetMaterial() : nullptr;
+        if (material == nullptr) {
+            throw std::runtime_error("Projectile model contains a mesh without a material.");
+        }
+        material->ambient_ = {1.0f, 1.0f, 1.0f};
+        material->diffuse_ = {0.0f, 0.0f, 0.0f};
+        material->specular_ = {0.0f, 0.0f, 0.0f};
+        material->alpha_ = 1.0f;
+        material->Update();
+    }
+}
+
+} // namespace
 
 struct ProjectileRenderer::Impl final {
     struct Instance final {
@@ -40,6 +57,7 @@ bool ProjectileRenderer::Initialize(std::string& error) {
             error = "KamataEngine failed to create the projectile sphere model.";
             return false;
         }
+        MakeUnlitWhite(*next->sphere);
         impl_ = std::move(next);
         return true;
     } catch (const std::exception& exception) {

@@ -83,6 +83,7 @@ void TestCampaignResources(TestContext& context) {
     const std::filesystem::path resourceRoot{RETROFPS_TEST_RESOURCE_ROOT};
     const GameDataPaths paths{
         resourceRoot / "data/enemies.csv",
+        resourceRoot / "data/enemy_animation_clips.csv",
         resourceRoot / "data/weapons.csv",
         resourceRoot / "data/levels.csv",
         resourceRoot,

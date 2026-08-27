@@ -53,16 +53,44 @@ void InitializeSystem(
 [[nodiscard]] EnemyDefinition MakeDefinition(
     const std::string& id,
     const EnemyKind kind) {
-    return {
-        id,
-        kind,
-        kind == EnemyKind::Melee ? 7.0f : 5.0f,
-        kind == EnemyKind::Melee ? 0.5f : 0.6f,
-        10.0f,
-        3.0f,
-        kind == EnemyKind::Melee ? 0.8f : 1.6f,
-        "white1x1.png",
-    };
+    EnemyDefinition definition{};
+    definition.id = id;
+    definition.kind = kind;
+    definition.damage = kind == EnemyKind::Melee ? 7.0f : 5.0f;
+    definition.attackIntervalSeconds =
+        kind == EnemyKind::Melee ? 0.5f : 0.6f;
+    definition.maxHealth = 10.0f;
+    definition.defense = 3.0f;
+    definition.hitboxRadius = 0.20f;
+    definition.hitboxHeight = kind == EnemyKind::Melee ? 0.8f : 1.6f;
+    definition.renderWidth =
+        kind == EnemyKind::Melee ? 0.973913f : 1.230769f;
+    definition.renderHeight = definition.hitboxHeight;
+    definition.texturePath = "white1x1.png";
+    definition.frameWidthPixels = kind == EnemyKind::Melee ? 560u : 700u;
+    definition.frameHeightPixels = kind == EnemyKind::Melee ? 460u : 910u;
+    definition.animations.idle.frameCount = 3;
+    definition.animations.idle.secondsPerFrame = 0.10f;
+    definition.animations.moving.originYpx =
+        definition.frameHeightPixels;
+    definition.animations.moving.frameCount = 4;
+    definition.animations.moving.secondsPerFrame = 0.10f;
+    definition.animations.attacking.originYpx =
+        definition.frameHeightPixels * 2;
+    definition.animations.attacking.frameCount =
+        kind == EnemyKind::Melee ? 6u : 5u;
+    definition.animations.attacking.secondsPerFrame = 0.05f;
+    definition.animations.attacking.eventFrameIndex =
+        kind == EnemyKind::Melee ? 3u : 2u;
+    if (kind == EnemyKind::Ranged) {
+        definition.animations.attacking.muzzlePixel =
+            EnemyAnimationPixelPoint{350, 420};
+    }
+    definition.animations.dead.originYpx =
+        definition.frameHeightPixels * 3;
+    definition.animations.dead.frameCount = 4;
+    definition.animations.dead.secondsPerFrame = 0.10f;
+    return definition;
 }
 
 void TestSettingsValidation(TestContext& context) {
@@ -214,21 +242,33 @@ void TestDataDrivenSpawnDamageFlashAndRetire(TestContext& context) {
             system.GetSnapshots()[0].definitionId == definition.id &&
             NearlyEqual(system.GetSnapshots()[0].maxHealth, definition.maxHealth) &&
             NearlyEqual(system.GetSnapshots()[0].defense, definition.defense) &&
-            NearlyEqual(system.GetSnapshots()[0].hitboxHeight, definition.hitboxHeight) &&
-            system.GetSnapshots()[0].texturePath == definition.texturePath,
-        "spawn snapshots expose definition-driven combat and rendering data");
+            NearlyEqual(
+                system.GetSnapshots()[0].collisionRadius,
+                definition.hitboxRadius) &&
+            NearlyEqual(
+                system.GetSnapshots()[0].hitboxHeight,
+                definition.hitboxHeight),
+        "spawn snapshots expose definition-driven combat and hitbox data");
 
     system.Update(
         map,
         {{2.0f, 0.5f}, 0.25f, 1.8f},
         0.01f);
     context.Expect(
+        system.GetAttackEvents().empty() &&
+            system.GetSnapshots()[0].state == EnemyState::Attacking,
+        "attack entry waits for its configured animation event frame");
+    system.Update(
+        map,
+        {{2.0f, 0.5f}, 0.25f, 1.8f},
+        0.15f);
+    context.Expect(
         system.GetAttackEvents().size() == 1 &&
             system.GetAttackEvents()[0].definitionId == definition.id &&
             NearlyEqual(system.GetAttackEvents()[0].origin.y, 0.4f) &&
             NearlyEqual(system.GetAttackEvents()[0].target.y, 0.9f) &&
             NearlyEqual(system.GetAttackEvents()[0].damage, definition.damage),
-        "attack events expose definition ID, 3D endpoints, and data-driven damage");
+        "the melee event frame exposes definition ID, 3D endpoints, and damage");
 
     const EnemyDamageResult partial = system.ApplyDamage(spawned.enemyId, 5.0f);
     context.Expect(
@@ -254,10 +294,15 @@ void TestDataDrivenSpawnDamageFlashAndRetire(TestContext& context) {
             system.CollectOccupiedColliders().size() == 1,
         "dead enemies leave the alive cap but occupy their slot while flashing");
 
-    system.Update(map, map.GetSpawnPosition(), 0.25f, kEnemyHitFlashSeconds);
+    system.Update(map, map.GetSpawnPosition(), 0.25f, 0.39f);
+    context.Expect(
+        system.RetireExpiredDead() == 0 &&
+            system.CollectOccupiedColliders().size() == 1,
+        "dead animation keeps a spawn slot occupied after hit flash expires");
+    system.Update(map, map.GetSpawnPosition(), 0.25f, 0.02f);
     context.Expect(
         system.RetireExpiredDead() == 1 && system.GetSnapshots().empty(),
-        "expired dead enemies retire from the dynamic snapshot set");
+        "dead enemies retire after the four-frame death animation");
 
     const EnemySpawnResult respawned = system.Spawn(
         map,
@@ -269,6 +314,304 @@ void TestDataDrivenSpawnDamageFlashAndRetire(TestContext& context) {
     context.Expect(
         respawned.Spawned() && respawned.enemyId > spawned.enemyId,
         "runtime IDs remain monotonic after retirement and later spawning");
+}
+
+void TestDeathCancelsQueuedAttack(TestContext& context) {
+    const GridMap map = ParseValidMap(context, "P...D");
+    EnemySystem system;
+    std::string error;
+    context.Expect(
+        system.InitializeEmpty(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            1.0f,
+            {},
+            error),
+        "queued-attack cancellation system initializes");
+
+    const EnemyDefinition definition =
+        MakeDefinition("queued_melee", EnemyKind::Melee);
+    const EnemySpawnResult spawned = system.Spawn(
+        map,
+        map.GetSpawnPosition(),
+        0.25f,
+        map.GetCellCenter({0, 2}),
+        definition,
+        error);
+    context.Expect(spawned.Spawned(), "queued-attack enemy spawns");
+
+    const EnemyTarget target{{2.0f, 0.5f}, 0.25f, 1.8f};
+    system.Update(map, target, 0.01f);
+    system.Update(map, target, 0.15f);
+    context.Expect(
+        system.GetAttackEvents().size() == 1,
+        "attack event is queued before same-frame player damage");
+
+    const EnemyDamageResult lethal =
+        system.ApplyDamage(spawned.enemyId, 100.0f);
+    context.Expect(
+        lethal.killed && system.GetAttackEvents().empty(),
+        "lethal same-frame damage cancels an unconsumed attack event");
+}
+
+void TestPerDefinitionRadiusAndValidation(TestContext& context) {
+    const GridMap map = ParseValidMap(context, "P...D");
+    EnemySettings settings{};
+    settings.collisionRadius = 0.05f;
+    std::string error;
+
+    EnemySystem smallSystem;
+    context.Expect(
+        smallSystem.InitializeEmpty(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            1.0f,
+            settings,
+            error),
+        "per-radius test system initializes");
+    EnemyDefinition small = MakeDefinition("small_melee", EnemyKind::Melee);
+    small.hitboxRadius = 0.20f;
+    const Float2 nearPlayer{1.10f, 0.50f};
+    const EnemySpawnResult smallSpawn = smallSystem.Spawn(
+        map,
+        map.GetSpawnPosition(),
+        0.25f,
+        nearPlayer,
+        small,
+        error);
+    const std::vector<CircleObstacle> smallColliders =
+        smallSystem.CollectAliveColliders();
+    context.Expect(
+        smallSpawn.Spawned() && smallColliders.size() == 1 &&
+            NearlyEqual(smallColliders[0].radius, small.hitboxRadius) &&
+            NearlyEqual(
+                smallSystem.GetSnapshots()[0].collisionRadius,
+                small.hitboxRadius),
+        "spawn, snapshot, and live collider use the definition radius");
+
+    EnemySystem largeSystem;
+    context.Expect(
+        largeSystem.InitializeEmpty(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            1.0f,
+            settings,
+            error),
+        "large-radius test system initializes");
+    EnemyDefinition large = MakeDefinition("large_melee", EnemyKind::Melee);
+    large.hitboxRadius = 0.40f;
+    context.Expect(
+        largeSystem.Spawn(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            nearPlayer,
+            large,
+            error).status == EnemySpawnStatus::Blocked,
+        "a definition radius can block a spawn that the legacy setting would allow");
+
+    EnemyDefinition invalid = small;
+    invalid.id = "invalid_event";
+    invalid.animations.attacking.eventFrameIndex =
+        invalid.animations.attacking.frameCount;
+    context.Expect(
+        smallSystem.Spawn(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            {3.0f, 0.5f},
+            invalid,
+            error).status == EnemySpawnStatus::Invalid &&
+            error.find("event frame") != std::string::npos,
+        "runtime spawning defensively rejects an out-of-range animation event");
+}
+
+void TestDefinitionRadiusControlsNavigationClearance(TestContext& context) {
+    const GridMap map = ParseValidMap(
+        context,
+        "###########\n"
+        "#....#...P#\n"
+        "#....#....#\n"
+        "#.........#\n"
+        "#....#...D#\n"
+        "###########");
+    constexpr Float2 spawnPosition{2.5f, 3.5f};
+    const Float2 playerPosition = map.GetSpawnPosition();
+    EnemySettings settings{};
+    std::string error;
+
+    EnemySystem smallSystem;
+    EnemySystem largeSystem;
+    context.Expect(
+        smallSystem.InitializeEmpty(
+            map, playerPosition, 0.25f, 1.0f, settings, error) &&
+            largeSystem.InitializeEmpty(
+                map, playerPosition, 0.25f, 1.0f, settings, error),
+        "radius-navigation systems initialize");
+
+    EnemyDefinition small = MakeDefinition("small_path", EnemyKind::Melee);
+    small.hitboxRadius = 0.20f;
+    EnemyDefinition large = MakeDefinition("large_path", EnemyKind::Melee);
+    large.hitboxRadius = 0.51f;
+    large.hitboxHeight = 1.20f;
+    context.Expect(
+        smallSystem.Spawn(
+            map,
+            playerPosition,
+            0.25f,
+            spawnPosition,
+            small,
+            error).Spawned() &&
+            largeSystem.Spawn(
+                map,
+                playerPosition,
+                0.25f,
+                spawnPosition,
+                large,
+                error).Spawned(),
+        "both radii can spawn before approaching the narrow passage");
+
+    for (int frame = 0; frame < 240; ++frame) {
+        smallSystem.Update(map, playerPosition, 0.25f, 0.05f);
+        largeSystem.Update(map, playerPosition, 0.25f, 0.05f);
+    }
+    context.Expect(
+        smallSystem.GetSnapshots().size() == 1 &&
+            smallSystem.GetSnapshots()[0].position.x > 5.5f,
+        "small definition radius navigates through a one-cell passage");
+    context.Expect(
+        largeSystem.GetSnapshots().size() == 1 &&
+            largeSystem.GetSnapshots()[0].position.x < 5.0f,
+        "large definition radius rejects the same passage clearance");
+}
+
+void TestAnimationEventTimingDodgeAndLargeDelta(TestContext& context) {
+    const GridMap map = ParseValidMap(context, "P....D");
+    const Float2 enemyPosition{2.5f, 0.5f};
+    const Float2 attackPosition{2.0f, 0.5f};
+    const Float2 dodgePosition{0.5f, 0.5f};
+    std::string error;
+
+    EnemySystem dodge;
+    context.Expect(
+        dodge.InitializeEmpty(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            1.0f,
+            {},
+            error),
+        "melee dodge test system initializes");
+    const EnemyDefinition definition =
+        MakeDefinition("dodge_melee", EnemyKind::Melee);
+    context.Expect(
+        dodge.Spawn(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            enemyPosition,
+            definition,
+            error).Spawned(),
+        "melee dodge test enemy spawns");
+    dodge.Update(map, attackPosition, 0.25f, 0.01f);
+    dodge.Update(map, dodgePosition, 0.25f, 0.15f);
+    context.Expect(
+        dodge.GetSnapshots()[0].state == EnemyState::Attacking &&
+            dodge.GetAttackEvents().empty(),
+        "moving out before the 0.15 second event frame avoids melee damage");
+    dodge.Update(map, dodgePosition, 0.25f, 0.15f);
+    context.Expect(
+        dodge.GetSnapshots()[0].state != EnemyState::Attacking &&
+            dodge.GetAttackEvents().empty(),
+        "a dodged melee animation still completes without a late event");
+
+    EnemySystem largeDelta;
+    context.Expect(
+        largeDelta.InitializeEmpty(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            1.0f,
+            {},
+            error),
+        "large-delta attack test system initializes");
+    context.Expect(
+        largeDelta.Spawn(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            enemyPosition,
+            definition,
+            error).Spawned(),
+        "large-delta attack test enemy spawns");
+    largeDelta.Update(map, attackPosition, 0.25f, 0.01f);
+    largeDelta.Update(map, attackPosition, 0.25f, 0.35f);
+    context.Expect(
+        largeDelta.GetAttackEvents().size() == 1 &&
+            largeDelta.GetSnapshots()[0].state != EnemyState::Attacking,
+        "a large delta crossing the event and final frames emits exactly once");
+    largeDelta.Update(map, attackPosition, 0.25f, 0.01f);
+    context.Expect(
+        largeDelta.GetAttackEvents().empty(),
+        "a crossed animation event is not repeated on later frames");
+}
+
+void TestRangedMuzzleEventAndCurrentAim(TestContext& context) {
+    const GridMap map = ParseValidMap(
+        context,
+        "........\n"
+        "P......D\n"
+        "........");
+    EnemySystem system;
+    std::string error;
+    context.Expect(
+        system.InitializeEmpty(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            1.0f,
+            {},
+            error),
+        "ranged muzzle test system initializes");
+    EnemyDefinition definition =
+        MakeDefinition("muzzle_ranged", EnemyKind::Ranged);
+    definition.animations.attacking.muzzlePixel =
+        EnemyAnimationPixelPoint{525, 420};
+    const Float2 enemyPosition{2.5f, 1.5f};
+    context.Expect(
+        system.Spawn(
+            map,
+            map.GetSpawnPosition(),
+            0.25f,
+            enemyPosition,
+            definition,
+            error).Spawned(),
+        "ranged muzzle test enemy spawns");
+
+    system.Update(map, {{5.5f, 1.5f}, 0.25f, 1.8f}, 0.01f);
+    context.Expect(
+        system.GetSnapshots()[0].state == EnemyState::Attacking &&
+            system.GetAttackEvents().empty(),
+        "ranged attack waits for frame two");
+    const EnemyTarget currentPlayer{{5.0f, 1.5f}, 0.25f, 1.8f};
+    system.Update(map, currentPlayer, 0.10f);
+    const float expectedHorizontalOffset =
+        (525.0f / 700.0f - 0.5f) * definition.renderWidth;
+    const float expectedMuzzleY =
+        (1.0f - 420.0f / 910.0f) * definition.renderHeight;
+    context.Expect(
+        system.GetAttackEvents().size() == 1 &&
+            NearlyEqual(system.GetSnapshots()[0].stateElapsedSeconds, 0.10f) &&
+            NearlyEqual(system.GetAttackEvents()[0].origin.x, enemyPosition.x) &&
+            NearlyEqual(
+                system.GetAttackEvents()[0].origin.z,
+                enemyPosition.z - expectedHorizontalOffset) &&
+            NearlyEqual(system.GetAttackEvents()[0].origin.y, expectedMuzzleY) &&
+            NearlyEqual(system.GetAttackEvents()[0].target.x, currentPlayer.position.x),
+        "ranged frame-two event converts muzzle pixels and aims at the current player");
 }
 
 void TestSpawnValidationAndEnemyOverlap(TestContext& context) {
@@ -356,34 +699,39 @@ void TestAttackStateEventsAndCooldown(TestContext& context) {
             NearlyEqual(system.GetSnapshots()[0].stateElapsedSeconds, 0.0f),
         "entering attack exposes an Attacking snapshot for a drawable frame");
     context.Expect(
+        system.GetAttackEvents().empty(),
+        "attack entry does not apply damage before its animation event frame");
+
+    system.Update(map, nearbyPlayer, 0.25f, 0.14f);
+    context.Expect(
+        system.GetSnapshots()[0].state == EnemyState::Attacking &&
+            NearlyEqual(system.GetSnapshots()[0].stateElapsedSeconds, 0.14f) &&
+            system.GetAttackEvents().empty(),
+        "melee attack waits until 0.15 seconds");
+
+    system.Update(map, nearbyPlayer, 0.25f, 0.01f);
+    context.Expect(
         system.GetAttackEvents().size() == 1 &&
             system.GetAttackEvents()[0].enemyId == system.GetSnapshots()[0].id &&
             system.GetAttackEvents()[0].kind == EnemyKind::Melee &&
             NearlyEqual(system.GetAttackEvents()[0].target.x, nearbyPlayer.x),
-        "attack entry emits exactly one event with the sampled player position");
+        "melee attack emits once on frame three at 0.15 seconds");
 
-    system.Update(map, nearbyPlayer, 0.25f, 0.10f);
-    context.Expect(
-        system.GetSnapshots()[0].state == EnemyState::Attacking &&
-            NearlyEqual(system.GetSnapshots()[0].stateElapsedSeconds, 0.10f) &&
-            system.GetAttackEvents().empty(),
-        "attack state time advances without repeating its event");
-
-    system.Update(map, nearbyPlayer, 0.25f, 0.20f);
+    system.Update(map, nearbyPlayer, 0.25f, 0.15f);
     context.Expect(
         system.GetSnapshots()[0].state == EnemyState::Idle &&
             system.GetAttackEvents().empty(),
-        "attack window ends in Idle while cooldown remains");
+        "six melee frames end the attack at 0.30 seconds");
 
-    system.Update(map, nearbyPlayer, 0.25f, 0.58f);
+    system.Update(map, nearbyPlayer, 0.25f, 0.59f);
     context.Expect(
         system.GetAttackEvents().empty(),
         "cooldown prevents an early repeated attack");
-    system.Update(map, nearbyPlayer, 0.25f, 0.03f);
+    system.Update(map, nearbyPlayer, 0.25f, 0.02f);
     context.Expect(
         system.GetSnapshots()[0].state == EnemyState::Attacking &&
-            system.GetAttackEvents().size() == 1,
-        "enemy attacks again only after the configured interval");
+            system.GetAttackEvents().empty(),
+        "enemy starts another animation only after its configured interval");
 
     const float elapsedBeforeInvalidDelta =
         system.GetSnapshots()[0].stateElapsedSeconds;
@@ -569,6 +917,11 @@ void RunEnemySystemTests(TestContext& context) {
     TestSettingsValidation(context);
     TestInitializationSnapshotsAndDeath(context);
     TestDataDrivenSpawnDamageFlashAndRetire(context);
+    TestDeathCancelsQueuedAttack(context);
+    TestPerDefinitionRadiusAndValidation(context);
+    TestDefinitionRadiusControlsNavigationClearance(context);
+    TestAnimationEventTimingDodgeAndLargeDelta(context);
+    TestRangedMuzzleEventAndCurrentAim(context);
     TestSpawnValidationAndEnemyOverlap(context);
     TestAttackStateEventsAndCooldown(context);
     TestMeleeNavigationAndBlockedAttack(context);

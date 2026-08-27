@@ -15,8 +15,13 @@ cbuffer Material : register(b2) {
 	float3 m_diffuse : packoffset(c1);   // ディフューズ係数
 	float3 m_specular : packoffset(c2);  // スペキュラー係数
 	float m_alpha : packoffset(c2.w);    // アルファ
-	float3 m_uv_scale : packoffset(c3);  // UVスケール
-	float3 m_uv_offset : packoffset(c4); // UVオフセット
+	float3 m_uv_scale : packoffset(c3);           // UVスケール
+	// KamataEngine::Material::ConstBufferData stores the two Vector3 values
+	// contiguously. uvOffset.x therefore occupies c3.w and its remaining
+	// components occupy c4.xy; declaring a float3 at c4 would shift both atlas
+	// offsets and make animation states sample the wrong rows.
+	float m_uv_offset_x : packoffset(c3.w);
+	float2 m_uv_offset_yz : packoffset(c4);
 }
 
 // 平行光源の数

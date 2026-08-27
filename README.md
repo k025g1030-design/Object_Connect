@@ -9,7 +9,7 @@ C++20 と KamataEngine で構築した 2.5D 一人称視点 FPS の MVP です�
 - テキストの `#`、`.`、`P`、`M`、`R`、`D` を検証済み `TileType` に変換する
 - 通行可能セルと壁セルの境界に基づいて床と壁面を生成する
 - キーボード／マウス対応の開始メニュー、操作説明、ポーズメニュー、`Results` シーン
-- CSV catalog による敵、武器、線形レベル進行のデータ駆動設定
+- CSV catalog による敵、Atlas animation、武器、線形レベル進行のデータ駆動設定
 - kill quota を満たすまで非表示／無効となる白い仮ドアと、公開 `MapSceneManager` による黒い scene fade
 - WASD による水平移動
 - マウスによる yaw／pitch の視点操作（pitch は XZ 移動に影響しない）
@@ -20,7 +20,9 @@ C++20 と KamataEngine で構築した 2.5D 一人称視点 FPS の MVP です�
 - 戦闘用 ray／segment と垂直 capsule の最近 hit、および swept projectile 判定
 - 緑色の仮 weapon、crosshair、HP／弾薬／reload HUD
 - `CampaignRunState` による room ごとの実 kill 数と、成功／死亡別 Results
-- プレイヤーを向き続ける赤／青の world-space billboard と、将来の frame animation slot
+- プレイヤーを向き続ける透過 Atlas の world-space billboard と、idle／move／attack／dead animation
+- camera の平行移動だけを追従する 50m sky sphere
+- world 3D だけに適用する brightness 1.25／gamma 2.2 の linear-space post-process
 
 ジャンプ、階段、高低差、複数階、天井、武器交換、拾得物、reload animation と新規音声は、
 現在のスコープには含まれません。
@@ -113,12 +115,17 @@ Input 層は物理キー、マウス、フォーカスと capture 状態のみ�
 
 敵は level CSV の生成額度と同時生存上限に従い、`M`／`R` marker を row-major の round-robin で再利用して
 近接型から交互に動的生成されます。安全な marker がない場合は額度を保持して次 frame に再試行します。
-近接型は赤い 0.8m の billboard で、
-A* を使って壁を迂回しながらプレイヤーへ接近します。遠距離型は青い 1.6m の billboard で、
+近接型は 0.8m、遠距離型は 1.6m の textured billboard で、表示寸法と gameplay hitbox は
+別々の CSV 値です。`render_width`／`render_height` は透明余白を含む共通 frame canvas 全体の world size で、
+hitbox の高さや半径から再計算されません。共通 canvas を固定したまま描くため、動作ごとに alpha bounds が
+大きく変わってもキャラクターの縮尺や足元 anchor は跳ねません。近接型は
+A* を使って壁を迂回しながらプレイヤーへ接近します。遠距離型は
 近すぎる場合は経路探索で後退し、射程と視線を確保できる場所へ移動します。敵は常にプレイヤーを
-認識します。近接 attack event は直接 HP を減らし、遠距離 attack event は発射時点の player capsule 中心へ
+認識します。attack event は Atlas の 0-based event frame を跨いだ時に一度だけ発生します。近接はその時点で
+距離と LOS を再確認するため蓄力中に回避でき、遠距離は CSV の muzzle pixel から発射時点の player capsule 中心へ
 橙色 projectile を撃ちます。敵は有効 damage を受けると短時間白く flash し、lethal hit は room kill に一度だけ
-記録されます。生存中の敵と
+記録されます。死亡 animation は 0.4 秒表示され、active count と combat collision からは即座に外れますが、
+表示中は spawn marker を占有します。生存中の敵と
 プレイヤーは互いに通り抜けられず、敵同士は重なれます。Paused と scene fade 中は AI、cooldown、
 reload、projectile、state elapsed、billboard pose を含む level simulation 全体が停止します。
 
@@ -161,9 +168,10 @@ D = 次マップへの出口。最終マップでは Results への出口（必�
 ファイルが残ることはありません。パスは引き続き KamataEngine のリソースルートおよび OBJ/MTL の
 相対パス規則に準拠します。
 
-ゲームデータの原本は次の 3 catalog です。実行時は同じ相対位置の `Resources/data/` から読み込みます。
+ゲームデータの原本は次の 4 catalog です。実行時は同じ相対位置の `Resources/data/` から読み込みます。
 
-- `NoviceResources/data/enemies.csv`：enemy ID、kind、damage、attack interval、HP、defense、hitbox、texture
+- `NoviceResources/data/enemies.csv`：enemy ID、combat、hitbox／render size、sheet texture、共通 frame size
+- `NoviceResources/data/enemy_animation_clips.csv`：enemy／state、atlas origin、frame count／timing、attack event、ranged muzzle
 - `NoviceResources/data/weapons.csv`：weapon ID、damage、magazine／reserve、recoil、automatic、fire interval、reload、texture
 - `NoviceResources/data/levels.csv`：level ID／name／map／next ID、敵生成額度、active limit、clear kill count
 
@@ -178,8 +186,10 @@ MVP のマップモデルは次の場所にあります。
 - `NoviceResources/cube/`（`white1x1.png` を上書き適用する出口の仮モデル）
 
 floor／wall は 4 頂点／2 三角形の単位四角形です。出口は既存 cube を扁平な門形に scale します。
-敵 billboard は `map_wall.obj` と `white1x1.png` を再利用し、近接型を赤、遠距離型を青に tint
-するため、新しい仮素材は追加しません。
+敵 billboard は `map_wall.obj` を共通 quad として再利用し、2 枚の sheet texture と 33 個の frame material を
+definition ID で cache します。UV は frame 境界から half texel inset し、KamataEngine の C++ material constant
+buffer と同じ packed layout で atlas offset を読み取ります。透明 pixel は alpha cutoff で depth を書きません。
+sky は `assets/textures/sky/sky_sphere.png` 全体を equirectangular texture として使用します。
 
 ## テスト
 
@@ -194,7 +204,8 @@ ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 headless suite に分かれています。マップの enum 解析／読み込み／エラー座標、
 World の所有権／設定、マップ形状の生成、円／グリッドのコリジョン、壁沿いの移動、
 動的円のすり抜け防止、ray／capsule／swept segment、白い出口 geometry、平面移動、Player の設定、
-CSV catalog、Weapon／reload／cooldown、projectile、動的 enemy spawn／状態／A*／LOS／近接追跡／遠距離退避、
+CSV catalog／animation validation、Atlas UV／loop／clamp、post-process curve、Weapon／reload／cooldown、projectile、
+動的 enemy spawn／状態／A*／LOS／近接追跡／遠距離退避、attack frame／回避／muzzle／death retention、
 damage／kill、`CampaignRunState`、メニュー／ポーズ／Results の状態遷移、
 fade phase／opacity／commit barrier／input lock と最終マップから Results への progression、
 正式な 2 map の P/M/R/D 可達性を

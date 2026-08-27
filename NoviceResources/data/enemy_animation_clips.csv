@@ -1,0 +1,9 @@
+enemy_id,state,origin_x_px,origin_y_px,frame_count,seconds_per_frame,event_frame_index,muzzle_x_px,muzzle_y_px
+melee_basic,idle,0,0,3,0.10,,,
+melee_basic,move,0,460,4,0.10,,,
+melee_basic,attack,0,920,6,0.05,3,,
+melee_basic,dead,0,1380,4,0.10,,,
+ranged_basic,idle,0,0,3,0.10,,,
+ranged_basic,move,0,910,4,0.10,,,
+ranged_basic,attack,0,1820,5,0.05,2,350,420
+ranged_basic,dead,0,2730,4,0.10,,,

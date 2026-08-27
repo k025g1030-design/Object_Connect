@@ -50,6 +50,7 @@ void RunCollisionTests(TestContext& context);
 void RunCombatCollisionTests(TestContext& context);
 void RunMapGeometryTests(TestContext& context);
 void RunEnemyBillboardTests(TestContext& context);
+void RunScenePostProcessTests(TestContext& context);
 void RunPlayerControllerTests(TestContext& context);
 void RunPlayerCombatStateTests(TestContext& context);
 void RunWeaponControllerTests(TestContext& context);

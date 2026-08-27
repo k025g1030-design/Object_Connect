@@ -49,12 +49,51 @@ constexpr float kLegacyRangedHitboxHeight = 1.6f;
             : settings.rangedAttackIntervalSeconds;
     definition.maxHealth = settings.health;
     definition.defense = 0.0f;
+    definition.hitboxRadius = settings.collisionRadius;
     definition.hitboxHeight =
         kind == EnemyKind::Melee
             ? kLegacyMeleeHitboxHeight
             : kLegacyRangedHitboxHeight;
+    definition.renderWidth = definition.hitboxHeight;
+    definition.renderHeight = definition.hitboxHeight;
     definition.texturePath = "white1x1.png";
+    definition.frameWidthPixels = 1;
+    definition.frameHeightPixels = 1;
+    definition.animations.idle.frameCount = 3;
+    definition.animations.idle.secondsPerFrame = 0.10f;
+    definition.animations.moving.frameCount = 4;
+    definition.animations.moving.secondsPerFrame = 0.10f;
+    definition.animations.attacking.frameCount =
+        kind == EnemyKind::Melee ? 6u : 5u;
+    definition.animations.attacking.secondsPerFrame =
+        (kind == EnemyKind::Melee
+             ? settings.meleeAttackStateSeconds
+             : settings.rangedAttackStateSeconds) /
+        static_cast<float>(definition.animations.attacking.frameCount);
+    definition.animations.attacking.eventFrameIndex =
+        kind == EnemyKind::Melee ? 3u : 2u;
+    if (kind == EnemyKind::Ranged) {
+        definition.animations.attacking.muzzlePixel =
+            EnemyAnimationPixelPoint{0, 0};
+    }
+    definition.animations.dead.frameCount = 4;
+    definition.animations.dead.secondsPerFrame = 0.10f;
     return definition;
+}
+
+[[nodiscard]] float ClipDurationSeconds(
+    const EnemyAnimationClipDefinition& clip) noexcept {
+    const double duration =
+        static_cast<double>(clip.frameCount) * clip.secondsPerFrame;
+    return static_cast<float>((std::min)(
+        duration, static_cast<double>((std::numeric_limits<float>::max)())));
+}
+
+[[nodiscard]] float DeadVisibilitySeconds(
+    const EnemyDefinition& definition) noexcept {
+    return (std::max)(
+        kEnemyHitFlashSeconds,
+        ClipDurationSeconds(definition.animations.dead));
 }
 
 [[nodiscard]] float Distance(const Float2 left, const Float2 right) noexcept {
@@ -493,11 +532,13 @@ bool EnemySystem::Initialize(
                 return false;
             }
 
+            EnemyDefinition definition = MakeLegacyDefinition(spawn.kind, settings_);
+            const float collisionRadius = definition.hitboxRadius;
             const Float2 spawnPosition = map.GetCellCenter(spawn.cell, cellSize);
             if (GridCollision::OverlapsSolid(
                     map,
                     spawnPosition,
-                    settings_.collisionRadius,
+                    collisionRadius,
                     cellSize)) {
                 error = std::string{KindName(spawn.kind)} +
                         " enemy spawn at row " +
@@ -508,7 +549,7 @@ bool EnemySystem::Initialize(
                 return false;
             }
             if (GridCollision::OverlapsCircle(
-                    spawnPosition, settings_.collisionRadius, playerObstacle)) {
+                    spawnPosition, collisionRadius, playerObstacle)) {
                 error = std::string{KindName(spawn.kind)} +
                         " enemy spawn at row " +
                         std::to_string(spawn.cell.row + 1) + ", column " +
@@ -522,7 +563,7 @@ bool EnemySystem::Initialize(
             enemy.id = candidateId;
             enemy.kind = spawn.kind;
             enemy.position = spawnPosition;
-            enemy.definition = MakeLegacyDefinition(spawn.kind, settings_);
+            enemy.definition = std::move(definition);
             enemy.health = enemy.definition.maxHealth;
             enemy.repathElapsedSeconds = settings_.repathIntervalSeconds;
             candidates.push_back(std::move(enemy));
@@ -641,17 +682,87 @@ bool EnemySystem::ValidateDefinition(
         definition.attackIntervalSeconds <= 0.0f ||
         !std::isfinite(definition.maxHealth) || definition.maxHealth <= 0.0f ||
         !std::isfinite(definition.defense) || definition.defense < 0.0f ||
+        !std::isfinite(definition.hitboxRadius) ||
+        definition.hitboxRadius <= 0.0f ||
         !std::isfinite(definition.hitboxHeight) ||
-        definition.hitboxHeight < settings_.collisionRadius * 2.0f ||
+        definition.hitboxHeight < definition.hitboxRadius * 2.0f ||
+        !std::isfinite(definition.renderWidth) ||
+        definition.renderWidth <= 0.0f ||
+        !std::isfinite(definition.renderHeight) ||
+        definition.renderHeight <= 0.0f ||
+        definition.frameWidthPixels == 0 ||
+        definition.frameHeightPixels == 0 ||
         definition.texturePath.empty()) {
-        error = "Enemy definition combat values and texture path must be valid.";
+        error = "Enemy definition combat, hitbox, render, frame, and texture values must be valid.";
+        return false;
+    }
+
+    const auto validateClip = [&definition, &error](
+                                  const EnemyAnimationClipDefinition& clip,
+                                  const char* const state,
+                                  const bool isAttack) {
+        if (clip.frameCount == 0 ||
+            !std::isfinite(clip.secondsPerFrame) ||
+            clip.secondsPerFrame <= 0.0f) {
+            error = "Enemy definition ";
+            error += state;
+            error += " animation values must be valid.";
+            return false;
+        }
+
+        const std::uint64_t right =
+            static_cast<std::uint64_t>(clip.originXpx) +
+            static_cast<std::uint64_t>(definition.frameWidthPixels) *
+                clip.frameCount;
+        const std::uint64_t bottom =
+            static_cast<std::uint64_t>(clip.originYpx) +
+            definition.frameHeightPixels;
+        if (right > (std::numeric_limits<std::uint32_t>::max)() ||
+            bottom > (std::numeric_limits<std::uint32_t>::max)()) {
+            error = "Enemy definition animation rectangle exceeds supported pixel coordinates.";
+            return false;
+        }
+
+        if (!isAttack) {
+            if (clip.eventFrameIndex.has_value() || clip.muzzlePixel.has_value()) {
+                error = "Only an enemy attack animation may define an event frame or muzzle.";
+                return false;
+            }
+            return true;
+        }
+        if (!clip.eventFrameIndex.has_value() ||
+            *clip.eventFrameIndex >= clip.frameCount) {
+            error = "Enemy definition attack event frame must be inside the attack animation.";
+            return false;
+        }
+        if (definition.kind == EnemyKind::Melee) {
+            if (clip.muzzlePixel.has_value()) {
+                error = "A melee enemy attack animation must not define a muzzle.";
+                return false;
+            }
+            return true;
+        }
+        if (!clip.muzzlePixel.has_value() ||
+            clip.muzzlePixel->x >= definition.frameWidthPixels ||
+            clip.muzzlePixel->y >= definition.frameHeightPixels) {
+            error = "A ranged enemy attack animation requires an in-frame muzzle coordinate.";
+            return false;
+        }
+        return true;
+    };
+    if (!validateClip(definition.animations.idle, "idle", false) ||
+        !validateClip(definition.animations.moving, "moving", false) ||
+        !validateClip(definition.animations.attacking, "attacking", true) ||
+        !validateClip(definition.animations.dead, "dead", false)) {
         return false;
     }
 
     const float attackStateSeconds =
-        definition.kind == EnemyKind::Melee
-            ? settings_.meleeAttackStateSeconds
-            : settings_.rangedAttackStateSeconds;
+        ClipDurationSeconds(definition.animations.attacking);
+    if (!std::isfinite(attackStateSeconds) || attackStateSeconds <= 0.0f) {
+        error = "Enemy definition attack animation duration is unsupported.";
+        return false;
+    }
     if (definition.attackIntervalSeconds < attackStateSeconds) {
         error = "Enemy definition attack interval must not be shorter than its attack state duration.";
         return false;
@@ -705,18 +816,18 @@ EnemySpawnResult EnemySystem::Spawn(
         if (GridCollision::OverlapsSolid(
                 map,
                 spawnPosition,
-                settings_.collisionRadius,
+                definition.hitboxRadius,
                 cellSize_) ||
             GridCollision::OverlapsCircle(
                 spawnPosition,
-                settings_.collisionRadius,
+                definition.hitboxRadius,
                 {playerPosition, playerCollisionRadius})) {
             return {EnemySpawnStatus::Blocked, 0};
         }
         for (const CircleObstacle& obstacle : CollectOccupiedColliders()) {
             if (GridCollision::OverlapsCircle(
                     spawnPosition,
-                    settings_.collisionRadius,
+                    definition.hitboxRadius,
                     obstacle)) {
                 return {EnemySpawnStatus::Blocked, 0};
             }
@@ -760,7 +871,10 @@ bool EnemySystem::Retire(const EnemyId id) noexcept {
 bool EnemySystem::RetireDead(const EnemyId id) noexcept {
     for (const RuntimeEnemy& enemy : enemies_) {
         if (enemy.id == id) {
-            return enemy.state == EnemyState::Dead && Retire(id);
+            return enemy.state == EnemyState::Dead &&
+                   enemy.stateElapsedSeconds >=
+                       DeadVisibilitySeconds(enemy.definition) &&
+                   Retire(id);
         }
     }
     return false;
@@ -771,7 +885,7 @@ std::size_t EnemySystem::RetireExpiredDead() noexcept {
     for (std::size_t index = enemies_.size(); index > 0; --index) {
         const RuntimeEnemy& enemy = enemies_[index - 1];
         if (enemy.state == EnemyState::Dead &&
-            enemy.hitFlashRemainingSeconds <= 0.0f) {
+            enemy.stateElapsedSeconds >= DeadVisibilitySeconds(enemy.definition)) {
             const EnemyId id = enemy.id;
             static_cast<void>(Retire(id));
             ++retiredCount;
@@ -853,8 +967,75 @@ void EnemySystem::Update(
         enemy.repathElapsedSeconds = 0.0f;
         enemy.stuckElapsedSeconds = 0.0f;
     };
-    const auto enterAttack = [this, &setState, playerPosition, &player](RuntimeEnemy& enemy) {
+    const auto emitAttackEvent =
+        [this,
+         &map,
+         playerPosition,
+         playerCollisionRadius,
+         &player](RuntimeEnemy& enemy) {
+            if (enemy.attackEventEmitted) {
+                return;
+            }
+            enemy.attackEventEmitted = true;
+
+            Float3 origin{
+                enemy.position.x,
+                enemy.definition.hitboxHeight * 0.5f,
+                enemy.position.z,
+            };
+            if (enemy.kind == EnemyKind::Melee) {
+                const float eventSurfaceDistance = SurfaceDistance(
+                    enemy.position,
+                    enemy.definition.hitboxRadius,
+                    playerPosition,
+                    playerCollisionRadius);
+                if (eventSurfaceDistance > settings_.meleeAttackSurfaceDistance ||
+                    !HasWallLineOfSight(
+                        map, enemy.position, playerPosition, cellSize_)) {
+                    return;
+                }
+            } else {
+                const EnemyAnimationPixelPoint muzzle =
+                    *enemy.definition.animations.attacking.muzzlePixel;
+                const float deltaX = playerPosition.x - enemy.position.x;
+                const float deltaZ = playerPosition.z - enemy.position.z;
+                const float distance = std::hypot(deltaX, deltaZ);
+                const Float2 forward =
+                    distance > kPositionEpsilon
+                        ? Float2{deltaX / distance, deltaZ / distance}
+                        : Float2{0.0f, 1.0f};
+                const Float2 right{forward.z, -forward.x};
+                const float horizontalOffset =
+                    (static_cast<float>(muzzle.x) /
+                         static_cast<float>(enemy.definition.frameWidthPixels) -
+                     0.5f) *
+                    enemy.definition.renderWidth;
+                origin.x += right.x * horizontalOffset;
+                origin.z += right.z * horizontalOffset;
+                origin.y =
+                    (1.0f -
+                     static_cast<float>(muzzle.y) /
+                         static_cast<float>(enemy.definition.frameHeightPixels)) *
+                    enemy.definition.renderHeight;
+            }
+
+            attackEvents_.push_back({
+                enemy.id,
+                enemy.definition.id,
+                enemy.kind,
+                origin,
+                {
+                    playerPosition.x,
+                    player.hitboxHeight * 0.5f,
+                    playerPosition.z,
+                },
+                enemy.definition.damage,
+            });
+        };
+    const auto enterAttack =
+        [this, &setState, &emitAttackEvent](RuntimeEnemy& enemy) {
         setState(enemy, EnemyState::Attacking);
+        enemy.attackEventEmitted = false;
         enemy.attackCooldownSeconds = enemy.definition.attackIntervalSeconds;
         enemy.path.clear();
         enemy.nextWaypointIndex = 0;
@@ -862,22 +1043,9 @@ void EnemySystem::Update(
         enemy.lastPlayerCell.reset();
         enemy.repathElapsedSeconds = 0.0f;
         enemy.stuckElapsedSeconds = 0.0f;
-        attackEvents_.push_back({
-            enemy.id,
-            enemy.definition.id,
-            enemy.kind,
-            {
-                enemy.position.x,
-                enemy.definition.hitboxHeight * 0.5f,
-                enemy.position.z,
-            },
-            {
-                playerPosition.x,
-                player.hitboxHeight * 0.5f,
-                playerPosition.z,
-            },
-            enemy.definition.damage,
-        });
+        if (*enemy.definition.animations.attacking.eventFrameIndex == 0) {
+            emitAttackEvent(enemy);
+        }
     };
 
     for (RuntimeEnemy& enemy : enemies_) {
@@ -892,11 +1060,19 @@ void EnemySystem::Update(
         AddElapsed(enemy.repathElapsedSeconds, deltaSeconds);
 
         if (enemy.state == EnemyState::Attacking) {
+            const float previousElapsedSeconds = enemy.stateElapsedSeconds;
             AddElapsed(enemy.stateElapsedSeconds, deltaSeconds);
-            const float attackStateSeconds =
-                enemy.kind == EnemyKind::Melee
-                    ? settings_.meleeAttackStateSeconds
-                    : settings_.rangedAttackStateSeconds;
+            const float eventSeconds =
+                static_cast<float>(
+                    *enemy.definition.animations.attacking.eventFrameIndex) *
+                enemy.definition.animations.attacking.secondsPerFrame;
+            if (!enemy.attackEventEmitted &&
+                previousElapsedSeconds <= eventSeconds &&
+                enemy.stateElapsedSeconds >= eventSeconds) {
+                emitAttackEvent(enemy);
+            }
+            const float attackStateSeconds = ClipDurationSeconds(
+                enemy.definition.animations.attacking);
             if (enemy.stateElapsedSeconds < attackStateSeconds) {
                 continue;
             }
@@ -907,7 +1083,7 @@ void EnemySystem::Update(
 
         const float surfaceDistance = SurfaceDistance(
             enemy.position,
-            settings_.collisionRadius,
+            enemy.definition.hitboxRadius,
             playerPosition,
             playerCollisionRadius);
         const bool hasLineOfSight = HasWallLineOfSight(
@@ -938,7 +1114,7 @@ void EnemySystem::Update(
                     enemy.position,
                     playerPosition,
                     settings_.meleeSpeed * deltaSeconds,
-                    settings_.collisionRadius,
+                    enemy.definition.hitboxRadius,
                     playerObstacle,
                     cellSize_);
             } else if (enemyCell.has_value()) {
@@ -954,7 +1130,7 @@ void EnemySystem::Update(
                         map,
                         enemy.path,
                         enemy.nextWaypointIndex,
-                        settings_.collisionRadius,
+                        enemy.definition.hitboxRadius,
                         cellSize_);
                 if (needsPath) {
                     assignPath(
@@ -964,7 +1140,7 @@ void EnemySystem::Update(
                             map,
                             *enemyCell,
                             *playerCell,
-                            settings_.collisionRadius,
+                            enemy.definition.hitboxRadius,
                             cellSize_));
                 }
             } else {
@@ -985,7 +1161,7 @@ void EnemySystem::Update(
                         map,
                         enemy.path,
                         enemy.nextWaypointIndex,
-                        settings_.collisionRadius,
+                        enemy.definition.hitboxRadius,
                         cellSize_,
                         playerCell);
                 if (needsPath) {
@@ -1009,7 +1185,7 @@ void EnemySystem::Update(
                             if (!IsNavigationCell(
                                     map,
                                     candidate,
-                                    settings_.collisionRadius,
+                                    enemy.definition.hitboxRadius,
                                     cellSize_,
                                     playerCell)) {
                                 continue;
@@ -1018,7 +1194,7 @@ void EnemySystem::Update(
                                 map.GetCellCenter(candidate, cellSize_);
                             const float candidateSurfaceDistance = SurfaceDistance(
                                 candidatePosition,
-                                settings_.collisionRadius,
+                                enemy.definition.hitboxRadius,
                                 playerPosition,
                                 playerCollisionRadius);
                             const float idealDifference = std::fabs(
@@ -1035,7 +1211,7 @@ void EnemySystem::Update(
                                 map,
                                 *enemyCell,
                                 candidate,
-                                settings_.collisionRadius,
+                                enemy.definition.hitboxRadius,
                                 cellSize_,
                                 playerCell);
                             if (candidatePath.empty()) {
@@ -1092,7 +1268,7 @@ void EnemySystem::Update(
                     map,
                     enemy.path,
                     enemy.nextWaypointIndex,
-                    settings_.collisionRadius,
+                    enemy.definition.hitboxRadius,
                     cellSize_,
                     playerCell);
             if (needsPath) {
@@ -1114,7 +1290,7 @@ void EnemySystem::Update(
                         if (!IsNavigationCell(
                                 map,
                                 candidate,
-                                settings_.collisionRadius,
+                                enemy.definition.hitboxRadius,
                                 cellSize_,
                                 playerCell)) {
                             continue;
@@ -1123,7 +1299,7 @@ void EnemySystem::Update(
                             map.GetCellCenter(candidate, cellSize_);
                         const float candidateSurfaceDistance = SurfaceDistance(
                             candidatePosition,
-                            settings_.collisionRadius,
+                            enemy.definition.hitboxRadius,
                             playerPosition,
                             playerCollisionRadius);
                         if (candidateSurfaceDistance <
@@ -1142,7 +1318,7 @@ void EnemySystem::Update(
                             map,
                             *enemyCell,
                             candidate,
-                            settings_.collisionRadius,
+                            enemy.definition.hitboxRadius,
                             cellSize_,
                             playerCell);
                         if (candidatePath.empty()) {
@@ -1208,7 +1384,7 @@ void EnemySystem::Update(
                     enemy.position,
                     waypoint,
                     movementBudget,
-                    settings_.collisionRadius,
+                    enemy.definition.hitboxRadius,
                     playerObstacle,
                     cellSize_);
                 const float movedDistance = Distance(beforeStep, enemy.position);
@@ -1248,7 +1424,10 @@ std::vector<CircleObstacle> EnemySystem::CollectAliveColliders() const {
     colliders.reserve(enemies_.size());
     for (const RuntimeEnemy& enemy : enemies_) {
         if (enemy.state != EnemyState::Dead) {
-            colliders.push_back({enemy.position, settings_.collisionRadius});
+            colliders.push_back({
+                enemy.position,
+                enemy.definition.hitboxRadius,
+            });
         }
     }
     return colliders;
@@ -1259,8 +1438,11 @@ std::vector<CircleObstacle> EnemySystem::CollectOccupiedColliders() const {
     colliders.reserve(enemies_.size());
     for (const RuntimeEnemy& enemy : enemies_) {
         if (enemy.state != EnemyState::Dead ||
-            enemy.hitFlashRemainingSeconds > 0.0f) {
-            colliders.push_back({enemy.position, settings_.collisionRadius});
+            enemy.stateElapsedSeconds < DeadVisibilitySeconds(enemy.definition)) {
+            colliders.push_back({
+                enemy.position,
+                enemy.definition.hitboxRadius,
+            });
         }
     }
     return colliders;
@@ -1333,6 +1515,14 @@ bool EnemySystem::Kill(const EnemyId id) noexcept {
 }
 
 void EnemySystem::MarkDead(RuntimeEnemy& enemy) noexcept {
+    // An attack event can be emitted by Update and then the same enemy can be
+    // killed by the player's shot before Game consumes this frame's queue.
+    // Dead enemies must not deal that already-queued damage or spawn a bullet.
+    std::erase_if(
+        attackEvents_,
+        [&enemy](const EnemyAttackEvent& event) {
+            return event.enemyId == enemy.id;
+        });
     enemy.state = EnemyState::Dead;
     enemy.stateElapsedSeconds = 0.0f;
     enemy.attackCooldownSeconds = 0.0f;
@@ -1354,7 +1544,7 @@ void EnemySystem::RefreshSnapshots() {
         snapshot.kind = enemy.kind;
         snapshot.state = enemy.state;
         snapshot.position = enemy.position;
-        snapshot.collisionRadius = settings_.collisionRadius;
+        snapshot.collisionRadius = enemy.definition.hitboxRadius;
         snapshot.hitboxHeight = enemy.definition.hitboxHeight;
         snapshot.health = enemy.health;
         snapshot.maxHealth = enemy.definition.maxHealth;
@@ -1362,9 +1552,6 @@ void EnemySystem::RefreshSnapshots() {
         snapshot.hitFlashRemainingSeconds =
             enemy.hitFlashRemainingSeconds;
         snapshot.stateElapsedSeconds = enemy.stateElapsedSeconds;
-        if (snapshot.texturePath != enemy.definition.texturePath) {
-            snapshot.texturePath = enemy.definition.texturePath;
-        }
     }
 }
 

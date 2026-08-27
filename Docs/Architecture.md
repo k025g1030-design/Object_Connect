@@ -17,7 +17,7 @@ Gameplay ground 仍固定在 `Y = 0`，玩家移動是 XZ 圓形碰撞；combat 
 | 模組 | 責任 | 不負責 |
 | --- | --- | --- |
 | Core | `Application` 的 engine lifetime、主迴圈、工作目錄、錯誤顯示；`FrameTimer` 的 delta clamp | Map、戰鬥規則、繪製內容 |
-| Data | 嚴格 CSV parse；enemy／weapon／level definition catalog 與交叉驗證 | Runtime 狀態、AI、Rendering |
+| Data | 嚴格 CSV parse；enemy／animation clip／weapon／level definition catalog 與交叉驗證 | Runtime 狀態、AI、Rendering |
 | Game | `GameFlow`、`MapSceneManager`、`CampaignRunState`、level progression 與各 subsystem 協調 | 平台初始化、底層碰撞演算法、asset renderer 實作 |
 | Math | Engine-independent `Float2`／`Float3` value type | Matrix／render pipeline 或 gameplay 規則 |
 | Input | 取樣實體鍵、mouse、focus；依 Game 請求管理 cursor capture | Menu、射擊、reload、移動等遊戲語意 |
@@ -28,19 +28,24 @@ Gameplay ground 仍固定在 `Y = 0`，玩家移動是 XZ 圓形碰撞；combat 
 | Gameplay/Weapon | 彈匣／備彈、semi／automatic trigger、cooldown、R-only reload、`ShotEvent` 與 HUD snapshot | Raycast、enemy damage、圖像繪製 |
 | Gameplay/Enemy | 動態 `EnemySystem`、damage／death／hit flash、四狀態 AI、A*／LOS、attack event；`EnemySpawnDirector` | KamataEngine、Player HP owner、projectile simulation |
 | Gameplay/Combat | 白色 visual tracer 與橙色 authoritative enemy projectile 的生命週期／swept hit | 發射決策、HP／kill 統計、Rendering |
-| Rendering | camera、map／door、dynamic enemy billboard、projectile sphere、weapon／HUD、ASCII UI 與 screen fade | Gameplay 狀態所有權、AI、damage 計算、transition timing |
+| Rendering | camera、camera-centered sky、map／door、Atlas enemy billboard、projectile、world post-process、weapon／HUD、ASCII UI 與 fade | Gameplay 狀態所有權、AI、damage 計算、transition timing |
 
 `Game` 是唯一高層組裝位置。Data 與 Gameplay 不依賴 KamataEngine；Renderer 只讀 snapshot 或 view model，
 不回寫 Player／Enemy／Weapon 狀態。
 
 ## 資料契約
 
-執行時由 `Resources/data/` 載入三份 catalog；原本由 `NoviceResources/data/` 部署。
+執行時由 `Resources/data/` 載入四份 catalog；原本由 `NoviceResources/data/` 部署。
 
 ```text
 enemies.csv -> EnemyDefinition
   enemy_id, kind, damage, attack_interval_seconds, hp, defense,
-  hitbox_height, texture_name
+  hitbox_radius, hitbox_height, render_width, render_height,
+  texture_name, frame_width_px, frame_height_px
+
+enemy_animation_clips.csv -> EnemyAnimationSetDefinition
+  enemy_id, state, origin_x_px, origin_y_px, frame_count,
+  seconds_per_frame, event_frame_index, muzzle_x_px, muzzle_y_px
 
 weapons.csv -> WeaponDefinition
   weapon_id, damage, magazine_size, reserve_ammo, recoil, automatic,
@@ -51,8 +56,12 @@ levels.csv -> LevelDefinition
   melee_enemy_count, active_enemy_limit, clear_kill_count
 ```
 
-`GameConfig` 保存三份資料表路徑、resource root、`startLevelId`、`startingWeaponId` 與近／遠敵人
+`GameConfig` 保存四份資料表路徑、resource root、`startLevelId`、`startingWeaponId` 與近／遠敵人
 definition ID；地圖進行順序不再由程式內的 path list 決定。`next_level_id` 空白代表最後房間成功出口。
+
+`hitbox_radius`／`hitbox_height` 只屬於 gameplay collision；`render_width`／`render_height` 只屬於
+billboard。render size 定義透明留白在內的共用 frame canvas 世界尺寸，而不是每個 frame 的 alpha bounding
+box。所有 state 保留同一 canvas 與 ground anchor，避免 idle／move／attack／dead 因留白不同而逐幀縮放或跳動。
 
 CSV reader 支援 UTF-8 BOM、LF／CRLF、quoted field 與 doubled-quote escape。載入器驗證 header、必要欄位、
 型別與範圍、duplicate ID、enemy kind、unknown reference、絕對路徑／`..`、缺失 map／texture，以及
@@ -134,12 +143,12 @@ WinMain
   -> working directory = executable directory
   -> KamataEngine::Initialize
   -> Game::Initialize(GameConfig)
-       1. GameDataLoader 載入並驗證三份 CSV catalog
+       1. GameDataLoader 載入並驗證四份 CSV catalog
        2. 從 startLevelId 追蹤 next_level_id，建立 ordered level chain
        3. 載入每張 GridMap，交由 MapSceneManager 驗證並保存
        4. Configure Player／Weapon／Projectile；Initialize CampaignRunState
        5. 對每張 map preflight spawn marker、EnemySpawnDirector、collision 與 CPU geometry
-       6. Initialize Camera、map／enemy／projectile／HUD／UI／fade／Input adapter
+       6. Initialize Camera、sky、scene post-process、map／enemy／projectile／HUD／UI／fade／Input adapter
        7. 建立第一個 LevelSession；GameFlow 設為 MainMenu，cursor capture 關閉
   -> frame loop
 ```
@@ -175,8 +184,9 @@ InputSystem::Sample
 ```
 
 玩家 hitscan 先按射擊前的準星方向解決，之後才把 CSV 的 recoil 角度加到視角。命中無穿透、爆頭、
-random spread 或 friendly fire。damage 公式為 `max(1, weaponDamage - enemyDefense)`；有效 hit 讓敵人白閃
-0.12 秒，lethal hit 也保留 feedback 後才退休。
+random spread 或 friendly fire。damage 公式為 `max(1, weaponDamage - enemyDefense)`；有效 hit 讓敵人以
+約 1.5 倍亮度閃爍 0.12 秒。死亡敵人立刻退出 active count、damage 與 collision，但保留 dead clip 的
+0.4 秒並持續占用 spawn 位置，播放完才退休。
 
 白色玩家球只呈現 muzzle 到實際 hit point 的曳光，權威命中不等待球抵達。橙色敵彈以固定方向飛行，
 不追蹤玩家，使用 swept segment／expanded capsule 防止高速穿透；撞牆、命中玩家或超時後移除。
@@ -188,12 +198,24 @@ enemy 或牆重疊時跳過；同類 marker 全不安全時保留額度，留到
 
 ## Rendering 與 HUD
 
-world draw order 固定為：
+world draw 與 composite 順序固定為：
 
 ```text
-Map -> Enemy billboard -> Projectile sphere -> Weapon/HUD
-    -> Pause or Results UI -> Screen fade
+DirectX PreDraw
+  -> offscreen sRGB scene + private depth
+  -> Sky -> Map -> Enemy billboard -> Projectile sphere
+  -> Brightness/Gamma full-screen composite to sRGB backbuffer
+  -> Weapon/HUD -> Pause UI -> Crosshair/Text -> Screen fade
+  -> DirectX PostDraw
 ```
+
+sky sphere 半徑 50m，球心每 frame 等於 camera position，但不跟隨 yaw／pitch；它沒有 collision、使用
+front-face culling 與 read-only depth，因此不會成為可走出的地圖邊界，也不會遮住之後繪製的遠距地圖物件。
+Enemy atlas 的 UV offset 依 KamataEngine `Material::ConstBufferData` 的連續 `Vector3` ABI 配置在 `c3.w/c4.xy`；
+若錯誤地把整個 offset 宣告在 `c4`，GPU 會遺失 Y row offset，使所有 runtime state 取到錯誤的 atlas 列。
+world material 使用白色 unlit 基底。offscreen 的 sRGB SRV 取樣會先解碼至 linear，shader 乘上
+`Brightness=1.25`，再套用 `pow(color, 2.2 / Gamma)`；`Gamma=2.2` 為中性，最後由 sRGB backbuffer
+執行唯一一次 linear-to-sRGB encode。Weapon／HUD／UI／文字／fade 在 composite 後繪製，不受此調整。
 
 weapon 使用 CSV texture；目前 `white1x1.png` 染綠，固定由右下角向畫面中央延伸。HUD 在 1280×720
 座標系繪製中心四線 crosshair、射擊擴張／回復、右下 `HP` 與視覺上的 `【magazine/reserve】`，以及
@@ -210,7 +232,8 @@ kill 數，不顯示 quota 分母。回到 Main Menu 再開始才建立全新的
   不讓 renderer 或 projectile system 擁有 AI state。
 - **Hit zone**：目前 capsule 是單一 damage zone。若加入 head／limb，擴充 `CombatTarget` 與 hit result，
   不 raycast render mesh。
-- **Enemy animation**：使用 `EnemyState + stateElapsedSeconds` 選擇 clip；空素材仍可回退色塊，不修改 AI。
+- **Enemy animation**：使用 `EnemyState + stateElapsedSeconds` 選擇 CSV clip；idle／move loop，attack／dead
+  clamp。新增素材必須提供完整四狀態與合法 Atlas rectangle，不修改 AI strategy。
 - **非線性 campaign**：目前 loader 與 `CampaignRunState` 假設一條 next-ID chain；branching 必須先明確
   定義 Results、visited room 與回訪統計語意。
 
@@ -229,8 +252,8 @@ engine resource lookup 前，不改名或另建平行 asset pipeline。
 
 ## Remaining risks
 
-- Headless contract tests 無法證明 executable 啟動與實際 GPU 畫面。crosshair、綠色 weapon、白／橙球、
-  hit flash、reload bar、HUD layering、door 出現、Pause overlay、Results 排版與整體手感仍需人工 runtime regression。
+- Headless contract tests 無法證明 executable 啟動與實際 GPU 畫面。sky seam／極點、Atlas 透明邊緣與 muzzle、
+  hit flash、Gamma、HUD layering、door、Pause overlay、Results 排版與整體手感仍需人工 runtime regression。
 - 每個 build configuration 都必須分別執行 MSVC `/W4 /WX /sdl /permissive-` build 與 CTest；
   尚未完成的 configuration 不視為已驗證。
 - Rendering adapter 仍受 KamataEngine ABI、Windows 與 resource-root 規則約束；尚未具備跨平台 backend。

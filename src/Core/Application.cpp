@@ -19,6 +19,12 @@ namespace {
 
 constexpr const wchar_t* kWindowTitle = L"GC2B_08_ラ_ケツブン Object_FPS";
 
+#if defined(_DEBUG)
+constexpr bool kEnableDirectXDebugLayer = true;
+#else
+constexpr bool kEnableDirectXDebugLayer = false;
+#endif
+
 [[nodiscard]] bool SetExecutableWorkingDirectory(std::wstring& error) {
     std::vector<wchar_t> executablePath(32768, L'\0');
     const DWORD length = ::GetModuleFileNameW(
@@ -62,7 +68,7 @@ public:
     EngineLifetime& operator=(const EngineLifetime&) = delete;
 
     void Initialize() {
-        KamataEngine::Initialize(kWindowTitle);
+        KamataEngine::Initialize(kWindowTitle, kEnableDirectXDebugLayer);
         initialized_ = true;
 
         // KamataEngine::Initialize sets up Sprite, but DebugText is an optional

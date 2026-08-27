@@ -5,10 +5,14 @@ SamplerState smp : register(s0);      // 0番スロットに設定されたサ�
 
 float4 main(VSOutput input) : SV_TARGET {
 	// UV変換
+	const float2 uvOffset = float2(m_uv_offset_x, m_uv_offset_yz.x);
 	float2 uv = float2(
-	    input.uv.x * m_uv_scale.x + m_uv_offset.x, input.uv.y * m_uv_scale.y + m_uv_offset.y);
+	    input.uv.x * m_uv_scale.x + uvOffset.x, input.uv.y * m_uv_scale.y + uvOffset.y);
 	// テクスチャマッピング
 	float4 texcolor = tex.Sample(smp, uv);
+	// Fully transparent atlas texels must not write depth and hide geometry
+	// rendered later. Keep a small tolerance for filtered sprite edges.
+	clip(texcolor.a - 0.01f);
 
 	// 光沢度
 	const float shininess = 4.0f;

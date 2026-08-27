@@ -9,6 +9,8 @@
 #include "RetroFPS/Rendering/CameraSettings.hpp"
 #include "RetroFPS/Rendering/EnemyRenderSettings.hpp"
 #include "RetroFPS/Rendering/MapRenderAssets.hpp"
+#include "RetroFPS/Rendering/ScenePostProcessSettings.hpp"
+#include "RetroFPS/Rendering/SkySphereRenderer.hpp"
 #include "RetroFPS/World/WorldSettings.hpp"
 
 #include <string>
@@ -31,6 +33,8 @@ struct GameConfig final {
     CameraSettings camera{};
     EnemyRenderSettings enemyRendering{};
     MapRenderAssets mapRendering{};
+    SkyRenderSettings skyRendering{};
+    ScenePostProcessSettings scenePostProcess{};
     MapSceneTransitionSettings mapTransition{};
 };
 

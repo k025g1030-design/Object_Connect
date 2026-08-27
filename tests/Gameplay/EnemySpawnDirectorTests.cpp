@@ -24,16 +24,39 @@ namespace {
 }
 
 [[nodiscard]] EnemyDefinition DirectorDefinition(const EnemyKind kind) {
-    return {
-        kind == EnemyKind::Melee ? "melee_director" : "ranged_director",
-        kind,
-        kind == EnemyKind::Melee ? 15.0f : 10.0f,
-        kind == EnemyKind::Melee ? 0.9f : 1.25f,
-        kind == EnemyKind::Melee ? 50.0f : 40.0f,
-        kind == EnemyKind::Melee ? 5.0f : 0.0f,
-        kind == EnemyKind::Melee ? 0.8f : 1.6f,
-        "white1x1.png",
-    };
+    EnemyDefinition definition{};
+    definition.id =
+        kind == EnemyKind::Melee ? "melee_director" : "ranged_director";
+    definition.kind = kind;
+    definition.damage = kind == EnemyKind::Melee ? 15.0f : 10.0f;
+    definition.attackIntervalSeconds =
+        kind == EnemyKind::Melee ? 0.9f : 1.25f;
+    definition.maxHealth = kind == EnemyKind::Melee ? 50.0f : 40.0f;
+    definition.defense = kind == EnemyKind::Melee ? 5.0f : 0.0f;
+    definition.hitboxRadius = 0.20f;
+    definition.hitboxHeight = kind == EnemyKind::Melee ? 0.8f : 1.6f;
+    definition.renderWidth =
+        kind == EnemyKind::Melee ? 0.973913f : 1.230769f;
+    definition.renderHeight = definition.hitboxHeight;
+    definition.texturePath = "white1x1.png";
+    definition.frameWidthPixels = kind == EnemyKind::Melee ? 560u : 700u;
+    definition.frameHeightPixels = kind == EnemyKind::Melee ? 460u : 910u;
+    definition.animations.idle.frameCount = 3;
+    definition.animations.idle.secondsPerFrame = 0.10f;
+    definition.animations.moving.frameCount = 4;
+    definition.animations.moving.secondsPerFrame = 0.10f;
+    definition.animations.attacking.frameCount =
+        kind == EnemyKind::Melee ? 6u : 5u;
+    definition.animations.attacking.secondsPerFrame = 0.05f;
+    definition.animations.attacking.eventFrameIndex =
+        kind == EnemyKind::Melee ? 3u : 2u;
+    if (kind == EnemyKind::Ranged) {
+        definition.animations.attacking.muzzlePixel =
+            EnemyAnimationPixelPoint{350, 420};
+    }
+    definition.animations.dead.frameCount = 4;
+    definition.animations.dead.secondsPerFrame = 0.10f;
+    return definition;
 }
 
 void InitializeEmptySystem(
@@ -140,8 +163,14 @@ void TestAlternatingQuotaAliveCapAndRoundRobin(TestContext& context) {
         "ranged quota advances round-robin after the next cap slot opens");
 
     const EnemyId secondMeleeId = system.GetSnapshots()[2].id;
-    context.Expect(system.RetireDead(firstMeleeId), "dead melee can retire explicitly");
-    context.Expect(system.RetireDead(firstRangedId), "dead ranged can retire explicitly");
+    context.Expect(
+        !system.RetireDead(firstMeleeId) &&
+            !system.RetireDead(firstRangedId),
+        "dead enemies cannot retire before their death animation completes");
+    system.Update(map, map.GetSpawnPosition(), 0.25f, 0.4f);
+    context.Expect(
+        system.RetireDead(firstMeleeId) && system.RetireDead(firstRangedId),
+        "dead enemies can retire after their death animation completes");
     context.Expect(system.Kill(secondMeleeId), "second melee opens the final quota slot");
     const EnemySpawnBatchResult finalBatch = director.SpawnAvailable(
         system,

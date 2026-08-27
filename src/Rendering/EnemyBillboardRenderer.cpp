@@ -4,7 +4,6 @@
 
 #include <KamataEngine.h>
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -16,7 +15,9 @@
 #include <optional>
 #include <ranges>
 #include <stdexcept>
+#include <string>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,11 @@ namespace fps {
 namespace {
 
 const std::filesystem::path kResourceRoot{"Resources"};
+
+static_assert(
+    offsetof(KamataEngine::Material::ConstBufferData, uvScale) == 48 &&
+        offsetof(KamataEngine::Material::ConstBufferData, uvOffset) == 60,
+    "Enemy atlas shaders rely on KamataEngine's contiguous material Vector3 layout.");
 
 enum class ClipIndex : std::size_t {
     Idle,
@@ -67,24 +73,17 @@ enum class ClipIndex : std::size_t {
     return true;
 }
 
-[[nodiscard]] bool IsFiniteUnitColor(const EnemyTint& color) noexcept {
-    const auto valid = [](const float component) {
-        return std::isfinite(component) && component >= 0.0f && component <= 1.0f;
-    };
-    return valid(color.red) && valid(color.green) && valid(color.blue) && valid(color.alpha);
-}
-
-[[nodiscard]] const EnemyAnimationClipSettings& GetClip(
-    const EnemyAnimationSetSettings& set, const ClipIndex index) {
+[[nodiscard]] const EnemyAnimationClipDefinition& GetClip(
+    const EnemyAnimationSetDefinition& animations, const ClipIndex index) {
     switch (index) {
     case ClipIndex::Idle:
-        return set.idle;
+        return animations.idle;
     case ClipIndex::Moving:
-        return set.moving;
+        return animations.moving;
     case ClipIndex::Attacking:
-        return set.attacking;
+        return animations.attacking;
     case ClipIndex::Dead:
-        return set.dead;
+        return animations.dead;
     case ClipIndex::Count:
         break;
     }
@@ -103,25 +102,6 @@ enum class ClipIndex : std::size_t {
         return ClipIndex::Dead;
     }
     throw std::logic_error("Unsupported enemy state.");
-}
-
-[[nodiscard]] bool ValidateAnimationSet(
-    const EnemyAnimationSetSettings& set, const char* const label, std::string& error) {
-    for (std::size_t index = 0; index < static_cast<std::size_t>(ClipIndex::Count); ++index) {
-        const auto clipIndex = static_cast<ClipIndex>(index);
-        const EnemyAnimationClipSettings& clip = GetClip(set, clipIndex);
-        if (!std::isfinite(clip.secondsPerFrame) || clip.secondsPerFrame <= 0.0f) {
-            error = std::string{"Enemy "} + label +
-                    " animation secondsPerFrame must be finite and greater than zero.";
-            return false;
-        }
-        for (const std::string& texturePath : clip.frameTexturePaths) {
-            if (!ValidateRelativeTexturePath(texturePath, error)) {
-                return false;
-            }
-        }
-    }
-    return true;
 }
 
 [[nodiscard]] bool ValidateSettings(
@@ -148,76 +128,124 @@ enum class ClipIndex : std::size_t {
         }
     }
 
-    if (!ValidateRelativeTexturePath(settings.fallbackTexturePath, error)) {
+    if (!std::isfinite(settings.hitFlashBrightness) ||
+        settings.hitFlashBrightness <= 0.0f) {
+        error = "Enemy hit-flash brightness must be finite and greater than zero.";
         return false;
     }
-    if (!std::isfinite(settings.billboardWidth) || settings.billboardWidth <= 0.0f ||
-        !std::isfinite(settings.rangedHeight) || settings.rangedHeight <= 0.0f ||
-        !std::isfinite(settings.meleeHeightScale) || settings.meleeHeightScale <= 0.0f) {
-        error = "Enemy billboard dimensions must be finite and greater than zero.";
-        return false;
-    }
-    const float meleeHeight = settings.rangedHeight * settings.meleeHeightScale;
-    if (!std::isfinite(meleeHeight) || meleeHeight <= 0.0f) {
-        error = "Enemy melee billboard height must be finite and greater than zero.";
-        return false;
-    }
-    if (!IsFiniteUnitColor(settings.meleeTint) ||
-        !IsFiniteUnitColor(settings.rangedTint)) {
-        error = "Enemy billboard tint components must be finite values from zero to one.";
-        return false;
-    }
-    return ValidateAnimationSet(settings.meleeAnimations, "melee", error) &&
-           ValidateAnimationSet(settings.rangedAnimations, "ranged", error);
+    return true;
 }
 
-[[nodiscard]] KamataEngine::Vector4 ToEngineColor(const EnemyTint& tint) noexcept {
-    return {tint.red, tint.green, tint.blue, tint.alpha};
+[[nodiscard]] bool ValidateDefinition(
+    const EnemyDefinition& definition, std::string& error) {
+    if (definition.id.empty()) {
+        error = "Enemy rendering definitions must have a non-empty ID.";
+        return false;
+    }
+    if (!ValidateRelativeTexturePath(definition.texturePath, error)) {
+        return false;
+    }
+    if (!std::isfinite(definition.renderWidth) || definition.renderWidth <= 0.0f ||
+        !std::isfinite(definition.renderHeight) || definition.renderHeight <= 0.0f) {
+        error = "Enemy '" + definition.id +
+                "' render dimensions must be finite and greater than zero.";
+        return false;
+    }
+    if (definition.frameWidthPixels == 0 || definition.frameHeightPixels == 0) {
+        error = "Enemy '" + definition.id +
+                "' atlas frame dimensions must be greater than zero.";
+        return false;
+    }
+
+    for (std::size_t index = 0;
+         index < static_cast<std::size_t>(ClipIndex::Count); ++index) {
+        const EnemyAnimationClipDefinition& clip = GetClip(
+            definition.animations, static_cast<ClipIndex>(index));
+        if (clip.frameCount == 0 || !std::isfinite(clip.secondsPerFrame) ||
+            clip.secondsPerFrame <= 0.0f) {
+            error = "Enemy '" + definition.id +
+                    "' animation clips require frames and positive finite timing.";
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] KamataEngine::Vector4 MakeBrightnessColor(const float brightness) noexcept {
+    return {brightness, brightness, brightness, 1.0f};
 }
 
 } // namespace
 
 struct EnemyBillboardRenderer::Impl final {
-    using LoadedClip = std::vector<std::uint32_t>;
-    using LoadedSet = std::array<LoadedClip, static_cast<std::size_t>(ClipIndex::Count)>;
+    struct LoadedFrame final {
+        std::unique_ptr<KamataEngine::Material> material;
+    };
+
+    using LoadedClip = std::vector<LoadedFrame>;
+    using LoadedClips = std::array<LoadedClip, static_cast<std::size_t>(ClipIndex::Count)>;
+
+    struct LoadedDefinition final {
+        EnemyDefinition definition;
+        std::uint32_t textureHandle = 0;
+        LoadedClips clips{};
+    };
 
     struct RenderInstance final {
         EnemyId id = 0;
-        EnemyKind kind = EnemyKind::Melee;
+        EnemyDefinitionId definitionId;
         EnemyState state = EnemyState::Idle;
         float stateElapsedSeconds = 0.0f;
         float yawRadians = 0.0f;
-        std::uint32_t baseTextureHandle = 0;
         std::unique_ptr<KamataEngine::Object3d> object;
         std::unique_ptr<KamataEngine::ObjectColor> color;
     };
 
-    // Object3d stores a non-owning model pointer, so instances must be destroyed first.
+    // Object3d stores a non-owning model pointer. Declaration order ensures
+    // instances and frame materials are destroyed before the shared model.
     std::unique_ptr<KamataEngine::Model> model;
-    std::uint32_t fallbackTextureHandle = 0;
+    std::unordered_map<EnemyDefinitionId, LoadedDefinition> definitions;
     EnemyRenderSettings settings{};
-    LoadedSet meleeFrames{};
-    LoadedSet rangedFrames{};
     std::vector<RenderInstance> instances;
 
-    [[nodiscard]] std::uint32_t ResolveTexture(const RenderInstance& instance) const {
-        const ClipIndex clipIndex = ToClipIndex(instance.state);
-        const std::size_t index = static_cast<std::size_t>(clipIndex);
-        const LoadedSet& loaded =
-            instance.kind == EnemyKind::Melee ? meleeFrames : rangedFrames;
-        if (loaded[index].empty()) {
-            return instance.baseTextureHandle != 0 ? instance.baseTextureHandle
-                                                   : fallbackTextureHandle;
+    [[nodiscard]] LoadedDefinition& FindDefinition(const EnemyDefinitionId& id) {
+        const auto found = definitions.find(id);
+        if (found == definitions.end()) {
+            throw std::invalid_argument(
+                "Enemy billboard snapshot references unknown definition '" + id + "'.");
+        }
+        return found->second;
+    }
+
+    [[nodiscard]] const LoadedDefinition& FindDefinition(
+        const EnemyDefinitionId& id) const {
+        const auto found = definitions.find(id);
+        if (found == definitions.end()) {
+            throw std::logic_error(
+                "Enemy billboard instance lost definition '" + id + "'.");
+        }
+        return found->second;
+    }
+
+    [[nodiscard]] RenderInstance CreateInstance(const EnemySnapshot& snapshot) {
+        const LoadedDefinition& loaded = FindDefinition(snapshot.definitionId);
+        if (snapshot.kind != loaded.definition.kind) {
+            throw std::invalid_argument(
+                "Enemy billboard snapshot kind does not match definition '" +
+                snapshot.definitionId + "'.");
         }
 
-        const EnemyAnimationClipSettings& clip =
-            GetEnemyAnimationClip(settings, instance.kind, instance.state);
-        const std::optional<std::size_t> frame = ResolveEnemyAnimationFrame(
-            clip, instance.stateElapsedSeconds, loaded[index].size());
-        return frame.has_value()
-                   ? loaded[index][*frame]
-                   : (instance.baseTextureHandle != 0 ? instance.baseTextureHandle
-                                                      : fallbackTextureHandle);
+        RenderInstance instance;
+        instance.id = snapshot.id;
+        instance.definitionId = snapshot.definitionId;
+        instance.state = snapshot.state;
+        instance.stateElapsedSeconds = snapshot.stateElapsedSeconds;
+        instance.object = std::make_unique<KamataEngine::Object3d>();
+        instance.object->Initialize(model.get());
+        instance.color = std::make_unique<KamataEngine::ObjectColor>();
+        instance.color->Initialize();
+        instance.color->SetColor(MakeBrightnessColor(1.0f));
+        return instance;
     }
 };
 
@@ -229,6 +257,7 @@ EnemyBillboardRenderer::~EnemyBillboardRenderer() {
 
 bool EnemyBillboardRenderer::Initialize(
     const std::span<const EnemySnapshot> snapshots,
+    const std::span<const EnemyDefinition> definitions,
     const EnemyRenderSettings& settings,
     std::string& error) {
     Finalize();
@@ -242,46 +271,87 @@ bool EnemyBillboardRenderer::Initialize(
         implementation->settings = settings;
         implementation->model.reset(
             KamataEngine::Model::CreateFromOBJ(settings.billboardModelName));
-        if (!implementation->model) {
-            error = "KamataEngine failed to create the enemy billboard model.";
+        if (!implementation->model || implementation->model->GetMeshes().empty()) {
+            error = "KamataEngine failed to create the enemy billboard quad model.";
             return false;
         }
-        implementation->fallbackTextureHandle =
-            KamataEngine::TextureManager::Load(settings.fallbackTexturePath);
 
-        const auto loadSet = [](const EnemyAnimationSetSettings& source,
-                                Impl::LoadedSet& destination) {
-            for (std::size_t index = 0;
-                 index < static_cast<std::size_t>(ClipIndex::Count); ++index) {
-                const EnemyAnimationClipSettings& clip =
-                    GetClip(source, static_cast<ClipIndex>(index));
-                destination[index].reserve(clip.frameTexturePaths.size());
-                for (const std::string& path : clip.frameTexturePaths) {
-                    destination[index].push_back(KamataEngine::TextureManager::Load(path));
+        implementation->definitions.reserve(definitions.size());
+        for (const EnemyDefinition& definition : definitions) {
+            if (!ValidateDefinition(definition, error)) {
+                return false;
+            }
+            if (implementation->definitions.contains(definition.id)) {
+                error = "Duplicate enemy rendering definition ID: " + definition.id;
+                return false;
+            }
+
+            Impl::LoadedDefinition loaded;
+            loaded.definition = definition;
+            loaded.textureHandle =
+                KamataEngine::TextureManager::Load(definition.texturePath);
+            const D3D12_RESOURCE_DESC textureDescription =
+                KamataEngine::TextureManager::GetInstance()->GetResoureDesc(
+                    loaded.textureHandle);
+            if (textureDescription.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+                textureDescription.Width == 0 || textureDescription.Height == 0) {
+                error = "Enemy '" + definition.id +
+                        "' texture did not load as a non-empty 2D atlas.";
+                return false;
+            }
+
+            for (std::size_t clipIndex = 0;
+                 clipIndex < static_cast<std::size_t>(ClipIndex::Count); ++clipIndex) {
+                const EnemyAnimationClipDefinition& clip = GetClip(
+                    definition.animations, static_cast<ClipIndex>(clipIndex));
+                Impl::LoadedClip& frames = loaded.clips[clipIndex];
+                frames.reserve(clip.frameCount);
+                for (std::size_t frameIndex = 0; frameIndex < clip.frameCount;
+                     ++frameIndex) {
+                    const std::optional<EnemyAtlasUvTransform> uv = ResolveEnemyAtlasUv(
+                        clip,
+                        definition.frameWidthPixels,
+                        definition.frameHeightPixels,
+                        frameIndex,
+                        textureDescription.Width,
+                        textureDescription.Height);
+                    if (!uv.has_value()) {
+                        error = "Enemy '" + definition.id +
+                                "' animation frame lies outside its loaded texture atlas.";
+                        return false;
+                    }
+
+                    std::unique_ptr<KamataEngine::Material> material =
+                        KamataEngine::Material::Create();
+                    if (!material) {
+                        error = "KamataEngine failed to create an enemy atlas material.";
+                        return false;
+                    }
+                    material->name_ = definition.id + "_atlas_frame_" +
+                                      std::to_string(clipIndex) + "_" +
+                                      std::to_string(frameIndex);
+                    material->ambient_ = {1.0f, 1.0f, 1.0f};
+                    material->diffuse_ = {0.0f, 0.0f, 0.0f};
+                    material->specular_ = {0.0f, 0.0f, 0.0f};
+                    material->alpha_ = 1.0f;
+                    material->uvOffset_ = {uv->offsetX, uv->offsetY, 0.0f};
+                    material->uvScale_ = {uv->scaleX, uv->scaleY, 1.0f};
+                    material->Update();
+                    frames.push_back({std::move(material)});
                 }
             }
-        };
-        loadSet(settings.meleeAnimations, implementation->meleeFrames);
-        loadSet(settings.rangedAnimations, implementation->rangedFrames);
 
-        implementation->instances.reserve(snapshots.size());
+            implementation->definitions.emplace(definition.id, std::move(loaded));
+        }
+
         for (const EnemySnapshot& snapshot : snapshots) {
-            Impl::RenderInstance instance;
-            instance.id = snapshot.id;
-            instance.kind = snapshot.kind;
-            instance.state = snapshot.state;
-            instance.stateElapsedSeconds = snapshot.stateElapsedSeconds;
-            instance.baseTextureHandle = snapshot.texturePath.empty()
-                                             ? implementation->fallbackTextureHandle
-                                             : KamataEngine::TextureManager::Load(
-                                                   snapshot.texturePath);
-            instance.object = std::make_unique<KamataEngine::Object3d>();
-            instance.object->Initialize(implementation->model.get());
-            instance.color = std::make_unique<KamataEngine::ObjectColor>();
-            instance.color->Initialize();
-            instance.color->SetColor(ToEngineColor(
-                snapshot.kind == EnemyKind::Melee ? settings.meleeTint : settings.rangedTint));
-            implementation->instances.push_back(std::move(instance));
+            const Impl::LoadedDefinition& loaded =
+                implementation->FindDefinition(snapshot.definitionId);
+            if (snapshot.kind != loaded.definition.kind) {
+                error = "Enemy billboard snapshot kind does not match definition '" +
+                        snapshot.definitionId + "'.";
+                return false;
+            }
         }
 
         impl_ = std::move(implementation);
@@ -315,8 +385,18 @@ void EnemyBillboardRenderer::Sync(
 
     for (const EnemySnapshot& snapshot : snapshots) {
         if (!std::isfinite(snapshot.position.x) || !std::isfinite(snapshot.position.z) ||
-            !std::isfinite(snapshot.stateElapsedSeconds) || snapshot.stateElapsedSeconds < 0.0f) {
+            !std::isfinite(snapshot.stateElapsedSeconds) ||
+            snapshot.stateElapsedSeconds < 0.0f ||
+            !std::isfinite(snapshot.hitFlashRemainingSeconds) ||
+            snapshot.hitFlashRemainingSeconds < 0.0f) {
             throw std::invalid_argument("Enemy billboard snapshot values must be finite and valid.");
+        }
+
+        const Impl::LoadedDefinition& loaded =
+            impl_->FindDefinition(snapshot.definitionId);
+        if (snapshot.kind != loaded.definition.kind) {
+            throw std::invalid_argument(
+                "Enemy billboard snapshot kind does not match its definition.");
         }
 
         auto found = std::ranges::find_if(
@@ -324,48 +404,29 @@ void EnemyBillboardRenderer::Sync(
                 return instance.id == snapshot.id;
             });
         if (found == impl_->instances.end()) {
-            Impl::RenderInstance instance;
-            instance.id = snapshot.id;
-            instance.kind = snapshot.kind;
-            instance.state = snapshot.state;
-            instance.stateElapsedSeconds = snapshot.stateElapsedSeconds;
-            instance.baseTextureHandle = snapshot.texturePath.empty()
-                                             ? impl_->fallbackTextureHandle
-                                             : KamataEngine::TextureManager::Load(
-                                                   snapshot.texturePath);
-            instance.object = std::make_unique<KamataEngine::Object3d>();
-            instance.object->Initialize(impl_->model.get());
-            instance.color = std::make_unique<KamataEngine::ObjectColor>();
-            instance.color->Initialize();
-            impl_->instances.push_back(std::move(instance));
+            impl_->instances.push_back(impl_->CreateInstance(snapshot));
             found = std::prev(impl_->instances.end());
         }
         Impl::RenderInstance& instance = *found;
-        if (snapshot.kind != instance.kind) {
-            throw std::logic_error("Enemy billboard identity changed kind while alive.");
+        if (snapshot.definitionId != instance.definitionId) {
+            throw std::logic_error(
+                "Enemy billboard identity changed definition while alive.");
         }
 
-        EnemyBillboardPose pose = ResolveEnemyBillboardPose(
-            impl_->settings,
-            snapshot.kind,
+        const EnemyBillboardPose pose = ResolveEnemyBillboardPose(
+            loaded.definition,
             snapshot.position,
             viewerPosition,
             instance.yawRadians);
-        if (std::isfinite(snapshot.hitboxHeight) && snapshot.hitboxHeight > 0.0f) {
-            pose.height = snapshot.hitboxHeight;
-            pose.centerY = snapshot.hitboxHeight * 0.5f;
-        }
         instance.yawRadians = pose.yawRadians;
         instance.state = snapshot.state;
         instance.stateElapsedSeconds = snapshot.stateElapsedSeconds;
-        const EnemyTint baseTint = snapshot.kind == EnemyKind::Melee
-                                       ? impl_->settings.meleeTint
-                                       : impl_->settings.rangedTint;
-        instance.color->SetColor(
-            snapshot.hitFlashRemainingSeconds > 0.0f
-                ? KamataEngine::Vector4{1.0f, 1.0f, 1.0f, 1.0f}
-                : ToEngineColor(baseTint));
-        instance.object->SetTranslation({snapshot.position.x, pose.centerY, snapshot.position.z});
+        const float brightness = snapshot.hitFlashRemainingSeconds > 0.0f
+                                     ? impl_->settings.hitFlashBrightness
+                                     : 1.0f;
+        instance.color->SetColor(MakeBrightnessColor(brightness));
+        instance.object->SetTranslation(
+            {snapshot.position.x, pose.centerY, snapshot.position.z});
         instance.object->SetRotation({0.0f, instance.yawRadians, 0.0f});
         instance.object->SetScale({pose.width, pose.height, 1.0f});
         instance.object->Update();
@@ -382,16 +443,38 @@ void EnemyBillboardRenderer::Draw(const KamataEngine::Camera& camera) const {
         KamataEngine::Model::BlendMode::kNormal,
         KamataEngine::Model::DepthTestMode::kOn);
     for (const Impl::RenderInstance& instance : impl_->instances) {
-        instance.object->GetModel()->Draw(
+        const Impl::LoadedDefinition& loaded =
+            impl_->FindDefinition(instance.definitionId);
+        const ClipIndex clipIndex = ToClipIndex(instance.state);
+        const EnemyAnimationClipDefinition& clip = GetClip(
+            loaded.definition.animations, clipIndex);
+        const std::optional<std::size_t> frameIndex = ResolveEnemyAnimationFrame(
+            clip, instance.state, instance.stateElapsedSeconds);
+        if (!frameIndex.has_value()) {
+            continue;
+        }
+        const Impl::LoadedFrame& frame =
+            loaded.clips[static_cast<std::size_t>(clipIndex)][*frameIndex];
+        for (const std::unique_ptr<KamataEngine::Mesh>& mesh :
+             impl_->model->GetMeshes()) {
+            mesh->SetMaterial(frame.material.get());
+        }
+        impl_->model->Draw(
             instance.object->GetWorldTransform(),
             camera,
-            impl_->ResolveTexture(instance),
+            loaded.textureHandle,
             instance.color.get());
     }
     KamataEngine::Model::PostDraw();
 }
 
 void EnemyBillboardRenderer::Finalize() noexcept {
+    if (!impl_) {
+        return;
+    }
+    impl_->instances.clear();
+    impl_->model.reset();
+    impl_->definitions.clear();
     impl_.reset();
 }
 
