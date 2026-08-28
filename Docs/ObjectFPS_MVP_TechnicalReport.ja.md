@@ -1,7 +1,7 @@
 # Object_FPS 完成版 MVP 技術設計・実装レポート
 
 - 文書ステータス：完成版 MVP 実装後の技術・診断・意思決定記録
-- 日付：2026-08-27
+- 日付：2026-08-28
 - 繁体字中国語版：[ObjectFPS_MVP_TechnicalReport.zh-TW.md](ObjectFPS_MVP_TechnicalReport.zh-TW.md)
 - KamataEngine ABI 詳細レポート：[EnemyAtlasShaderABI.ja.md](EnemyAtlasShaderABI.ja.md)
 - アーキテクチャ参照：[Architecture.md](Architecture.md)
@@ -111,7 +111,7 @@ simulation を変更できません。
 3. Runtime snapshot の state／elapsed を確認し、AI が Dead に誤遷移していないことを確認する。
 4. PNG dimensions、frame rectangles、transparent alpha ranges を調べる。
 5. 透明余白は可視 size を説明できても move row を dead row に置換できない、と切り分ける。
-6. CPU の half-texel、frame X、state Y、V-axis UV 計算を単体検証する。
+6. CPU のハーフテクセル、frame X、state Y、V軸の UV 計算を単体検証する。
 7. `Material::uvOffset_ -> constant buffer -> Obj.hlsli -> ObjPS` の byte layout を追跡する。
 8. 誤った byte mapping から「U に intended Y、V に zero」が入ると予測し、実症状と照合する。
 9. CSV／state machine は変更せず ABI のみ修正し、全 state が復旧するか反証可能な形で確認する。
@@ -135,7 +135,7 @@ Brightness／Gamma composite を適用しました。
 - Test definition を意図的に `hitboxHeight=3.5`、`renderHeight=0.8` とし、renderer が hitbox を使わないことを確認。
 - 大きな `deltaSeconds` で event time を一度に跨ぎ、event が欠落・重複しないことを確認。
 - 同 frame で enemy event を queue した後に kill し、queued event が cancel されることを確認。
-- Atlas first／last frame、V flip、half-texel、out-of-bounds を検証。
+- Atlas の先頭／最終 frame、V反転、ハーフテクセル、範囲外を検証。
 - Gamma 2.2 の exponent が 1、black が black、Brightness が middle tone を上げることを検証。
 
 ## 5. データ駆動契約
@@ -266,10 +266,17 @@ one-shot  = min(rawFrame, frameCount - 1)
 
 Attack／Dead は最後の frame を保持し、retire／state transition 待ちの間に first frame へ戻らないようにします。
 
-### 8.2 UV、V-axis、half-texel
+### 8.2 UV、V軸、ハーフテクセル
 
-各 cell の left は `origin + frameWidth * frameIndex` です。Linear sampling が neighboring cell へ滲まないよう、
-UV endpoints は texel center に置きます。
+各セルの rectangle は次の座標で明確に定義します。
+
+```text
+left   = originXpx + frameWidthPixels * frameIndex
+top    = originYpx
+bottom = top + frameHeightPixels
+```
+
+線形サンプリングが隣接セルへ滲まないよう、UV の両端はテクセル中心に置きます。
 
 ```text
 offsetX = (left + 0.5) / sheetWidth
@@ -279,7 +286,7 @@ scaleY  = -(frameHeight - 1) / sheetHeight
 ```
 
 共有 `map_wall.obj` は KamataEngine OBJ loader を通るため、quad top edge の V direction と Atlas の top-left coordinate が
-異なります。Frame bottom pixel center から開始し、negative `scaleY` を使うことで asset を正立させます。
+異なります。フレーム下端のピクセル中心から開始し、negative `scaleY` を使うことで asset を正立させます。
 
 Billboard yaw は enemy から viewer への方向で算出します。共有 quad の表面をそのまま向けると U が mirror されるため、
 yaw に π を加え、culling disabled で正しい面を表示します。これは visual orientation correction であり、AI facing state ではありません。
@@ -287,15 +294,15 @@ yaw に π を加え、culling disabled で正しい面を表示します。こ�
 ### 8.3 Cache と draw
 
 - 一つの shared quad model。
-- Definition ID ごとに二枚の sheet texture を cache。
-- Melee 17 frames、ranged 16 frames、合計 33 immutable materials。
+- Definition ID ごとに1枚の sheet texture を cache。現在は2種類の definitions なので合計2枚。
+- Melee 17 frames、ranged 16 frames、合計33個の独立 frame materials。初期化後は各 UV constant buffer を再書き込みしない。
 - 各 material は UV scale／offset を保持し、Draw 時に snapshot state＋elapsed から選択。
 - Instance は identity、state／elapsed、Object3d、ObjectColor、billboard yaw のみを保持。
 
 同一 material constant buffer を毎 frame 書き換えずに済みますが、frame／enemy type が増えると material 数と draw calls が
 線形増加します。将来は texture array、instance data、enemy-specific pipeline が候補です。
 
-### 8.4 Transparent depth と hit flash
+### 8.4 透明ピクセルの深度書き込みと hit flash
 
 Alpha blending だけでは、ほぼ透明な quad pixel も depth を書き、後で描く object を隠すことがあります。
 共通 `ObjPS.hlsl` は sample 後に次を実行します。
@@ -305,7 +312,8 @@ clip(texcolor.a - 0.01f);
 ```
 
 これは transparent Atlas texel の depth occlusion を解決しますが、state／row mismatch の根因ではありません。
-また共通 OBJ shader のため、すべての OBJ で alpha `<0.01` が discard され、semi-transparent sorting は未解決です。
+また共通 OBJ shader のため、この `ObjPS` を使うすべての OBJ texture で `texcolor.a < 0.01` の texel が discard されます。
+判定対象は material alpha、`ObjectColor.a`、最終出力 alpha ではありません。半透明描画のソートも未解決です。
 
 通常 enemy color は white、hit 時は `ObjectColor` brightness を約 1.5 倍へ 0.12 秒だけ上げます。
 Melee red／ranged blue tint は廃止し、original art を表示します。
@@ -519,19 +527,20 @@ sRGB render-target hardware が storage／display transfer function を担当し
 ### 14.1 実際の draw pass
 
 ```text
-DirectX PreDraw
-  -> ScenePostProcessRenderer::BeginScene
-       bind/clear offscreen color + private D32 depth
-  -> Sky
-  -> Map
-  -> Enemy billboard
-  -> Projectile
-  -> ScenePostProcessRenderer::Composite
-       sample scene, Brightness/Gamma, output to sRGB backbuffer
-  -> Weapon/HUD
-  -> Pause/Menu/Results UI
-  -> Screen Fade
-  -> DirectX PostDraw
+Playing / Paused:
+  DirectX PreDraw
+    -> ScenePostProcessRenderer::BeginScene
+         bind/clear offscreen color + private D32 depth
+    -> Sky -> Map -> Enemy billboard -> Projectile
+    -> ScenePostProcessRenderer::Composite
+         sample scene, Brightness/Gamma, output to sRGB backbuffer
+    -> Weapon/HUD
+    -> Pause UI（Paused のみ）
+    -> Screen Fade
+    -> DirectX PostDraw
+
+Main Menu / Results / other non-world screens:
+  DirectX PreDraw -> UI -> Screen Fade -> DirectX PostDraw
 ```
 
 HUD／UI が color adjustment を受けないことは mask ではなく pass order で保証されます。
@@ -541,8 +550,8 @@ HUD／UI が color adjustment を受けないことは mask ではなく pass or
 Vertex shader は `SV_VertexID` から oversized fullscreen triangle を生成します。
 
 - Vertex buffer／input layout 不要。
-- 三 vertices で viewport 全体を cover。
-- Two-triangle fullscreen quad の diagonal seam／重複 edge interpolation を避ける。
+- 3 頂点で viewport 全体を覆う。
+- 2 枚の三角形で構成する fullscreen quad の対角線上の継ぎ目を避け、頂点数も削減する。
 
 ### 14.3 ScenePostPS.hlsl
 
@@ -598,6 +607,8 @@ HDR headroom はありません。長期的には `R16G16B16A16_FLOAT` linear of
 - Runtime working directory は executable directory で、Debug／Release とも `Resources/...` path が同じ。
 - Sky、post-process、renderers は PIMPL／RAII を使い、temporary `Impl` を完全初期化してから commit。
 - Debug build は DirectX debug layer を有効化し、Release は無効。
+- `Build.ps1` は Windows 上で重複した `Path/PATH` を正規化し、Visual Studio 18 2026 generator をサポートする
+  Visual Studio bundled CMake を優先します。Shell `PATH` の先頭にある CMake が互換であるとは限らないため、この script を利用します。
 - Offscreen color／depth、viewport、scissor は initialization 時に一度作成。Resize を許可する場合は再構築が必要。
 - Composite は独自 shader-visible SRV heap を bind するため、後続 Sprite／HUD pass は各 `PreDraw` で pipeline／heap を再 bind。
 
@@ -611,11 +622,12 @@ HDR headroom はありません。長期的には `R16G16B16A16_FLOAT` linear of
 | Action に大きな transparent padding | Alpha bounds と stable pivot の trade-off を比較 | Fixed canvas を維持し、per-frame auto-trim を行わない |
 | State と visual row が完全に不一致 | State／CPU UV 検証後に byte ABI まで追跡 | HLSL を `c3.w/c4.xy` に合わせ、`static_assert` 追加 |
 | Atlas が上下反転／左右 mirror | OBJ V と quad face orientation を検証 | negative V scale、bottom offset、billboard yaw + π |
-| Transparent quad が後描画 object を隠す | Blend alpha と depth write を分けて確認 | `clip(alpha - 0.01)` |
+| Transparent quad が後描画 object を隠す | Blend alpha と depth write を分けて確認 | `clip(texcolor.a - 0.01)` |
 | Large delta で event time を飛び越える | Float exact equality を使わない | previous/current crossing + emitted flag |
 | Same-frame kill 後にも queued attack が残る | Game の実 update order を追跡 | `MarkDead` が unconsumed event を削除 |
 | Fullscreen PSO は depth off でも DSV mismatch | Engine が bind する target set を確認 | PSO に D32 DSV format、`DepthEnable=false` |
 | Runtime shader／CSV missing | Source と executable resource root を追跡 | CMake required-resource preflight + per-config deploy |
+| Shell CMake が古い、または `Path/PATH` 重複で MSBuild failure | Generator／process environment error と compiler error を分離 | `Build.ps1` で VS bundled CMake を選択し process PATH を正規化 |
 
 ## 17. 方式比較と採用理由
 
@@ -651,14 +663,15 @@ HDR headroom はありません。長期的には `R16G16B16A16_FLOAT` linear of
 
 - Render size と hitbox height の分離。
 - State-to-row、idle/move loop、attack/dead clamp。
-- First／last frame、half-texel、V flip、Atlas bounds。
+- 先頭／最終 frame、ハーフテクセル、V反転、Atlas bounds。
 - Alpha cutoff と KamataEngine material ABI source contract。
 - Brightness／Gamma validation、neutral exponent、black、middle tone、clamp。
 
 ### 18.4 Build と runtime boundary
 
 - 実装完了時に Debug／Release fresh build と各 CTest が成功。
-- 2026-08-27 の文書作成時にも Debug／Release CTest を再実行し、`Object_FPS.Core` は両方成功。
+- 2026-08-28 の文書確定時に `Build.ps1` で Debug／Release build を再実行し、それぞれ CTest も実行。
+  `Object_FPS.Core` は両方成功。
 - GPU smoke test で修正後の live blood dog が move row を表示し、基本起動も確認済み。
 
 Headless tests は sky seam／poles、mip bleed、transparent depth、billboard handedness、visual muzzle position、HUD layering、
@@ -669,8 +682,8 @@ sRGB view、descriptor heap、barrier、debug-layer warnings を証明できま�
 | Risk | Result | 現在の mitigation／future direction |
 | --- | --- | --- |
 | KamataEngine が `uvOffset` を byte 64 に align | Project HLSL が再び mismatch | `static_assert` で build stop、upgrade 時に full `float3@c4` へ同期 |
-| Project Obj shader が engine original から diverge | Runtime update が fix を上書き | ABI docs、source contract test、deployment check |
-| Alpha cutoff が共通 ObjPS にある | 他 OBJ の low alpha も discard | 将来 enemy-specific alpha-tested pipeline |
+| Project Obj shader が engine original から diverge | 新しい KamataEngine Obj shader を同期／merge する際に ABI compatibility fix を落とす可能性 | ABI docs、source contract test、deployment check |
+| Alpha cutoff が共通 ObjPS にある | 他 OBJ texture の `texcolor.a < 0.01` texel も discard | 将来 enemy-specific alpha-tested pipeline |
 | Atlas に gutter／texture array がない | Distant mip bleed | Asset padding、custom mip、texture array |
 | Semi-transparent billboard sorting なし | Overlap transparency error | MVP は alpha-tested art、将来 sort／OIT |
 | Event queue は一 frame lifetime | Late consumer が event loss | Game が same-frame consume、async 化時は owning queue／sequence ID |
@@ -679,8 +692,11 @@ sRGB view、descriptor heap、barrier、debug-layer warnings を証明できま�
 | RuntimeEnemy が definition copy | 大量 instance で追加 memory | Lifetime を保証した stable catalog handle |
 | `std::span` snapshot view | Mutation を跨ぐと invalid | Same-frame immediate consumption のみ |
 | 33 materials／per-enemy draw | Type／instance 増加で scalability 低下 | Instance buffer、texture array、dedicated renderer |
+| Draw 前に shared model の mesh material pointer を変更 | 将来のマルチスレッド command recording／model 並行利用で競合する可能性 | 現在は single-thread。並列化時に model／binding state を分離 |
 | 8-bit offscreen encode/decode | Quantization、banding、no HDR headroom | Float RT + tone mapping |
+| Offscreen color + depth と fullscreen pass | 約 7 MiB（1280×720）の GPU memory と full-screen bandwidth が追加 | MVP では許容。高解像度時に計測し format／resolution policy を検討 |
 | Gamma 前の `saturate` | Highlight clipping | HDR／exposure／tone mapper |
+| ScenePost が alpha 1 を固定出力 | 後段の透明合成用 world alpha を保持しない | 現在は opaque backbuffer composite。Alpha consumer 追加時に再設計 |
 | Gamma validation は `>0` のみ | Extreme curve が設定可能 | Practical min/max を追加 |
 | Ambient-only は true unlit ではない | Global ambient／circle shadow が影響 | 必要時に true unlit world shader |
 | Offscreen は resize 非対応 | Resize 後に dimensions mismatch | Resize event で resources／views／viewport 再作成 |
@@ -717,11 +733,26 @@ sRGB view、descriptor heap、barrier、debug-layer warnings を証明できま�
 
 - Camera-centered 50m sky sphere を使用し、no collision／depth read-only background として world boundary から分離。
 - Ambient-only／unlit-like world material の後、world-only offscreen pass で Brightness 1.25、Gamma 2.2 を適用。
-- Fixed render canvas で transparent padding、pivot、feet、muzzle を安定させ、hitbox は完全に独立。
+- Fixed render canvas で共通座標系と ground anchor を保持し、runtime auto-trim が追加で起こす pivot／feet／muzzle の
+  jump を防ぐ。素材内の配置自体は art 側で整合させ、hitbox は完全に独立。
 - Enemy／clip の差異は CSV、state／loop／clamp／event rule は program に保持。
 - 0-based event frame と elapsed crossing により melee dodge、event-time ranged aim、large-delta safety を実現。
 - Short-lived events で behavior、snapshots で read-only state を渡し、Renderer は definition ID から static cache を参照。
 - KamataEngine の既存 material ABI bug は project HLSL compatibility fix と compile-time guard で対応し、長期は engine padding fix を推奨。
-- MVP では 8-bit offscreen、per-frame material、resize disabled を受容し、HDR、dedicated pipeline、texture array、
+- MVP では 8-bit offscreen、Atlas の各 frame に対応する cached material、resize disabled を受容し、HDR、dedicated pipeline、texture array、
   resize reconstruction を将来の改善とする。
 
+## 22. 主要実装・テスト索引
+
+| Topic | Main files |
+| --- | --- |
+| Data definitions／loader | [GameData.hpp](../include/RetroFPS/Data/GameData.hpp)、[GameData.cpp](../src/Data/GameData.cpp) |
+| Enemy CSV | [enemies.csv](../NoviceResources/data/enemies.csv)、[enemy_animation_clips.csv](../NoviceResources/data/enemy_animation_clips.csv) |
+| Enemy runtime／events／snapshots | [EnemySystem.hpp](../include/RetroFPS/Gameplay/Enemy/EnemySystem.hpp)、[EnemySystem.cpp](../src/Gameplay/Enemy/EnemySystem.cpp) |
+| Game orchestration／frame order | [Game.cpp](../src/Game/Game.cpp) |
+| Atlas helpers／billboard renderer | [EnemyRenderSettings.hpp](../include/RetroFPS/Rendering/EnemyRenderSettings.hpp)、[EnemyBillboardRenderer.cpp](../src/Rendering/EnemyBillboardRenderer.cpp) |
+| Kamata-compatible OBJ shaders | [Obj.hlsli](../NoviceResources/shaders/Obj.hlsli)、[ObjPS.hlsl](../NoviceResources/shaders/ObjPS.hlsl) |
+| Sky | [SkySphereRenderer.hpp](../include/RetroFPS/Rendering/SkySphereRenderer.hpp)、[SkySphereRenderer.cpp](../src/Rendering/SkySphereRenderer.cpp) |
+| Scene post-process | [ScenePostProcessSettings.hpp](../include/RetroFPS/Rendering/ScenePostProcessSettings.hpp)、[ScenePostProcessRenderer.cpp](../src/Rendering/ScenePostProcessRenderer.cpp) |
+| Fullscreen shaders | [ScenePostVS.hlsl](../NoviceResources/shaders/ScenePostVS.hlsl)、[ScenePostPS.hlsl](../NoviceResources/shaders/ScenePostPS.hlsl) |
+| Data／Gameplay／Rendering tests | [GameDataCatalogTests.cpp](../tests/Data/GameDataCatalogTests.cpp)、[EnemySystemTests.cpp](../tests/Gameplay/EnemySystemTests.cpp)、[EnemyBillboardTests.cpp](../tests/Rendering/EnemyBillboardTests.cpp)、[ScenePostProcessTests.cpp](../tests/Rendering/ScenePostProcessTests.cpp) |

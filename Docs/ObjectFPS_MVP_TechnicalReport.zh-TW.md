@@ -1,7 +1,7 @@
 # Object_FPS 完整 MVP 技術設計與實作報告
 
 - 文件狀態：完整 MVP 實作後的技術、診斷與決策紀錄
-- 日期：2026-08-27
+- 日期：2026-08-28
 - 日本語版：[ObjectFPS_MVP_TechnicalReport.ja.md](ObjectFPS_MVP_TechnicalReport.ja.md)
 - KamataEngine ABI 專題：[EnemyAtlasShaderABI.zh-TW.md](EnemyAtlasShaderABI.zh-TW.md)
 - 架構參考：[Architecture.md](Architecture.md)
@@ -263,7 +263,15 @@ Attack 與 Dead 停在尾格，避免 simulation 等待 retire／state transitio
 
 ### 8.2 UV、V 軸與 half-texel
 
-每格的左上角由 `origin + frameWidth * frameIndex` 得到。為避免線性取樣跨到鄰格，UV 端點落在 texel center：
+每格的 rectangle 明確由下列座標得到：
+
+```text
+left   = originXpx + frameWidthPixels * frameIndex
+top    = originYpx
+bottom = top + frameHeightPixels
+```
+
+為避免線性取樣跨到鄰格，UV 端點落在 texel center：
 
 ```text
 offsetX = (left + 0.5) / sheetWidth
@@ -281,8 +289,8 @@ culling disabled 從正確一面呈現。這是素材朝向修正，不是 AI fa
 ### 8.3 Cache 與 draw
 
 - 共用一個 quad model。
-- 以 definition ID cache 兩張 sheet texture。
-- 為 17 個 melee frames 與 16 個 ranged frames 建立 33 個 immutable material。
+- 每個 definition ID cache 一張 sheet texture；目前兩個 definitions 合計兩張。
+- 為 17 個 melee frames 與 16 個 ranged frames 建立 33 個獨立 frame materials；初始化後不再改寫其 UV constant buffer。
 - 每格 material 保存對應 UV scale／offset；Draw 時依 snapshot state＋elapsed 選 material。
 - Instance 只保存 identity、state／elapsed、Object3d、ObjectColor 與 billboard yaw。
 
@@ -299,7 +307,8 @@ clip(texcolor.a - 0.01f);
 ```
 
 這解決透明 Atlas texel 的 depth occlusion，但不是 state／row 錯配的根因。因為它位於共用 OBJ shader，
-所有 OBJ 的 alpha `<0.01` pixel 都會被丟棄；半透明排序也沒有因此得到解決。
+所有使用該 `ObjPS` 的 OBJ 貼圖中，`texcolor.a < 0.01` 的 texel 都會被丟棄；判斷對象不是 material alpha、
+`ObjectColor.a` 或最終輸出 alpha。半透明排序也沒有因此得到解決。
 
 正常 enemy color 為白色；受擊時 `ObjectColor` 暫時提高至約 1.5 倍，持續 0.12 秒。世界材質不再以
 melee 紅、ranged 藍 tint 掩蓋原始貼圖。
@@ -512,19 +521,20 @@ sRGB render-target 硬體仍負責儲存／顯示 transfer function。
 ### 14.1 實際 draw pass
 
 ```text
-DirectX PreDraw
-  -> ScenePostProcessRenderer::BeginScene
-       bind/clear offscreen color + private D32 depth
-  -> Sky
-  -> Map
-  -> Enemy billboard
-  -> Projectile
-  -> ScenePostProcessRenderer::Composite
-       sample scene, Brightness/Gamma, output to sRGB backbuffer
-  -> Weapon/HUD
-  -> Pause/Menu/Results UI
-  -> Screen Fade
-  -> DirectX PostDraw
+Playing / Paused:
+  DirectX PreDraw
+    -> ScenePostProcessRenderer::BeginScene
+         bind/clear offscreen color + private D32 depth
+    -> Sky -> Map -> Enemy billboard -> Projectile
+    -> ScenePostProcessRenderer::Composite
+         sample scene, Brightness/Gamma, output to sRGB backbuffer
+    -> Weapon/HUD
+    -> Pause UI（僅 Paused）
+    -> Screen Fade
+    -> DirectX PostDraw
+
+Main Menu / Results / other non-world screens:
+  DirectX PreDraw -> UI -> Screen Fade -> DirectX PostDraw
 ```
 
 HUD／UI 不受調色不是靠 mask，而是由 pass order 保證。
@@ -590,6 +600,8 @@ headroom。較長期可改用 `R16G16B16A16_FLOAT` linear offscreen target，再
 - Runtime working directory 設為 executable directory，因此 `Resources/...` 路徑對 Debug／Release 一致。
 - Sky、post-process、renderer 使用 PIMPL 與 RAII；初始化先建立暫時 `Impl`，全部成功才 commit。
 - Debug build 啟用 DirectX debug layer；Release 不啟用。
+- `Build.ps1` 會正規化 Windows 中重複的 `Path/PATH`，並優先選擇支援 Visual Studio 18 2026 generator 的
+  Visual Studio bundled CMake；因此應使用該腳本，而不是假設 shell `PATH` 中的第一個 CMake 一定相容。
 - Offscreen color／depth、viewport、scissor 只在初始化時建立。視窗 resize 目前被禁止；未來開放 resize 時必須重建它們。
 - Composite 會綁自己的 shader-visible SRV heap；後續 Sprite／HUD pass 必須由各自 `PreDraw` 重新綁 pipeline 與 heap。
 
@@ -603,11 +615,12 @@ headroom。較長期可改用 `R16G16B16A16_FLOAT` linear offscreen target，再
 | 動作有大量透明留白 | 比較 alpha bounds 與固定 pivot 的代價 | 保留固定 canvas，不做逐格自動 trim |
 | State 與畫面 row 完全錯配 | 驗證 state／CPU UV 後追到 byte ABI | HLSL 配合 `c3.w/c4.xy`，加 `static_assert` |
 | Atlas 上下顛倒或左右鏡像 | 檢查 OBJ V 與 quad face orientation | 負 V scale、bottom offset、billboard yaw + π |
-| 透明 quad 遮住後畫物件 | 區分 blend alpha 與 depth write | `clip(alpha - 0.01)` |
+| 透明 quad 遮住後畫物件 | 區分 blend alpha 與 depth write | `clip(texcolor.a - 0.01)` |
 | 大 delta 可能跳過事件時間 | 不比較浮點 exact equality | previous/current crossing + emitted flag |
 | 敵人同 frame 死亡仍有 queued attack | 追蹤 Game 的實際 update order | `MarkDead` 刪除未消費 events |
 | Fullscreen PSO 關 depth 仍有 DSV mismatch | 確認 engine 綁定的 render target set | PSO 宣告 D32 DSV format，DepthEnable 仍為 false |
 | Runtime shader／CSV 找不到 | 追蹤 source 與 executable resource root | CMake required-resource preflight + config deployment |
+| Shell CMake 太舊或 `Path/PATH` 重複使 MSBuild 失敗 | 區分 generator／process environment 錯誤與 compiler error | 使用 `Build.ps1` 選擇 VS bundled CMake 並正規化 process PATH |
 
 ## 17. 方案比較與最終理由
 
@@ -650,7 +663,8 @@ headroom。較長期可改用 `R16G16B16A16_FLOAT` linear offscreen target，再
 ### 18.4 Build 與 runtime 邊界
 
 - 實作完成時 Debug／Release fresh build 與各自 CTest 均通過。
-- 2026-08-27 文件整理時再次執行 Debug／Release CTest，`Object_FPS.Core` 均通過。
+- 2026-08-28 文件定稿時以 `Build.ps1` 再次完成 Debug／Release build，並執行各自 CTest；
+  `Object_FPS.Core` 均通過。
 - 實際 GPU smoke test 已確認修正後存活 blood dog 使用 move row，並完成基本啟動驗證。
 
 Headless tests 不能證明 sky seam／極點、mip bleed、透明 depth、billboard 左右、muzzle 肉眼位置、HUD layering、
@@ -661,8 +675,8 @@ sRGB view、descriptor heap、barrier 或 debug-layer 全部正確；這些仍�
 | 風險 | 後果 | 現有緩解／後續方向 |
 | --- | --- | --- |
 | KamataEngine 將 `uvOffset` 改對齊 byte 64 | 專案 HLSL 再次不相容 | `static_assert` 阻止 build；升級時同步恢復完整 `float3@c4` |
-| 專案 Obj shader 與 engine 原版分岔 | Runtime 更新可能覆蓋修正 | 保留 ABI 文件、source contract test 與部署檢查 |
-| Alpha cutoff 位於共用 ObjPS | 其他 OBJ 的極低 alpha 也被 discard | 長期改 enemy 專用 alpha-tested pipeline |
+| 專案 Obj shader 與 engine 原版分岔 | 同步／合併新版 KamataEngine Obj shader 時可能漏掉 ABI compatibility fix | 保留 ABI 文件、source contract test 與部署檢查 |
+| Alpha cutoff 位於共用 ObjPS | 其他 OBJ 貼圖中 `texcolor.a < 0.01` 的 texel 也被 discard | 長期改 enemy 專用 alpha-tested pipeline |
 | Atlas 無 gutter／texture array | 遠距 mip 可能 bleed | 素材加 padding、custom mip 或 texture array |
 | 半透明 billboard 無排序 | 重疊透明可能不正確 | MVP 以 alpha-tested art 為主；未來加 sort／OIT |
 | Event queue 只活一 frame | 延遲消費會遺失事件 | Game 固定同 frame 消費；若非同步需 owning queue／sequence ID |
@@ -671,8 +685,11 @@ sRGB view、descriptor heap、barrier 或 debug-layer 全部正確；這些仍�
 | RuntimeEnemy 複製 definition | 大量 instance 時有額外記憶體 | 改 stable catalog handle，先處理 lifetime |
 | `std::span` snapshot view | 跨 mutation 保存會失效 | 僅在同 frame immediate consumption 使用 |
 | 33 materials／per-enemy draw | 敵人種類與數量大時擴展不佳 | Instance buffer、texture array 或 dedicated renderer |
+| Draw 前改寫 shared model 的 mesh material pointer | 未來多執行緒 command recording／並行重用 model 時可能競態 | 單執行緒維持現狀；並行化時隔離 model／binding state |
 | 8-bit offscreen encode/decode | 量化、banding、無 HDR headroom | 長期改 float RT + tone mapping |
+| Offscreen color + depth 與 fullscreen pass | 增加約 7 MiB（1280×720）GPU memory 與一次全畫面頻寬成本 | MVP 可接受；高解析度時量測並考慮格式／解析度策略 |
 | `saturate` 在 Gamma 前 | 高光裁切 | HDR／exposure／tone mapper |
+| ScenePost 固定輸出 alpha 1 | 不保留 world scene alpha 供後續透明合成 | 目前 backbuffer composite 為不透明；未來有 alpha consumer 時重新設計 |
 | Gamma 僅驗證 `>0` | 極端值可產生不實用曲線 | 未來設定合理 min/max |
 | Ambient-only 並非真正 unlit | Global ambient／circle shadow 仍會影響 | 若需絕對一致，建立真正 unlit world shader |
 | Offscreen 不支援 resize | 開放 resize 後尺寸失配 | resize event 重建 color/depth/views/viewport |
@@ -709,11 +726,26 @@ sRGB view、descriptor heap、barrier 或 debug-layer 全部正確；這些仍�
 
 - 使用 camera-centered 50m sky sphere；它是無碰撞、read-only-depth 的背景，不是世界邊界。
 - 使用 ambient-only／unlit-like world materials，再以 world-only offscreen pass 套用 Brightness 1.25、Gamma 2.2。
-- 使用固定 render canvas，讓透明留白、pivot、腳底與 muzzle 保持一致；hitbox 完全獨立。
+- 使用固定 render canvas 保留共同座標系與 ground anchor，避免 runtime auto-trim 額外造成 pivot／腳底／muzzle
+  跳動；素材內容本身仍須由美術對齊，hitbox 則完全獨立。
 - 使用 CSV 管理 enemy／clip 差異，以程式保存 state、loop／clamp 與事件規則。
 - 使用 0-based event frame 與 elapsed crossing，讓 melee 可閃避、ranged 在事件時瞄準，且大 delta 不漏事件。
 - 使用短生命週期 events 傳遞行為、snapshots 傳遞只讀狀態，Renderer 以 definition ID 查靜態 cache。
 - 對 KamataEngine 既有 material ABI bug 採專案 HLSL 相容修正與 compile-time guard；長期仍建議在 engine 上游補 padding。
-- 接受 MVP 的 8-bit offscreen、per-frame material 與禁止 resize 限制，並將 HDR、專用 pipeline、texture array
+- 接受 MVP 的 8-bit offscreen、每個 Atlas frame 對應的 cached material 與禁止 resize 限制，並將 HDR、專用 pipeline、texture array
   與 resize reconstruction 留作後續演進。
 
+## 22. 主要實作與測試索引
+
+| 主題 | 主要檔案 |
+| --- | --- |
+| Data definitions／loader | [GameData.hpp](../include/RetroFPS/Data/GameData.hpp)、[GameData.cpp](../src/Data/GameData.cpp) |
+| Enemy CSV | [enemies.csv](../NoviceResources/data/enemies.csv)、[enemy_animation_clips.csv](../NoviceResources/data/enemy_animation_clips.csv) |
+| Enemy runtime／events／snapshots | [EnemySystem.hpp](../include/RetroFPS/Gameplay/Enemy/EnemySystem.hpp)、[EnemySystem.cpp](../src/Gameplay/Enemy/EnemySystem.cpp) |
+| Game orchestration／frame order | [Game.cpp](../src/Game/Game.cpp) |
+| Atlas helpers／billboard renderer | [EnemyRenderSettings.hpp](../include/RetroFPS/Rendering/EnemyRenderSettings.hpp)、[EnemyBillboardRenderer.cpp](../src/Rendering/EnemyBillboardRenderer.cpp) |
+| Kamata-compatible OBJ shaders | [Obj.hlsli](../NoviceResources/shaders/Obj.hlsli)、[ObjPS.hlsl](../NoviceResources/shaders/ObjPS.hlsl) |
+| Sky | [SkySphereRenderer.hpp](../include/RetroFPS/Rendering/SkySphereRenderer.hpp)、[SkySphereRenderer.cpp](../src/Rendering/SkySphereRenderer.cpp) |
+| Scene post-process | [ScenePostProcessSettings.hpp](../include/RetroFPS/Rendering/ScenePostProcessSettings.hpp)、[ScenePostProcessRenderer.cpp](../src/Rendering/ScenePostProcessRenderer.cpp) |
+| Fullscreen shaders | [ScenePostVS.hlsl](../NoviceResources/shaders/ScenePostVS.hlsl)、[ScenePostPS.hlsl](../NoviceResources/shaders/ScenePostPS.hlsl) |
+| Data／Gameplay／Rendering tests | [GameDataCatalogTests.cpp](../tests/Data/GameDataCatalogTests.cpp)、[EnemySystemTests.cpp](../tests/Gameplay/EnemySystemTests.cpp)、[EnemyBillboardTests.cpp](../tests/Rendering/EnemyBillboardTests.cpp)、[ScenePostProcessTests.cpp](../tests/Rendering/ScenePostProcessTests.cpp) |
