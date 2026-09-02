@@ -1,119 +1,132 @@
 # Object_Connect
 
-`Object_Connect` 是以 C++20 與 KamataEngine 製作的固定 1280×720、2D 血管連線解謎 MVP。
+`Object_Connect` は、C++20 と KamataEngine で作られた、固定解像度 1280×720 の 2D 血管接続パズル MVP です。
 
-玩家從已啟動的 `root` 或 `follow` 節點拉出血管，自由連到可接受輸入的 `follow`／`end` 節點。連線不是事先寫在資料裡：每次拖曳時，`PuzzleBoard` 依節點容量、長度、重複邊、循環和 `dead` 節點的直線阻擋即時判斷是否合法。
+プレイヤーは、有効（active）になっている `root` または `follow` ノードから線を伸ばし、接続を受け入れられる `follow` または `end` ノードへ自由につなぎます。接続先はデータにあらかじめ書かれているわけではありません。ドラッグするたびに、`PuzzleBoard` がノードの接続数、残りの長さ、重複する接続、循環、`dead` ノードによる直線上の妨害を確認し、その接続が使えるかどうかを判断します。
 
-專案以 Game Jam 速度和新人可讀性為優先。核心玩法不依賴 KamataEngine，沒有 ECS、scene graph 或完整物理引擎。血管以 Verlet 粒子鏈與 triangle strip 即時生成，不是 sprite-sheet 動畫。
+このプロジェクトでは、ゲームジャムで素早く作れることと、新しく参加したメンバーにも読みやすいことを大切にしています。コアのゲーム処理は KamataEngine に依存しておらず、ECS、シーングラフ、完全な物理エンジンは使っていません。血管はスプライトシートのアニメーションではなく、Verlet 法の粒子チェーンと三角形ストリップを使って、その場で作っています。
 
-## 目前的遊戲流程
+## この README で使う言葉
+
+| この文書での呼び方 | コード上の名前 | 意味 |
+| --- | --- | --- |
+| 有効 | active | 操作や接続に使える状態です。 |
+| 接続元 | source | 線を出すノードです。 |
+| 接続先 | target | 線を受け入れるノードです。 |
+| 仮の線 | preview | ドラッグ中で、まだ確定していない線です。 |
+| 接続を確定 | commit | 仮の線を正式な接続にします。 |
+| 線を戻す | retract | 接続できなかった仮の線を戻し、長さを返します。 |
+
+## 現在のゲームの流れ
 
 ```text
 MAIN MENU
   PLAY -> LEVEL SELECT -> PLAYING
   EXIT                    |
-                          +-- Esc 或失焦 -> PAUSED
-                          |                  RESUME
-                          |                  LEVEL SELECT
-                          |                  MAIN MENU
-                          |                  EXIT GAME
+                          +-- Esc またはフォーカスを失う -> PAUSED
+                          |                                  RESUME
+                          |                                  LEVEL SELECT
+                          |                                  MAIN MENU
+                          |                                  EXIT GAME
                           |
-                          +-- 所有已放置 end 啟動 -> SOLVED
-                                                   NEXT PUZZLE（有效 nextLevelId）
-                                                   LEVEL SELECT
-                                                   RETRY
+                          +-- 配置済みのすべての end が有効 -> SOLVED
+                                                               NEXT PUZZLE（有効な next_level_id）
+                                                               LEVEL SELECT
+                                                               RETRY
 ```
 
-選關順序就是 `levels.csv` 的列順序。`NEXT PUZZLE` 則不依賴列順序：它讀取目前關卡的 `next_level_id`，並以 ID 在 catalog 中查找。欄位為空或找不到該 ID 時，不顯示 Next。
+レベル選択の並び順は、`levels.csv` の行の順番と同じです。`NEXT PUZZLE` は行の順番には依存しません。現在のレベルにある `next_level_id` を読み、catalog の中から同じ ID を探します。この項目が空、または ID が見つからない場合は、Next を表示しません。
 
-切換、離開或重玩關卡都會重建 `PuzzleBoard`，所以節點狀態、連線和長度完整重置。通關後約 0.6 秒才開放完成選單。
+レベルを切り替える、レベルから出る、またはリトライすると、`PuzzleBoard` を作り直します。そのため、ノードの状態、接続、残りの長さはすべて初期状態に戻ります。クリア後は、約 0.6 秒たってからクリアメニューを操作できます。
 
-## 操作
+## 操作方法
 
-- `W`／`↑`、`S`／`↓`：選單上一項／下一項。
-- `Enter` 或滑鼠左鍵：確認選單項目。
-- 在有脈動提示的可用 source 上按住滑鼠左鍵，拖到合法 target 後放開。
-- `Esc`：遊戲中暫停；暫停中回到遊戲；選關畫面回主選單；完成畫面回選關。
-- `R`：遊戲中或暫停中重玩目前關卡。
+- `W`／`↑`、`S`／`↓`：メニューの項目を上／下に移動します。
+- `Enter` またはマウス左ボタン：選んだメニュー項目を決定します。
+- 光っている接続元ノードの上でマウス左ボタンを押し、そのまま接続できるノードまでドラッグして、ボタンを離します。
+- `Esc`：プレイ中は一時停止します。一時停止中はゲームに戻ります。レベル選択画面ではメインメニューへ、クリア画面ではレベル選択へ戻ります。
+- `R`：プレイ中または一時停止中に、現在のレベルを最初からやり直します。
 
-游標全程可見且不會被 capture。視窗失焦時，正在拖曳的 preview 會立即取消並自動暫停；重新取得焦點不會自動恢復。
+マウスカーソルは常に表示され、ウィンドウ内に固定されません。ウィンドウがフォーカスを失うと、ドラッグ中の仮の線はすぐにキャンセルされ、ゲームは自動で一時停止します。もう一度フォーカスを得ても、自動では再開しません。
 
-## 節點與動態連線
+## ノードと動的な接続
 
-每個 map 可以放置四種節點：
+各マップには、次の 4 種類のノードを配置できます。
 
-| `node_type` | Runtime 行為 |
+| `node_type` | ゲーム中の動き |
 | --- | --- |
-| `root` | 關卡開始時立即 active；可作為 source。可以有多個 root。 |
-| `follow` | 可作為 target；第一次接入後變成 active，也可繼續作為 source。 |
-| `end` | 可作為 target，不能作為 source。所有已放置的 end 都 active 時通關。 |
-| `dead` | 不能連接；目前作為矩形直線視線障礙。 |
+| `root` | レベル開始時から有効です。接続元として使えます。複数配置できます。 |
+| `follow` | 接続先として使えます。初めて接続されると有効になり、その後は接続元としても使えます。 |
+| `end` | 接続先として使えますが、接続元にはできません。配置済みのすべての `end` が有効になるとクリアです。 |
+| `dead` | 接続できません。現在は、直線上の接続を妨げる長方形の障害物として扱います。 |
 
-連線不由資料預先列出。只要符合以下條件，active 的 root／follow 都可以開始新連線：
+接続はデータにあらかじめ書きません。次の条件をすべて満たすと、有効な `root` または `follow` から新しい接続を始められます。
 
-- source 的 `max_outgoing` 尚未用完。
-- source 的 `max_outgoing_length` 還有剩餘量。
-- 關卡全域 `total_length` 還有剩餘量。
-- target 是有 placement 的 follow／end，且 `max_incoming` 尚未用完。
-- 不是 self connection、不是重複的有向 edge，也不會在已提交圖中形成 cycle。
-- source 中心到 target 中心的直線沒有穿過擴張後的 dead AABB。
+- 接続元の `max_outgoing` に空きがある。
+- 接続元の `max_outgoing_length` に残りがある。
+- レベル全体の `total_length` に残りがある。
+- 接続先に配置位置があり、種類が `follow` または `end` で、`max_incoming` に空きがある。
+- 自分自身への接続ではなく、同じ向きの接続がまだなく、確定済みの接続に循環を作らない。
+- 接続元の中心から接続先の中心までの直線が、広げた `dead` の AABB を通らない。
 
-因此 runtime graph 可以依容量形成分支或合流；已啟動且還有資源的舊 source 仍可再次使用。
+この仕組みにより、ゲーム中の接続グラフは、接続数の設定に応じて分岐や合流ができます。一度使った接続元も、接続数と長さが残っていれば、もう一度使えます。
 
-map 中沒有 `tile_x`／`tile_y` 的節點只保留資料，不會顯示、命中、阻擋或參與通關判定。
+マップで `tile_x`／`tile_y` が設定されていないノードは、データとしては残りますが、画面には表示されません。また、クリック判定、障害物、クリア判定にも使われません。
 
-## 兩層長度預算
+## 2 つの長さ制限
 
-所有連線共享一筆關卡總長度：
+すべての接続は、レベル全体で 1 つの総延長を共有します。
 
 ```text
-所有已提交連線長度
-+ 目前 preview 保留長度
-+ 全域剩餘長度
+確定済みのすべての接続の長さ
++ 現在の preview が確保している長さ
++ レベル全体の残りの長さ
 = total_length
 ```
 
-每個可當 source 的節點另有自己的 outgoing 長度上限：
+接続元として使える各ノードには、それぞれ outgoing の長さ上限もあります。
 
 ```text
-該 source 已提交 outgoing 長度
-+ 若 preview 從它拉出，preview 保留長度
-+ 該 source 的 outgoing 剩餘長度
+その接続元から確定した outgoing の長さ
++ その接続元から仮の線を伸ばしている場合、仮の線が確保している長さ
++ その接続元の outgoing の残りの長さ
 = max_outgoing_length
 ```
 
-一次 preview 真正能部署的上限是：
+1 回の preview で実際に使える長さの上限は、次の値です。
 
 ```text
-min(全域剩餘長度, source outgoing 剩餘長度)
+min(レベル全体の残りの長さ, 接続元の outgoing の残りの長さ)
 ```
 
-拖曳需要的長度為 `distance(source, cursor) * minimum_slack_ratio`。保留量只會增加，游標拖回來不會自動縮短，所以玩家可以主動留下鬆弛，也可能提早花掉過多預算。放空白、放到非法 target 或被 dead 阻擋時，preview 約 0.22 秒收回，保留量逐步退還。
+ドラッグに必要な長さは `distance(source, cursor) * minimum_slack_ratio` です。一度確保した長さは増えるだけで、カーソルを戻しても自動では短くなりません。そのため、線にたるみを持たせられます。ただし、その分だけ後で使える長さは減ります。ノードのない場所、接続できないノード、または `dead` に妨げられた場所でボタンを離すと、仮の線は約 0.22 秒かけて戻り、確保した長さも少しずつ返されます。
 
-HUD 顯示 `REMAINING n / total`。當穩定狀態下仍有結構上可連的 target，卻沒有足夠的全域／source 長度完成任何一條時，顯示 `NOT ENOUGH LENGTH`。
+HUD には `REMAINING n / total` を表示します。通常の操作状態で、接続数に空きのある接続先が残っているのに、どの接続にもレベル全体または接続元の長さが足りない場合は、`NOT ENOUGH LENGTH` を表示します。
 
-## Dead 障礙目前做到哪裡
+## `dead` 障害物で現在できること
 
-`dead` 節點以 `tile_x`／`tile_y`、`width_tiles`、`height_tiles` 形成矩形 AABB。Board 會用血管最大半寬擴張 AABB；拖曳時，source-center 到游標的射線若先碰到 dead，preview tip 會停在最早接觸點之前。提交時仍會再次測試 source-center 到 target-center 的線段；碰到邊界也算阻擋。
+`dead` ノードは、`tile_x`／`tile_y`、`width_tiles`、`height_tiles` を使って長方形の AABB を作ります。Board は、血管の最大幅の半分だけ AABB を広げます。ドラッグ中に接続元の中心からカーソルへ向かう線が `dead` に先に当たると、仮の線の先端は最初の接触位置の少し手前で止まります。接続を確定するときも、接続元の中心から接続先の中心までの線をもう一度調べます。境界に触れた場合も、妨げられたものとして扱います。
 
-目前做到 tip clamp 與 commit line-of-sight：
+現在は、先端を止める処理と、確定時の直線判定まで実装しています。
 
-- Preview tip 不能直接拖穿 dead，但血管中間的 Verlet 粒子和已固定段落不會對 dead 做 collision response。
-- 血管不會自動尋路或沿障礙彎曲。
-- Renderer 在血管之後繪製 dead 貼圖或矩形 fallback，遮住部分視覺穿越。
+- 仮の線の先端は `dead` を直接通り抜けられません。ただし、血管の途中にある Verlet 粒子と確定済みの血管は、`dead` と衝突したときの押し戻しを行いません。
+- 血管は自動で道を探したり、障害物に沿って曲がったりしません。
+- 描画処理は、血管を描いた後に `dead` の画像または代わりの長方形を描き、見た目上の一部の重なりを隠します。
 
-如果未來要做真正繞骨、粒子碰撞或路徑規劃，需要另外設計 solver；這些尚未實作。
+`dead` を回り込む道を作りたい場合は、途中に `follow` ノードを置いて中継点として使います。
 
-## 三層 CSV 資料
+将来、本当に骨をよける動き、粒子の衝突、経路探索を追加する場合は、別の計算処理を設計する必要があります。これらはまだ実装していません。
 
-原始資料位於 `NoviceResources/data/`，建置後同步到 `Resources/data/`：
+## 3 層の CSV データ
+
+元のデータは `NoviceResources/data/` にあり、ビルド後に `Resources/data/` へコピーされます。
 
 ```text
 data/
-  levels.csv             關卡順序、map 路徑、next ID、全域預算與外觀
-  nodes.csv              可重用的節點 preset catalog
+  levels.csv             レベル順、マップのパス、次のレベルID、全体予算、見た目
+  nodes.csv              再利用できるノードのひな形一覧
   maps/
-    first_link.csv       各關卡實際節點 instance 與 placement
+    first_link.csv       各レベルで実際に使うノードと配置位置
     around_block.csv
     clot_path.csv
 ```
@@ -124,73 +137,75 @@ data/
 level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation
 ```
 
-- CSV 列順序決定 Level Select 順序。
-- `map_path` 是相對 `Resources/` 的安全路徑。
-- `next_level_id` 可留空；runtime 只有在 ID 確實存在時才提供 Next。
-- `total_length` 是全域長度預算。
-- `minimum_slack_ratio` 空白時預設 1.05。
-- 顏色接受 `#RRGGBB` 或 `#RRGGBBAA`。
-- 空白的背景、血管與寬度欄位會使用 loader 預設值。
+- CSV の行の順番が、Level Select の並び順になります。
+- `map_path` は `Resources/` からの安全な相対パスです。
+- `next_level_id` は空にできます。ゲームは、指定した ID が本当に存在するときだけ Next を表示します。
+- `total_length` は、レベル全体で使える長さです。
+- `minimum_slack_ratio` が空の場合は、初期値 1.05 を使います。
+- 色は `#RRGGBB` または `#RRGGBBAA` で指定します。
+- 背景、血管、幅に関する項目が空の場合は、読み込み処理の初期値を使います。
 
-### `nodes.csv` preset catalog
+### `nodes.csv` のひな形一覧
 
 ```text
 preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,max_incoming,max_outgoing,max_outgoing_length
 ```
 
-`NodePresetCatalogLoader` 可獨立載入這份檔案；遊戲啟動使用的 `PuzzleCatalogLoader` 也會載入它，作為 map instance 的預設值來源。
+`NodePresetCatalogLoader` を使うと、このファイルだけを読み込めます。ゲーム開始時に使う `PuzzleCatalogLoader` もこのファイルを読み、マップ上のノードの初期値として使います。
 
-Map row 有 `source_preset_id` 時，Loader 先複製該 preset，再用 map 中「非空白」的欄位覆寫。這讓共用器官只需在 `nodes.csv` 維護一次，而每關仍可調整尺寸、名稱、貼圖或容量。
+マップの行に `source_preset_id` がある場合、読み込み処理は最初にそのひな形をコピーし、その後、マップで「空ではない」項目を上書きします。よく使う器官は `nodes.csv` で一度だけ管理しながら、レベルごとにサイズ、名前、画像、接続数を変えられます。
 
-### 每關 map CSV
+### レベルごとのマップ CSV
 
 ```text
 instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
 ```
 
-- `instance_id` 在該 map 內唯一。
-- `source_preset_id` 可留空；非空時必須對應 `nodes.csv` 的既有 preset。
-- `node_type` 只接受 `root`、`follow`、`end`、`dead`。有 preset 時可留空並繼承；沒有 preset 時必填。
-- 一格固定為 16×16 邏輯像素；`tile_x`／`tile_y` 是矩形左上角。
-- `width_tiles`／`height_tiles` 決定節點 AABB。
-- `tile_x` 和 `tile_y` 必須一起填或一起留空。
-- `width_tiles`、`height_tiles`、`display_name`、`texture_path` 與三個容量欄位都遵循相同規則：有 preset 時空白代表繼承，非空白代表覆寫；沒有 preset 時空白保留型別預設值。
-- 空白無法明確清除 preset 已提供的 `display_name` 或 `texture_path`。需要無名稱／無貼圖的 instance 時，請使用對應欄位本來就是空白的 preset，或不指定 preset。
-- resolved `display_name` 空白時 UI 不顯示名稱；resolved `texture_path` 非空時 loader 會確認資源存在，renderer 會顯示該貼圖。
-- root／follow 要能作 source，就必須有非零 `max_outgoing` 和 `max_outgoing_length`；follow／end 要能被接入，就必須有非零 `max_incoming`。
+- `instance_id` は、そのマップの中で重複しない ID にします。
+- `source_preset_id` は空にできます。指定する場合は、`nodes.csv` に同じ ID のひな形が必要です。
+- `node_type` に使える値は `root`、`follow`、`end`、`dead` だけです。ひな形がある場合は空にして引き継げます。ひな形がない場合は必ず指定します。
+- 1 マスは固定で 16×16 の論理ピクセルです。`tile_x`／`tile_y` は長方形の左上の位置です。
+- `width_tiles`／`height_tiles` でノードの AABB の大きさを決めます。
+- `tile_x` と `tile_y` は、両方を指定するか、両方を空にしてください。
+- `width_tiles`、`height_tiles`、`display_name`、`texture_path`、3 つの接続数／長さ項目には、すべて同じルールがあります。ひな形がある場合、空ならひな形の値を引き継ぎ、空でなければ上書きします。ひな形がない場合、空の項目には型ごとの初期値が入ります。
+- 空の項目を使って、ひな形にある `display_name` や `texture_path` を明示的に消すことはできません。名前や画像がないノードが必要な場合は、その項目が最初から空のひな形を使うか、ひな形を指定しないでください。
+- 最終的な `display_name` が空の場合、UI は名前を表示しません。`texture_path` は画像ファイルのパスです。空でない場合、読み込み処理がファイルの存在を確認し、描画処理がその画像を表示します。
+- `root`／`follow` を接続元として使うには、`max_outgoing` と `max_outgoing_length` の両方を 0 より大きくする必要があります。`follow`／`end` を接続先にするには、`max_incoming` を 0 より大きくする必要があります。
 
-CSV header 名稱與順序必須完全一致。Reader 支援 UTF-8 BOM、LF／CRLF、quoted field、quoted newline 與 `""` quote escape。ID 使用 lower_snake_case；顯示文字不得包含控制字元。載入採暫存後提交，失敗不會留下 partial catalog，診斷包含檔名、列與欄位。
+CSV のヘッダー名と順番は、定義と完全に同じにしてください。読み込み処理は UTF-8 BOM、LF／CRLF、ダブルクォートで囲んだ項目、項目内の改行、`""` による引用符のエスケープに対応しています。ID には lower_snake_case を使います。表示する文字には制御文字を使えません。読み込みは一度仮の場所で完了させてから反映するため、失敗しても途中までの一覧は残りません。エラーには、ファイル名、行、項目名が表示されます。
 
-目前 Loader 著重欄位、路徑和基本型別驗證；它尚未做完整的畫布範圍、節點互相重疊或關卡可完成性 preflight。這些限制不要在資料中故意依賴。
+現在の読み込み処理は、項目、パス、基本的な型を中心に確認しています。画面の範囲、ノード同士の重なり、レベルを本当にクリアできるかどうかは、まだ事前確認していません。データ作成時は、これらが自動で確認されることを前提にしないでください。
 
-## 目前顯示方式
+## 現在の描画方法
 
-`PuzzleRenderer` 以 flat-color DirectX 12 pipeline 畫背景、血管、提示與無貼圖 fallback，並以 KamataEngine sprite 顯示有 `texture_path` 的節點：
+`PuzzleRenderer` は、単色描画用の DirectX 12 描画処理で、背景、血管、ヒント、画像がない場合の代わりの長方形を描きます。`texture_path` があるノードは、KamataEngine のスプライトで表示します。
 
 ```text
 背景
--> 血管深色外緣 / 深紅 core / 程序化肉質像素
--> dead 貼圖或矩形 fallback
--> source pulse
--> root / follow / end 貼圖或矩形 fallback
--> ASCII HUD / 選單 overlay
+-> 血管の暗い外側 / 深い赤色の中心 / 自動生成する肉らしいピクセル
+-> dead の画像または代わりの長方形
+-> source の脈動表示
+-> root / follow / end の画像または代わりの長方形
+-> ASCII HUD / メニュー overlay
 ```
 
-Dormant 節點會暗化，active 節點使用正常顏色，可拉出的 source 顯示脈動提示。無 placement 的節點不繪製；`display_name` 空白時不畫文字。
+休止中（まだ接続されていない）のノードは暗く表示します。有効なノードは通常の色で表示し、血管を伸ばせる接続元には脈動する目印を表示します。配置位置がないノードは描きません。`display_name` が空の場合は文字を描きません。
 
-進入關卡時，renderer 依 resolved `texture_path` 載入並建立節點 sprite，再按 `width_tiles × height_tiles` 和 placement 繪製。同一關內相同路徑共用 texture handle；切關時沿用兩關共有的 handle，釋放只屬於舊關的 handle，因此每幀 Draw 不會重複載入，也不會讓歷史關卡貼圖一直佔用 descriptor。UI 與關卡 renderer 透過同一個引用計數 registry 共用 handle，避免其中一方提早卸載。每關最多 255 個有 placement 的 unique node texture path；這讓舊、新兩關能在 transactional 切換期間同時存在於 512-path registry，失敗時可完整保留原關卡。空路徑才使用依 node type 著色的矩形 fallback。Dead 貼圖和 fallback 都畫在血管之上。
+レベルに入るとき、描画処理は最終的な `texture_path` を読み込み、ノードのスプライトを作ります。そして、`width_tiles × height_tiles` と配置位置に合わせて表示します。同じレベル内で同じパスを使う場合は、画像のハンドルを共有します。レベルを切り替えるときは、両方のレベルで使うハンドルをそのまま利用し、古いレベルだけで使っていたハンドルを解放します。そのため、毎フレームの描画で同じ画像を読み直すことはなく、以前のレベルの画像がディスクリプターを使い続けることもありません。
 
-## 內建資料
+UI とレベルの描画処理は、同じ参照カウント付きの一覧を通して画像のハンドルを共有し、片方が早く解放しないようにしています。配置済みノードが使う `texture_path` の種類は、1 レベルにつき最大 255 個です。これにより、512 パス分の一覧の中で、古いレベルと新しいレベルを切り替え中に同時に持つことができ、失敗した場合も元のレベルをそのまま残せます。パスが空の場合だけ、ノードの種類ごとの色を使った代わりの長方形を表示します。`dead` の画像と代わりの長方形は、どちらも血管より手前に描きます。
 
-- `FIRST LINK`：Heart 與 Brain，測試最小 root → end 連線。
-- `AROUND BLOCK`：Heart、Lung、Liver、Brain，加上一個矩形 dead 區域。
-- `CLOT PATH`：多個 follow 器官、Brain 和兩個 dead 區域，可測試多 source、容量與長度取捨。
+## 付属のレベルデータ
 
-這些 map 沒有預先連線；實際路線全部由玩家在 runtime 決定。
+- `FIRST LINK`：Heart と Brain を使い、最小構成の root → end 接続を確認します。
+- `AROUND BLOCK`：Heart、Lung、Liver、Brain と、長方形の dead エリアがあります。
+- `CLOT PATH`：複数の follow 器官、Brain、2 つの dead エリアがあり、複数 source、接続数、長さの使い方を確認できます。
 
-## 建置與執行
+これらのマップに接続はあらかじめ設定されていません。実際の経路は、すべてプレイヤーがゲーム中に決めます。
 
-需要 Windows x64、Visual Studio 2026 C++ Desktop workload、支援 `Visual Studio 18 2026` generator 的 CMake，以及 KamataEngine。預設 engine 路徑為 `D:\code\Runtime\KamataEngine`。
+## ビルドと実行
+
+Windows x64、Visual Studio 2026 C++ Desktop workload、`Visual Studio 18 2026` generator に対応した CMake、KamataEngine が必要です。engine の初期パスは `D:\code\Runtime\KamataEngine` です。
 
 ```powershell
 .\Build.ps1 -Configuration Debug
@@ -198,63 +213,63 @@ Dormant 節點會暗化，active 節點使用正常顏色，可拉出的 source 
 .\Run.ps1 -Configuration Debug
 ```
 
-KamataEngine 位於其他位置時：
+KamataEngine が別の場所にある場合は、次のように指定します。
 
 ```powershell
 .\Build.ps1 -Configuration Debug -KamataEngineRoot "D:\your\KamataEngine"
 ```
 
-執行檔位於 `target/<Configuration>/Object_Connect.exe`。建置會把 `NoviceResources/` 同步到執行檔旁的 `Resources/`；程式啟動時會把 working directory 設為執行檔目錄。
+実行ファイルは `target/<Configuration>/Object_Connect.exe` に作られます。ビルド時に `NoviceResources/` を、実行ファイルと同じ場所にある `Resources/` へコピーします。プログラムの開始時に、作業フォルダーを実行ファイルのある場所へ設定します。
 
-專案使用 C++20，MSVC 設定為 `/W4 /WX /sdl /permissive- /utf-8`。
+プロジェクトは C++20 を使い、MSVC には `/W4 /WX /sdl /permissive- /utf-8` を設定しています。
 
-## 測試
+## テスト
 
 ```powershell
 ctest --test-dir build/vs2026-x64 -C Debug --output-on-failure
 ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 ```
 
-`Object_Connect_CoreTests` 不建立視窗，也不需要 GPU。核心測試涵蓋 CSV、三層資料 contract、AABB 幾何、動態 source／target、容量與雙層長度預算、duplicate／cycle／dead LOS、preview refund、BloodTentacle、RibbonStrip 和 GameFlow。
+`Object_Connect_CoreTests` はウィンドウを作らず、GPU も必要ありません。コアテストでは、CSV、3 層データの決まり、AABB の形状判定、動的な接続元／接続先、接続数と 2 つの長さ制限、重複／循環／`dead` の直線判定、仮の線を戻したときの長さの返却、`BloodTentacle`、`RibbonStrip`、`GameFlow` を確認します。
 
-GPU 畫面、拖曳手感、遮擋與 HUD 排版仍需要人工確認。
+GPU を使った画面、ドラッグの感触、重なり方、HUD の配置は、人の目と操作で確認する必要があります。
 
-## 程式結構
+## プログラムの構成
 
 ```text
-include/ObjectConnect/         公開 API；object_connect namespace
+include/ObjectConnect/         公開 API；object_connect 名前空間
   Core/                        Application、FrameTimer
-  Data/                        CSV、PuzzleData、兩個 catalog loader
+  Data/                        CSV、PuzzleData、2 つの catalog loader
   Game/                        Game、GameConfig、GameFlow
-  Geometry/                    AABB 純 2D query
-  Input/                       鍵盤、滑鼠與 focus 原始狀態
+  Geometry/                    AABB の純粋な 2D 判定
+  Input/                       キーボード、マウス、フォーカスの入力状態
   Math/                        Vec2、Color
-  Puzzle/                      PuzzleBoard 與 render snapshot
-  Rendering/                   DirectX/KamataEngine adapters
-  Tentacle/                    Verlet simulation 與 ribbon builder
-src/ObjectConnect/             與 include 對稱的實作
-tests/                         無引擎依賴的 core tests
-NoviceResources/data/          levels、presets 與 per-level maps
+  Puzzle/                      PuzzleBoard と描画用 Snapshot
+  Rendering/                   DirectX／KamataEngine との橋渡し
+  Tentacle/                    Verlet シミュレーションと帯形状の作成
+src/ObjectConnect/             include と同じ構成の実装
+tests/                         engine に依存しない core tests
+NoviceResources/data/          levels、presets、レベルごとの maps
 NoviceResources/shaders/       flat-color 2D shaders
-Docs/Architecture.md           ownership、資料流與擴充界線
+Docs/Architecture.md           担当範囲、データの流れ、機能追加の境界
 ```
 
-`NoviceResources/axis/` 與 `Obj*.hlsl` 是 KamataEngine bootstrap 所需資源；本作不使用 3D gameplay，但不能直接刪除。
+`NoviceResources/axis/` と `Obj*.hlsl` は、KamataEngine の起動に必要なファイルです。このゲームでは 3D gameplay を使いませんが、これらのファイルは削除しないでください。
 
-## 新人閱讀順序
+## 新しいメンバーにおすすめの読み順
 
-1. 看 `NoviceResources/data/levels.csv` 和 `data/maps/`，了解關卡與 placement。
-2. 看 `PuzzleData.hpp`，認識四種 node 與 16px tile helpers。
-3. 看 `PuzzleCatalogLoader.cpp`，了解 preset 繼承、map override 與 runtime catalog 的組裝。
-4. 看 `PuzzleBoard.hpp/.cpp`，追蹤 active nodes、dynamic commit 與兩層 budget。
-5. 看 `BloodTentacle.hpp/.cpp` 和 `RibbonStrip.hpp/.cpp`。
-6. 最後看 `Game.cpp`，了解 session、`nextLevelId` 與 renderer 組裝。
+1. `NoviceResources/data/levels.csv` と `data/maps/` を見て、レベルと配置位置を確認します。
+2. `PuzzleData.hpp` を見て、4 種類のノードと 16px タイル用の補助処理を確認します。
+3. `PuzzleCatalogLoader.cpp` を見て、ひな形の引き継ぎ、マップの上書き、ゲーム用データの組み立て方を確認します。
+4. `PuzzleBoard.hpp/.cpp` を見て、有効なノード、動的な接続の確定、2 つの長さ制限を追います。
+5. `BloodTentacle.hpp/.cpp` と `RibbonStrip.hpp/.cpp` を見ます。
+6. 最後に `Game.cpp` を見て、プレイ中の状態、`nextLevelId`、描画処理の組み立て方を確認します。
 
-Renderer 只讀 snapshot，不應回寫 `PuzzleBoard`。新增關卡通常只需在 `levels.csv` 增加一列並新增一份 map CSV，不要在 `Game.cpp` 寫死關卡。
+描画処理は Snapshot を読むだけです。`PuzzleBoard` の内容を書き換えないでください。新しいレベルを追加するときは、通常、`levels.csv` に 1 行追加し、新しいマップ CSV を 1 つ作るだけです。`Game.cpp` にレベル固有の内容を直接書かないでください。
 
-## 尚未實作
+## まだ実装していないもの
 
-- Dead 的 Verlet 粒子碰撞、血管繞障礙或路徑搜尋。
-- 完整資料幾何 preflight，以及 preset/map 的編輯器或回寫工具。
-- 器官分數、出血／血壓倒數、存檔與解鎖進度。
-- 音訊、熱重載、localization、ECS、完整物理或 creature controller。
+- Dead と Verlet 粒子の衝突、血管が障害物をよける動き、経路探索。
+- データ内の形状をすべて確認する事前検査と、ひな形／マップの編集ツールまたは書き戻しツール。
+- 器官のスコア、出血／血圧のカウントダウン、セーブ、アンロックの進行状況。
+- 音声、ホットリロード、多言語対応、ECS、完全な物理処理、クリーチャー制御。
