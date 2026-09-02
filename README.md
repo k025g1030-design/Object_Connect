@@ -1,10 +1,12 @@
 # Object_Connect
 
-`Object_Connect` 是以 C++20 與 KamataEngine 製作的 2D 節點連線解謎 MVP。玩家從目前亮起的末端拖出一條血管，在合法候選節點中選擇下一站；所有已完成段落和正在拖曳的段落，共用關卡唯一的一筆 `total_length`。
+`Object_Connect` 是以 C++20 與 KamataEngine 製作的固定 1280×720、2D 血管連線解謎 MVP。
 
-這個專案以 Game Jam 的開發速度與新人可讀性為優先：核心規則不依賴 KamataEngine、資料使用四份小型 CSV、流程沒有 fade、沒有 ECS 或完整物理引擎。血管不是 sprite 動畫，而是由 8–12 個 2D 粒子、Verlet integration、距離約束和 triangle strip 即時生成，再以格點量化、深色外緣與程序化肉質像素呈現。
+玩家從已啟動的 `root` 或 `follow` 節點拉出血管，自由連到可接受輸入的 `follow`／`end` 節點。連線不是事先寫在資料裡：每次拖曳時，`PuzzleBoard` 依節點容量、長度、重複邊、循環和 `dead` 節點的直線阻擋即時判斷是否合法。
 
-## 遊戲流程
+專案以 Game Jam 速度和新人可讀性為優先。核心玩法不依賴 KamataEngine，沒有 ECS、scene graph 或完整物理引擎。血管以 Verlet 粒子鏈與 triangle strip 即時生成，不是 sprite-sheet 動畫。
+
+## 目前的遊戲流程
 
 ```text
 MAIN MENU
@@ -16,82 +18,184 @@ MAIN MENU
                           |                  MAIN MENU
                           |                  EXIT GAME
                           |
-                          +-- 連到路徑終點 -> SOLVED
-                                             NEXT PUZZLE（非最後一關）
-                                             LEVEL SELECT
-                                             RETRY
+                          +-- 所有已放置 end 啟動 -> SOLVED
+                                                   NEXT PUZZLE（有效 nextLevelId）
+                                                   LEVEL SELECT
+                                                   RETRY
 ```
 
-所有關卡一開始就能選擇，不保存解鎖進度。切換、離開或重玩關卡時會建立新的 `PuzzleBoard`，因此整關長度與連線狀態會完整重置。末端抵達唯一終點後約 0.6 秒才顯示完成選單。
+選關順序就是 `levels.csv` 的列順序。`NEXT PUZZLE` 則不依賴列順序：它讀取目前關卡的 `next_level_id`，並以 ID 在 catalog 中查找。欄位為空或找不到該 ID 時，不顯示 Next。
+
+切換、離開或重玩關卡都會重建 `PuzzleBoard`，所以節點狀態、連線和長度完整重置。通關後約 0.6 秒才開放完成選單。
 
 ## 操作
 
 - `W`／`↑`、`S`／`↓`：選單上一項／下一項。
 - `Enter` 或滑鼠左鍵：確認選單項目。
-- 在目前亮起的末端節點按住滑鼠左鍵，拖到任一合法候選 target，放開後完成連線。
+- 在有脈動提示的可用 source 上按住滑鼠左鍵，拖到合法 target 後放開。
 - `Esc`：遊戲中暫停；暫停中回到遊戲；選關畫面回主選單；完成畫面回選關。
 - `R`：遊戲中或暫停中重玩目前關卡。
 
-滑鼠游標全程可見，不會被 capture。視窗失去焦點時，正在拖曳的 preview 會立即取消，遊戲自動暫停；重新取得焦點不會自動恢復。
+游標全程可見且不會被 capture。視窗失焦時，正在拖曳的 preview 會立即取消並自動暫停；重新取得焦點不會自動恢復。
 
-## 全域長度規則
+## 節點與動態連線
 
-每關只有一個 `total_length`。每個節點不擁有自己的血管長度，各個連線段落都從同一筆預算扣除：
+每個 map 可以放置四種節點：
+
+| `node_type` | Runtime 行為 |
+| --- | --- |
+| `root` | 關卡開始時立即 active；可作為 source。可以有多個 root。 |
+| `follow` | 可作為 target；第一次接入後變成 active，也可繼續作為 source。 |
+| `end` | 可作為 target，不能作為 source。所有已放置的 end 都 active 時通關。 |
+| `dead` | 不能連接；目前作為矩形直線視線障礙。 |
+
+連線不由資料預先列出。只要符合以下條件，active 的 root／follow 都可以開始新連線：
+
+- source 的 `max_outgoing` 尚未用完。
+- source 的 `max_outgoing_length` 還有剩餘量。
+- 關卡全域 `total_length` 還有剩餘量。
+- target 是有 placement 的 follow／end，且 `max_incoming` 尚未用完。
+- 不是 self connection、不是重複的有向 edge，也不會在已提交圖中形成 cycle。
+- source 中心到 target 中心的直線沒有穿過擴張後的 dead AABB。
+
+因此 runtime graph 可以依容量形成分支或合流；已啟動且還有資源的舊 source 仍可再次使用。
+
+map 中沒有 `tile_x`／`tile_y` 的節點只保留資料，不會顯示、命中、阻擋或參與通關判定。
+
+## 兩層長度預算
+
+所有連線共享一筆關卡總長度：
 
 ```text
-已固定段落長度總和
-+ 本次拖曳暫時保留的長度
-+ 可用剩餘長度
-= 關卡 total_length
+所有已提交連線長度
++ 目前 preview 保留長度
++ 全域剩餘長度
+= total_length
 ```
 
-拖曳距離會乘上 `minimum_slack_ratio`，得到這次需要保留的長度：
+每個可當 source 的節點另有自己的 outgoing 長度上限：
 
 ```text
-reservedLength = max(
-    previousReservedLength,
-    distance(source, cursor) * minimumSlackRatio
-)
+該 source 已提交 outgoing 長度
++ 若 preview 從它拉出，preview 保留長度
++ 該 source 的 outgoing 剩餘長度
+= max_outgoing_length
 ```
 
-因此拖遠只會增加保留量，拖回來不會自動縮短。玩家可以先拉遠，再回到 target，刻意留出更多鬆弛量；但前段用太多，後段就可能沒有足夠長度，只能按 `R` 重開整關。游標超出剩餘長度能到達的範圍時，tip 會被限制，血管呈現繃緊效果。
+一次 preview 真正能部署的上限是：
 
-放開時必須落在目前末端的一個候選 target、長度足夠，而且 source 到 target 的直線沒有被障礙物阻擋。成功時保留量成為固定段落的 rest length，選中的 target 成為唯一新末端；舊節點不能再拉出分支。失敗、放在空白或放錯節點時，preview 約 0.22 秒收回，保留量完整退還。
+```text
+min(全域剩餘長度, source outgoing 剩餘長度)
+```
 
-畫面左上會顯示 `REMAINING n / total`。剩餘量無法完成下一段時會以紅色顯示 `NOT ENOUGH LENGTH`。
+拖曳需要的長度為 `distance(source, cursor) * minimum_slack_ratio`。保留量只會增加，游標拖回來不會自動縮短，所以玩家可以主動留下鬆弛，也可能提早花掉過多預算。放空白、放到非法 target 或被 dead 阻擋時，preview 約 0.22 秒收回，保留量逐步退還。
 
-核心不內建器官分數。`PuzzleBoard::GetVisitedNodeIndices()` 與
-`GetCommittedConnectionIndices()` 會以唯讀方式提供玩家實際選中的路徑，後續系統可據此計算經過器官數、加權分數或彩蛋獎勵，而不把背景名稱寫死在解謎規則裡。
+HUD 顯示 `REMAINING n / total`。當穩定狀態下仍有結構上可連的 target，卻沒有足夠的全域／source 長度完成任何一條時，顯示 `NOT ENOUGH LENGTH`。
 
-## 內建關卡
+## Dead 障礙目前做到哪裡
 
-- `FIRST LINK`：A → B，無障礙，顯示答案提示線。
-- `AROUND BLOCK`：A → B → C → D，中央有矩形障礙，顯示答案提示線。
-- `CLOT PATH`：七個節點與多條候選路徑，中央有矩形與圓形障礙，不顯示答案提示線；可選直達、短路線或較長路線。
+`dead` 節點以 `tile_x`／`tile_y`、`width_tiles`、`height_tiles` 形成矩形 AABB。Board 會用血管最大半寬擴張 AABB；拖曳時，source-center 到游標的射線若先碰到 dead，preview tip 會停在最早接觸點之前。提交時仍會再次測試 source-center 到 target-center 的線段；碰到邊界也算阻擋。
 
-三關都保留有限容錯，且不同連線可設定粒子數、粗細、跟隨延遲與初始方向。
+目前做到 tip clamp 與 commit line-of-sight：
 
-## 必要環境
+- Preview tip 不能直接拖穿 dead，但血管中間的 Verlet 粒子和已固定段落不會對 dead 做 collision response。
+- 血管不會自動尋路或沿障礙彎曲。
+- Renderer 在血管之後繪製 dead 貼圖或矩形 fallback，遮住部分視覺穿越。
 
-- Windows x64。
-- Visual Studio 2026，安裝「使用 C++ 的桌面開發」、MSVC v145 與 Windows SDK。
-- 支援 `Visual Studio 18 2026` generator 的 CMake；`Build.ps1` 會優先使用 Visual Studio 內附版本。
-- KamataEngine。預設位置是 `D:\code\Runtime\KamataEngine`。
+如果未來要做真正繞骨、粒子碰撞或路徑規劃，需要另外設計 solver；這些尚未實作。
 
-專案使用 C++20，MSVC 以 `/W4 /WX /sdl /permissive- /utf-8` 編譯。Debug 與 Release 都必須保持 warning-free。
+## 三層 CSV 資料
+
+原始資料位於 `NoviceResources/data/`，建置後同步到 `Resources/data/`：
+
+```text
+data/
+  levels.csv             關卡順序、map 路徑、next ID、全域預算與外觀
+  nodes.csv              可重用的節點 preset catalog
+  maps/
+    first_link.csv       各關卡實際節點 instance 與 placement
+    around_block.csv
+    clot_path.csv
+```
+
+### `levels.csv`
+
+```text
+level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation
+```
+
+- CSV 列順序決定 Level Select 順序。
+- `map_path` 是相對 `Resources/` 的安全路徑。
+- `next_level_id` 可留空；runtime 只有在 ID 確實存在時才提供 Next。
+- `total_length` 是全域長度預算。
+- `minimum_slack_ratio` 空白時預設 1.05。
+- 顏色接受 `#RRGGBB` 或 `#RRGGBBAA`。
+- 空白的背景、血管與寬度欄位會使用 loader 預設值。
+
+### `nodes.csv` preset catalog
+
+```text
+preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,max_incoming,max_outgoing,max_outgoing_length
+```
+
+`NodePresetCatalogLoader` 可獨立載入這份檔案；遊戲啟動使用的 `PuzzleCatalogLoader` 也會載入它，作為 map instance 的預設值來源。
+
+Map row 有 `source_preset_id` 時，Loader 先複製該 preset，再用 map 中「非空白」的欄位覆寫。這讓共用器官只需在 `nodes.csv` 維護一次，而每關仍可調整尺寸、名稱、貼圖或容量。
+
+### 每關 map CSV
+
+```text
+instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
+```
+
+- `instance_id` 在該 map 內唯一。
+- `source_preset_id` 可留空；非空時必須對應 `nodes.csv` 的既有 preset。
+- `node_type` 只接受 `root`、`follow`、`end`、`dead`。有 preset 時可留空並繼承；沒有 preset 時必填。
+- 一格固定為 16×16 邏輯像素；`tile_x`／`tile_y` 是矩形左上角。
+- `width_tiles`／`height_tiles` 決定節點 AABB。
+- `tile_x` 和 `tile_y` 必須一起填或一起留空。
+- `width_tiles`、`height_tiles`、`display_name`、`texture_path` 與三個容量欄位都遵循相同規則：有 preset 時空白代表繼承，非空白代表覆寫；沒有 preset 時空白保留型別預設值。
+- 空白無法明確清除 preset 已提供的 `display_name` 或 `texture_path`。需要無名稱／無貼圖的 instance 時，請使用對應欄位本來就是空白的 preset，或不指定 preset。
+- resolved `display_name` 空白時 UI 不顯示名稱；resolved `texture_path` 非空時 loader 會確認資源存在，renderer 會顯示該貼圖。
+- root／follow 要能作 source，就必須有非零 `max_outgoing` 和 `max_outgoing_length`；follow／end 要能被接入，就必須有非零 `max_incoming`。
+
+CSV header 名稱與順序必須完全一致。Reader 支援 UTF-8 BOM、LF／CRLF、quoted field、quoted newline 與 `""` quote escape。ID 使用 lower_snake_case；顯示文字不得包含控制字元。載入採暫存後提交，失敗不會留下 partial catalog，診斷包含檔名、列與欄位。
+
+目前 Loader 著重欄位、路徑和基本型別驗證；它尚未做完整的畫布範圍、節點互相重疊或關卡可完成性 preflight。這些限制不要在資料中故意依賴。
+
+## 目前顯示方式
+
+`PuzzleRenderer` 以 flat-color DirectX 12 pipeline 畫背景、血管、提示與無貼圖 fallback，並以 KamataEngine sprite 顯示有 `texture_path` 的節點：
+
+```text
+背景
+-> 血管深色外緣 / 深紅 core / 程序化肉質像素
+-> dead 貼圖或矩形 fallback
+-> source pulse
+-> root / follow / end 貼圖或矩形 fallback
+-> ASCII HUD / 選單 overlay
+```
+
+Dormant 節點會暗化，active 節點使用正常顏色，可拉出的 source 顯示脈動提示。無 placement 的節點不繪製；`display_name` 空白時不畫文字。
+
+進入關卡時，renderer 依 resolved `texture_path` 載入並建立節點 sprite，再按 `width_tiles × height_tiles` 和 placement 繪製。同一關內相同路徑共用 texture handle；切關時沿用兩關共有的 handle，釋放只屬於舊關的 handle，因此每幀 Draw 不會重複載入，也不會讓歷史關卡貼圖一直佔用 descriptor。UI 與關卡 renderer 透過同一個引用計數 registry 共用 handle，避免其中一方提早卸載。每關最多 255 個有 placement 的 unique node texture path；這讓舊、新兩關能在 transactional 切換期間同時存在於 512-path registry，失敗時可完整保留原關卡。空路徑才使用依 node type 著色的矩形 fallback。Dead 貼圖和 fallback 都畫在血管之上。
+
+## 內建資料
+
+- `FIRST LINK`：Heart 與 Brain，測試最小 root → end 連線。
+- `AROUND BLOCK`：Heart、Lung、Liver、Brain，加上一個矩形 dead 區域。
+- `CLOT PATH`：多個 follow 器官、Brain 和兩個 dead 區域，可測試多 source、容量與長度取捨。
+
+這些 map 沒有預先連線；實際路線全部由玩家在 runtime 決定。
 
 ## 建置與執行
 
-Debug：
+需要 Windows x64、Visual Studio 2026 C++ Desktop workload、支援 `Visual Studio 18 2026` generator 的 CMake，以及 KamataEngine。預設 engine 路徑為 `D:\code\Runtime\KamataEngine`。
 
 ```powershell
 .\Build.ps1 -Configuration Debug
-```
-
-Release：
-
-```powershell
 .\Build.ps1 -Configuration Release
+.\Run.ps1 -Configuration Debug
 ```
 
 KamataEngine 位於其他位置時：
@@ -100,141 +204,57 @@ KamataEngine 位於其他位置時：
 .\Build.ps1 -Configuration Debug -KamataEngineRoot "D:\your\KamataEngine"
 ```
 
-建置後執行：
+執行檔位於 `target/<Configuration>/Object_Connect.exe`。建置會把 `NoviceResources/` 同步到執行檔旁的 `Resources/`；程式啟動時會把 working directory 設為執行檔目錄。
 
-```powershell
-.\Run.ps1 -Configuration Debug
-```
+專案使用 C++20，MSVC 設定為 `/W4 /WX /sdl /permissive- /utf-8`。
 
-略過重建、直接執行既有 binary：
-
-```powershell
-.\Run.ps1 -Configuration Debug -SkipBuild
-```
-
-執行檔位於 `target/<Configuration>/Object_Connect.exe`。CMake 每次建置都會把 `NoviceResources/` 同步到執行檔旁的 `Resources/`；程式啟動時也會把 working directory 設為執行檔目錄，所以資料和 shader 路徑不依賴啟動位置。
-
-若在 CLion 使用 x64 Visual Studio toolchain，可選 `clion-debug` 或 `clion-release` CMake preset。
-
-## 執行測試
-
-先建置對應 configuration，再執行：
+## 測試
 
 ```powershell
 ctest --test-dir build/vs2026-x64 -C Debug --output-on-failure
 ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 ```
 
-`Object_Connect_CoreTests` 不建立視窗，也不需要 GPU。測試涵蓋 CSV 與正式四表整合、候選 DAG、路徑選擇、全域長度不變量、障礙幾何、末端解鎖、血管約束與下垂、跟隨延遲、ribbon 頂點與像素格點，以及主選單／選關／暫停／完成流程。實際拖曳手感、肉質像素密度、triangle strip 裂縫、圖層順序和失焦行為仍需執行遊戲人工確認。
+`Object_Connect_CoreTests` 不建立視窗，也不需要 GPU。核心測試涵蓋 CSV、三層資料 contract、AABB 幾何、動態 source／target、容量與雙層長度預算、duplicate／cycle／dead LOS、preview refund、BloodTentacle、RibbonStrip 和 GameFlow。
 
-## CSV 關卡資料
-
-原始資料位於 `NoviceResources/data/`，執行時從 `Resources/data/` 讀取。不是 JSON，也沒有內建關卡程式碼；四份 CSV 合在一起描述整個 puzzle catalog。
-
-### `levels.csv`
-
-```text
-puzzle_id,title,start_node_id,total_length,minimum_slack_ratio,background_color,show_target_connections,vessel_color,base_width,tip_width,width_variation
-```
-
-- 每個 `puzzle_id` 一列。
-- `total_length` 使用 1280×720 的邏輯像素，範圍為 `(0, 100000]`。
-- `minimum_slack_ratio` 範圍為 `[1, 4]`，建議從 1.05 開始。
-- `show_target_connections=true` 會顯示低透明度答案線。
-- `base_width`、`tip_width`、`width_variation` 控制整關的血管外觀。兩個寬度相等會取消根部到末端的漸縮，variation 只向內切出局部凹缺；內建關卡使用 16 像素外輪廓、`0.16` 凹凸量與深紅色 `#861B2B`。Renderer 再套用 2 像素格點、深色外緣及亮紅／暗紅肉質斑塊。
-
-### `nodes.csv`
-
-```text
-puzzle_id,node_id,label,x,y,radius,color
-```
-
-節點圓形必須完整位於 1280×720 畫布內，不得互相重疊，也不得與障礙重疊。
-
-### `connections.csv`
-
-```text
-puzzle_id,from_node_id,to_node_id,point_count,thickness_scale,follow_delay_seconds,initial_direction_degrees
-```
-
-- 連線有方向，從 `start_node_id` 形成候選路徑圖；資料可有多條 outgoing／incoming，但玩家實際血管始終只選一條。
-- 所有 connection 必須從起點可達，整張圖必須無循環且只有一個可達終點。
-- 不允許循環、自連線、重複 edge、未知 node、斷開的 connection 或多終點。
-- `point_count` 必須是 8–12。
-- `thickness_scale` 最大為 8；同一路徑所有段落都設為 `1` 時，跨節點也會維持一致粗細。`follow_delay_seconds` 最大為 1 秒，初始方向限制為 `[-360, 360]` 度。
-- Loader 保留 CSV 列順序；遊戲依目前末端和玩家選中的 target 決定路徑，不以列順序決定流程。
-
-### `obstacles.csv`
-
-```text
-puzzle_id,obstacle_id,shape,center_x,center_y,width,height,radius,color
-```
-
-- `shape` 只接受 `rectangle` 或 `circle`。
-- 矩形填 `width`／`height`，`radius` 留空。
-- 圓形填 `radius`，`width`／`height` 留空。
-- 障礙必須完整位於畫布內。
-
-顏色接受 `#RRGGBB` 或 `#RRGGBBAA`。ID、標題與 label 使用可顯示的英文 ASCII。CSV reader 接受 UTF-8 BOM、LF／CRLF、quoted field、quoted newline 與 `""` quote escape；header 名稱與順序則必須完全符合契約。
-
-啟動時 loader 會一次驗證四表：型別、finite 數值、安全範圍、重複 ID、跨表引用、拓樸、畫布範圍、重疊、障礙阻擋，以及：
-
-```text
-shortest_path_sum(distance(from, to)) * minimum_slack_ratio <= total_length
-```
-
-未選候選邊不計入長度；Loader 只要求至少一條起點到終點的路線可以完成。血管 clearance 會用該段最大半寬再加一個 2 像素格點擴張障礙，涵蓋像素量化位移；碰到邊界也算阻擋。任一錯誤都會使整份 catalog 載入失敗，不會留下 partial catalog；錯誤訊息包含檔名、row 與 column／field。
+GPU 畫面、拖曳手感、遮擋與 HUD 排版仍需要人工確認。
 
 ## 程式結構
 
 ```text
 include/ObjectConnect/         公開 API；object_connect namespace
   Core/                        Application、FrameTimer
-  Data/                        CSV、PuzzleData、catalog loader
+  Data/                        CSV、PuzzleData、兩個 catalog loader
   Game/                        Game、GameConfig、GameFlow
-  Geometry/                    segment-circle、segment-AABB 等純 2D query
-  Input/                       鍵盤、滑鼠、focus 的原始狀態
+  Geometry/                    AABB 純 2D query
+  Input/                       鍵盤、滑鼠與 focus 原始狀態
   Math/                        Vec2、Color
   Puzzle/                      PuzzleBoard 與 render snapshot
-  Rendering/                   DirectX/KamataEngine renderer adapter
+  Rendering/                   DirectX/KamataEngine adapters
   Tentacle/                    Verlet simulation 與 ribbon builder
-src/
-  main.cpp                     Win32 程式進入點
-  ObjectConnect/               實作；目錄與 include/ObjectConnect 一致
-    Core/                      Application、FrameTimer
-    Data/                      CSV 與 catalog loader
-    Game/                      Game、GameFlow
-    Geometry/                  純 2D geometry query
-    Input/                     KamataEngine input adapter
-    Puzzle/                    PuzzleBoard
-    Rendering/                 DirectX/KamataEngine renderer
-    Tentacle/                  Verlet 與 ribbon builder
-tests/                         無引擎依賴的 core contract tests
-NoviceResources/data/          四份關卡 CSV 原本
-NoviceResources/shaders/       flat-color 2D shader
-Docs/Architecture.md           依賴、ownership、每幀流程與擴充界線
+src/ObjectConnect/             與 include 對稱的實作
+tests/                         無引擎依賴的 core tests
+NoviceResources/data/          levels、presets 與 per-level maps
+NoviceResources/shaders/       flat-color 2D shaders
+Docs/Architecture.md           ownership、資料流與擴充界線
 ```
 
-`NoviceResources/axis/` 與 `Obj*.hlsl` 看起來像 3D 遺留物，但 KamataEngine 啟動時會固定初始化 Model／AxisIndicator；它們是引擎 bootstrap 資源，不能刪除。遊戲本身不使用 3D 模型玩法。
+`NoviceResources/axis/` 與 `Obj*.hlsl` 是 KamataEngine bootstrap 所需資源；本作不使用 3D gameplay，但不能直接刪除。
 
-CMake target 的責任也保持簡單：
+## 新人閱讀順序
 
-- `object_connect_core`：Math、Data、Geometry、PuzzleBoard、GameFlow、BloodTentacle、RibbonStrip；不依賴 KamataEngine。
-- `object_connect_runtime`：Application、Input、Game、UI 與 DirectX renderer。
-- `Object_Connect`：Win32 執行檔。
-- `Object_Connect_CoreTests`：headless core tests。
+1. 看 `NoviceResources/data/levels.csv` 和 `data/maps/`，了解關卡與 placement。
+2. 看 `PuzzleData.hpp`，認識四種 node 與 16px tile helpers。
+3. 看 `PuzzleCatalogLoader.cpp`，了解 preset 繼承、map override 與 runtime catalog 的組裝。
+4. 看 `PuzzleBoard.hpp/.cpp`，追蹤 active nodes、dynamic commit 與兩層 budget。
+5. 看 `BloodTentacle.hpp/.cpp` 和 `RibbonStrip.hpp/.cpp`。
+6. 最後看 `Game.cpp`，了解 session、`nextLevelId` 與 renderer 組裝。
 
-## 新人建議閱讀順序
+Renderer 只讀 snapshot，不應回寫 `PuzzleBoard`。新增關卡通常只需在 `levels.csv` 增加一列並新增一份 map CSV，不要在 `Game.cpp` 寫死關卡。
 
-1. 先看 `NoviceResources/data/` 的三關，理解「四張表共同描述一關」。
-2. 看 `PuzzleData.hpp`，認識 loader 產出的只讀 definition。
-3. 看 `PuzzleBoard.hpp/.cpp`，追蹤拖曳、保留、退還與 commit。
-4. 看 `BloodTentacle.hpp/.cpp`，理解單一段落如何模擬；不要把它和全域長度預算混在一起。
-5. 看 `RibbonStrip.hpp/.cpp`，理解中心點如何變成可畫的左右頂點。
-6. 最後看 `Game.cpp`，了解輸入、流程、board snapshot 與 renderer 如何組裝。
+## 尚未實作
 
-加入新關卡通常只需要編輯四份 CSV；若只改規則，優先修改 `object_connect_core` 並先補 core test。Renderer 只讀 snapshot，不應回寫 `PuzzleBoard`。
-
-## 範圍外
-
-本 MVP 不支援 JSON、存檔、關卡解鎖、熱重載、中文 UI、音訊、血管貼圖、粒子對障礙的物理碰撞、可移動 body、creature controller、ECS、scene graph 或完整物理引擎。固定解析度為 1280×720。
+- Dead 的 Verlet 粒子碰撞、血管繞障礙或路徑搜尋。
+- 完整資料幾何 preflight，以及 preset/map 的編輯器或回寫工具。
+- 器官分數、出血／血壓倒數、存檔與解鎖進度。
+- 音訊、熱重載、localization、ECS、完整物理或 creature controller。

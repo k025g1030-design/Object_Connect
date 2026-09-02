@@ -1,0 +1,10 @@
+instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
+heart,heart_root,,,,,HEART,9,21,,2,850
+lung,organ_follow,,,,,LUNG,22,6,3,2,600
+kidney,organ_follow,,,,,KIDNEY,39,5,3,2,600
+liver,organ_follow,,,,,LIVER,62,10,3,2,600
+stomach,organ_follow,,,,,STOMACH,66,31,3,2,600
+lung_lower,organ_follow,,,,,LUNG,42,37,3,2,600
+brain,brain_end,,,,,,21,35,3,,
+central_bone,bone_dead,,,15,12,,30,16,,,
+right_bone,bone_dead,,,12,12,,48,16,,,

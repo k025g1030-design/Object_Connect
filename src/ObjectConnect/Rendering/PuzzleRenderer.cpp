@@ -2,6 +2,7 @@
 
 #include "ObjectConnect/Math/Vec2.hpp"
 #include "ObjectConnect/Tentacle/RibbonStrip.hpp"
+#include "TextureHandleRegistry.hpp"
 
 #include <KamataEngine.h>
 
@@ -19,9 +20,12 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -35,6 +39,15 @@ constexpr float kCanvasHeight = 720.0f;
 constexpr int kCircleSegments = 32;
 constexpr float kFleshCoreInset = 4.0f;
 constexpr float kFleshPixelSpacing = 12.0f;
+constexpr std::size_t kVerticesPerRectangle = 6;
+constexpr std::size_t kVerticesPerOutlinedRectangle = 12;
+constexpr std::size_t kVerticesPerCircle =
+    static_cast<std::size_t>(kCircleSegments) * 3;
+constexpr std::size_t kMaximumFleshSamplesPerSegment = 256;
+// Preparing a level is transactional, so old and new level textures coexist
+// until every replacement sprite has been created. Two maximum-sized levels,
+// plus the shared UI texture, must remain below the registry's 512-path cap.
+constexpr std::size_t kMaximumTexturePathsPerPuzzle = 255;
 
 struct CanvasConstants final {
     float width = kCanvasWidth;
@@ -136,16 +149,50 @@ void AddCircle(std::vector<RibbonVertex>& vertices, const Vec2 center,
     }
 }
 
-void AddLine(std::vector<RibbonVertex>& vertices, const Vec2 start,
-             const Vec2 end, const float width, const Color color) {
-    const Vec2 direction = NormalizeOr(end - start, {1.0f, 0.0f});
-    const Vec2 normal = Perpendicular(direction) * (width * 0.5f);
-    AddTriangle(vertices, start + normal, end + normal, start - normal, color);
-    AddTriangle(vertices, start - normal, end + normal, end - normal, color);
-}
-
 [[nodiscard]] Color Darkened(const Color color, const float factor) noexcept {
     return ScaleRgb(color, factor);
+}
+
+struct NodePalette final {
+    Color fill{};
+    Color outline{};
+};
+
+[[nodiscard]] bool HasVertexRoom(const std::vector<RibbonVertex>& vertices,
+                                 const std::size_t limit,
+                                 const std::size_t required) noexcept {
+    return vertices.size() <= limit && required <= limit - vertices.size();
+}
+
+[[nodiscard]] constexpr NodePalette GetNodePalette(
+    const NodeType type) noexcept {
+    switch (type) {
+    case NodeType::Root:
+        return {{0.63f, 0.12f, 0.20f, 1.0f},
+                {0.96f, 0.35f, 0.42f, 1.0f}};
+    case NodeType::Follow:
+        return {{0.49f, 0.22f, 0.30f, 1.0f},
+                {0.79f, 0.49f, 0.57f, 1.0f}};
+    case NodeType::End:
+        return {{0.44f, 0.24f, 0.49f, 1.0f},
+                {0.79f, 0.51f, 0.83f, 1.0f}};
+    case NodeType::Dead:
+        return {{0.16f, 0.14f, 0.17f, 1.0f},
+                {0.43f, 0.37f, 0.42f, 1.0f}};
+    }
+    return {};
+}
+
+void AddOutlinedRectangle(std::vector<RibbonVertex>& vertices,
+                          const Vec2 topLeft, const Vec2 size,
+                          const Color fill, const Color outline) {
+    AddRectangle(vertices, topLeft.x, topLeft.y, size.x, size.y, outline);
+    const float inset = (std::min)(3.0f, (std::min)(size.x, size.y) * 0.2f);
+    if (inset <= 0.0f || size.x <= inset * 2.0f || size.y <= inset * 2.0f) {
+        return;
+    }
+    AddRectangle(vertices, topLeft.x + inset, topLeft.y + inset,
+                 size.x - inset * 2.0f, size.y - inset * 2.0f, fill);
 }
 
 [[nodiscard]] float ResolvePixelGridSize(const TentacleStyle& style) noexcept {
@@ -184,7 +231,8 @@ void AddLine(std::vector<RibbonVertex>& vertices, const Vec2 start,
 
 void AddFleshPixels(std::vector<RibbonVertex>& vertices,
                     const std::vector<Vec2>& centerline,
-                    const TentacleStyle& outerStyle) {
+                    const TentacleStyle& outerStyle,
+                    const std::size_t vertexLimit) {
     if (centerline.size() < 2) {
         return;
     }
@@ -224,12 +272,25 @@ void AddFleshPixels(std::vector<RibbonVertex>& vertices,
             continue;
         }
         const Vec2 normal = Perpendicular(NormalizeOr(delta, {1.0f, 0.0f}));
-        const std::size_t sampleCount = static_cast<std::size_t>(
-            segmentLength / kFleshPixelSpacing);
+        const double requestedSamples =
+            std::floor(static_cast<double>(segmentLength) /
+                       static_cast<double>(kFleshPixelSpacing));
+        const bool samplesWereCapped =
+            requestedSamples >
+            static_cast<double>(kMaximumFleshSamplesPerSegment);
+        const std::size_t sampleCount = samplesWereCapped
+            ? kMaximumFleshSamplesPerSegment
+            : static_cast<std::size_t>(requestedSamples);
         for (std::size_t sampleIndex = 1; sampleIndex <= sampleCount;
              ++sampleIndex) {
-            const float distance =
-                static_cast<float>(sampleIndex) * kFleshPixelSpacing;
+            if (!HasVertexRoom(vertices, vertexLimit, kVerticesPerRectangle)) {
+                return;
+            }
+            const float distance = samplesWereCapped
+                ? segmentLength *
+                      (static_cast<float>(sampleIndex) /
+                       static_cast<float>(sampleCount + 1))
+                : static_cast<float>(sampleIndex) * kFleshPixelSpacing;
             if (distance >= segmentLength) {
                 break;
             }
@@ -262,6 +323,18 @@ void AddFleshPixels(std::vector<RibbonVertex>& vertices,
     }
 }
 
+class SpriteDrawScope final {
+public:
+    explicit SpriteDrawScope(ID3D12GraphicsCommandList* const commandList) {
+        KamataEngine::Sprite::PreDraw(
+            commandList, KamataEngine::Sprite::BlendMode::kNormal);
+    }
+    ~SpriteDrawScope() { KamataEngine::Sprite::PostDraw(); }
+
+    SpriteDrawScope(const SpriteDrawScope&) = delete;
+    SpriteDrawScope& operator=(const SpriteDrawScope&) = delete;
+};
+
 } // namespace
 
 struct PuzzleRenderer::Impl final {
@@ -274,6 +347,16 @@ struct PuzzleRenderer::Impl final {
     CanvasConstants* mappedConstants = nullptr;
     D3D12_VERTEX_BUFFER_VIEW vertexView{};
     std::size_t maxVertices = 0;
+    std::unordered_map<std::string, std::uint32_t> textureHandles;
+    std::vector<std::unique_ptr<KamataEngine::Sprite>> nodeSprites;
+    std::string preparedPuzzleId;
+    bool puzzlePrepared = false;
+
+    [[nodiscard]] bool HasSprite(const PuzzleDefinition& definition,
+                                 const std::size_t nodeIndex) const noexcept {
+        return puzzlePrepared && preparedPuzzleId == definition.id &&
+               nodeIndex < nodeSprites.size() && nodeSprites[nodeIndex] != nullptr;
+    }
 };
 
 PuzzleRenderer::PuzzleRenderer() noexcept = default;
@@ -386,6 +469,113 @@ bool PuzzleRenderer::Initialize(const std::size_t maxVertices, std::string& erro
     return false;
 }
 
+bool PuzzleRenderer::PreparePuzzle(const PuzzleDefinition& definition,
+                                   std::string& error) {
+    error.clear();
+    if (!impl_) {
+        error = "PuzzleRenderer must be initialized before preparing a puzzle.";
+        return false;
+    }
+    if (impl_->puzzlePrepared && impl_->preparedPuzzleId == definition.id &&
+        impl_->nodeSprites.size() == definition.nodes.size()) {
+        return true;
+    }
+
+    std::unordered_map<std::string, std::uint32_t> nextTextureHandles;
+    try {
+        std::string nextPreparedPuzzleId{definition.id};
+        std::unordered_set<std::string> uniqueTexturePaths;
+        uniqueTexturePaths.reserve((std::min)(
+            definition.nodes.size(), kMaximumTexturePathsPerPuzzle + 1));
+        for (const NodeDefinition& node : definition.nodes) {
+            if (node.HasPlacement() && !node.texturePath.empty()) {
+                uniqueTexturePaths.insert(node.texturePath);
+                if (uniqueTexturePaths.size() > kMaximumTexturePathsPerPuzzle) {
+                    throw std::runtime_error(
+                        "A puzzle cannot use more than 255 unique placed node "
+                        "texture paths.");
+                }
+            }
+        }
+
+        std::vector<std::unique_ptr<KamataEngine::Sprite>> nextSprites(
+            definition.nodes.size());
+        nextTextureHandles.reserve((std::min)(
+            uniqueTexturePaths.size(), kMaximumTexturePathsPerPuzzle));
+
+        for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+            const NodeDefinition& node = definition.nodes[index];
+            const std::optional<Vec2> topLeft = node.GetTopLeftPosition();
+            if (!topLeft.has_value() || node.texturePath.empty()) {
+                continue;
+            }
+
+            auto found = nextTextureHandles.find(node.texturePath);
+            if (found == nextTextureHandles.end()) {
+                const auto reusable = impl_->textureHandles.find(node.texturePath);
+                if (reusable != impl_->textureHandles.end()) {
+                    found = nextTextureHandles
+                                .emplace(node.texturePath, reusable->second)
+                                .first;
+                } else {
+                    const std::uint32_t handle =
+                        rendering_detail::TextureHandleRegistry::Acquire(
+                            node.texturePath);
+                    try {
+                        found = nextTextureHandles.emplace(node.texturePath, handle)
+                                    .first;
+                    } catch (...) {
+                        rendering_detail::TextureHandleRegistry::Release(
+                            node.texturePath);
+                        throw;
+                    }
+                }
+            }
+
+            std::unique_ptr<KamataEngine::Sprite> sprite{
+                KamataEngine::Sprite::Create(
+                    found->second, {topLeft->x, topLeft->y},
+                    {1.0f, 1.0f, 1.0f, 1.0f})};
+            if (!sprite) {
+                throw std::runtime_error("KamataEngine could not create a sprite for node '" +
+                                         node.id + "'.");
+            }
+            const Vec2 size = node.GetPixelSize();
+            sprite->SetSize({size.x, size.y});
+            nextSprites[index] = std::move(sprite);
+        }
+
+        impl_->nodeSprites.clear();
+        for (const auto& oldTexture : impl_->textureHandles) {
+            if (!nextTextureHandles.contains(oldTexture.first)) {
+                rendering_detail::TextureHandleRegistry::Release(
+                    oldTexture.first);
+            }
+        }
+        impl_->textureHandles.swap(nextTextureHandles);
+        impl_->nodeSprites.swap(nextSprites);
+        impl_->preparedPuzzleId.swap(nextPreparedPuzzleId);
+        impl_->puzzlePrepared = true;
+        return true;
+    } catch (const std::exception& exception) {
+        for (const auto& texture : nextTextureHandles) {
+            if (!impl_->textureHandles.contains(texture.first)) {
+                rendering_detail::TextureHandleRegistry::Release(texture.first);
+            }
+        }
+        error = "Failed to prepare PuzzleRenderer node textures: ";
+        error += exception.what();
+    } catch (...) {
+        for (const auto& texture : nextTextureHandles) {
+            if (!impl_->textureHandles.contains(texture.first)) {
+                rendering_detail::TextureHandleRegistry::Release(texture.first);
+            }
+        }
+        error = "Failed to prepare PuzzleRenderer node textures because of an unknown error.";
+    }
+    return false;
+}
+
 void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
                           const PuzzleBoardSnapshot& snapshot,
                           const float elapsedSeconds) {
@@ -394,9 +584,13 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
     }
 
     std::vector<RibbonVertex> vertices;
-    vertices.reserve(8192);
+    vertices.reserve((std::min)(impl_->maxVertices, std::size_t{8192}));
     std::vector<DrawBatch> batches;
-    batches.reserve(snapshot.tentacles.size() * 2 + 4);
+    const std::size_t maximumTentacleBatchReserve =
+        impl_->maxVertices > 5 ? (impl_->maxVertices - 5) / 4 : 0;
+    const std::size_t tentaclesToReserve = (std::min)(
+        snapshot.tentacles.size(), maximumTentacleBatchReserve / 2);
+    batches.reserve(tentaclesToReserve * 2 + 5);
 
     const auto beginList = [&vertices]() { return vertices.size(); };
     const auto endList = [&vertices, &batches](const std::size_t start) {
@@ -410,26 +604,26 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
     std::size_t listStart = beginList();
     AddRectangle(vertices, 0.0f, 0.0f, kCanvasWidth, kCanvasHeight,
                  definition.backgroundColor);
-    if (definition.showTargetConnections) {
-        const Color hint = WithAlpha(definition.vesselColor, 0.16f);
-        for (const ConnectionDefinition& connection : definition.connections) {
-            AddLine(vertices, definition.nodes[connection.fromNodeIndex].position,
-                    definition.nodes[connection.toNodeIndex].position, 3.0f, hint);
-        }
-    }
     endList(listStart);
 
-    const auto appendRibbon = [&vertices, &batches](
+    const auto appendRibbon = [this, &vertices, &batches](
                                   const std::vector<Vec2>& points,
                                   const TentacleStyle& style) {
+        if (!HasVertexRoom(vertices, impl_->maxVertices, 4)) {
+            return false;
+        }
         std::vector<RibbonVertex> strip = BuildRibbonStrip(points, style);
         if (strip.size() < 4) {
-            return;
+            return true;
+        }
+        if (!HasVertexRoom(vertices, impl_->maxVertices, strip.size())) {
+            return false;
         }
         const std::size_t start = vertices.size();
         vertices.insert(vertices.end(), strip.begin(), strip.end());
         batches.push_back({D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
                            static_cast<UINT>(start), static_cast<UINT>(strip.size())});
+        return true;
     };
 
     // A dark outer silhouette gives the procedural strip the chunky edge used by
@@ -438,37 +632,116 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
     for (const TentacleRenderSnapshot& tentacle : snapshot.tentacles) {
         TentacleStyle outline = tentacle.style;
         outline.color = ScaleRgb(outline.color, 0.32f);
-        appendRibbon(tentacle.points, outline);
+        if (!appendRibbon(tentacle.points, outline)) {
+            break;
+        }
     }
     for (const TentacleRenderSnapshot& tentacle : snapshot.tentacles) {
-        appendRibbon(tentacle.points, MakeFleshCoreStyle(tentacle.style));
+        if (!appendRibbon(tentacle.points,
+                          MakeFleshCoreStyle(tentacle.style))) {
+            break;
+        }
     }
 
     listStart = beginList();
     for (const TentacleRenderSnapshot& tentacle : snapshot.tentacles) {
-        AddFleshPixels(vertices, tentacle.points, tentacle.style);
+        if (!HasVertexRoom(vertices, impl_->maxVertices,
+                           kVerticesPerRectangle)) {
+            break;
+        }
+        AddFleshPixels(vertices, tentacle.points, tentacle.style,
+                       impl_->maxVertices);
     }
     endList(listStart);
+    const std::size_t vesselBatchEnd = batches.size();
 
+    // Dead nodes are the current map's solid blockers and deliberately cover
+    // the vessel layer before interactive nodes are drawn above them.
     listStart = beginList();
-    for (const ObstacleDefinition& obstacle : definition.obstacles) {
-        if (obstacle.shape == ObstacleShape::Rectangle) {
-            AddRectangle(vertices, obstacle.center.x - obstacle.width * 0.5f,
-                         obstacle.center.y - obstacle.height * 0.5f,
-                         obstacle.width, obstacle.height, obstacle.color);
-        } else {
-            AddCircle(vertices, obstacle.center, obstacle.radius, obstacle.color);
+    for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+        const NodeDefinition& node = definition.nodes[index];
+        if (index >= snapshot.nodeStates.size() ||
+            !snapshot.nodeStates[index].drawable ||
+            node.type != NodeType::Dead || impl_->HasSprite(definition, index)) {
+            continue;
+        }
+        if (!HasVertexRoom(vertices, impl_->maxVertices,
+                           kVerticesPerOutlinedRectangle)) {
+            break;
+        }
+        const std::optional<Vec2> topLeft = node.GetTopLeftPosition();
+        if (!topLeft.has_value()) {
+            continue;
+        }
+        const NodePalette palette = GetNodePalette(node.type);
+        AddOutlinedRectangle(vertices, *topLeft, node.GetPixelSize(),
+                             palette.fill, palette.outline);
+    }
+    endList(listStart);
+    const std::size_t deadBatchEnd = batches.size();
+
+    // Available sources pulse behind the authored root/follow/end rectangles.
+    // Dormant nodes remain visible but dim until the board activates them.
+    listStart = beginList();
+    if (!snapshot.solved) {
+        for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+            const NodeDefinition& node = definition.nodes[index];
+            if (index >= snapshot.nodeStates.size() ||
+                !snapshot.nodeStates[index].drawable ||
+                node.type == NodeType::Dead ||
+                !snapshot.nodeStates[index].availableSource) {
+                continue;
+            }
+            if (!HasVertexRoom(vertices, impl_->maxVertices,
+                               kVerticesPerCircle)) {
+                break;
+            }
+            const std::optional<Vec2> center = node.GetCenterPosition();
+            if (!center.has_value()) {
+                continue;
+            }
+            const bool selected = snapshot.selectedSourceNodeIndex.has_value() &&
+                                  *snapshot.selectedSourceNodeIndex == index;
+            const float wave = 0.5f +
+                               0.5f * std::sin(elapsedSeconds *
+                                               (selected ? 8.0f : 5.5f));
+            const Vec2 size = node.GetPixelSize();
+            const float radius = (std::max)(size.x, size.y) * 0.62f +
+                                 (selected ? 7.0f : 4.0f) + wave * 3.0f;
+            const Color pulse = selected
+                ? WithAlpha(ScaleRgb(definition.vesselColor, 1.55f), 0.78f)
+                : WithAlpha(definition.vesselColor, 0.48f);
+            AddCircle(vertices, *center, radius, pulse);
         }
     }
 
     for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
         const NodeDefinition& node = definition.nodes[index];
-        const bool active = snapshot.activeNodeIndex.has_value() &&
-                            *snapshot.activeNodeIndex == index && !snapshot.solved;
-        const float pulse = active ? 4.0f + 2.0f * std::sin(elapsedSeconds * 6.0f) : 2.0f;
-        const Color ring = active ? definition.vesselColor : Darkened(node.color, 0.45f);
-        AddCircle(vertices, node.position, node.radius + pulse, ring);
-        AddCircle(vertices, node.position, node.radius, node.color);
+        if (index >= snapshot.nodeStates.size() ||
+            !snapshot.nodeStates[index].drawable ||
+            node.type == NodeType::Dead || impl_->HasSprite(definition, index)) {
+            continue;
+        }
+        if (!HasVertexRoom(vertices, impl_->maxVertices,
+                           kVerticesPerOutlinedRectangle)) {
+            break;
+        }
+        const std::optional<Vec2> topLeft = node.GetTopLeftPosition();
+        if (!topLeft.has_value()) {
+            continue;
+        }
+
+        NodePalette palette = GetNodePalette(node.type);
+        if (!snapshot.nodeStates[index].active) {
+            palette.fill = Darkened(palette.fill, 0.34f);
+            palette.outline = Darkened(palette.outline, 0.42f);
+        }
+        if (snapshot.selectedSourceNodeIndex.has_value() &&
+            *snapshot.selectedSourceNodeIndex == index) {
+            palette.outline = ScaleRgb(definition.vesselColor, 1.65f);
+        }
+        AddOutlinedRectangle(vertices, *topLeft, node.GetPixelSize(),
+                             palette.fill, palette.outline);
     }
     endList(listStart);
 
@@ -476,24 +749,78 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
         return;
     }
     if (vertices.size() > impl_->maxVertices) {
-        throw std::runtime_error("PuzzleRenderer vertex capacity was exceeded.");
+        return;
     }
 
     std::memcpy(impl_->mappedVertices, vertices.data(), vertices.size() * sizeof(RibbonVertex));
     ID3D12GraphicsCommandList* const commandList = impl_->directX->GetCommandList();
-    commandList->SetGraphicsRootSignature(impl_->rootSignature.Get());
-    commandList->SetPipelineState(impl_->pipelineState.Get());
-    commandList->IASetVertexBuffers(0, 1, &impl_->vertexView);
-    commandList->SetGraphicsRootConstantBufferView(
-        0, impl_->constantBuffer->GetGPUVirtualAddress());
-    for (const DrawBatch& batch : batches) {
-        commandList->IASetPrimitiveTopology(batch.topology);
-        commandList->DrawInstanced(batch.vertexCount, 1, batch.startVertex, 0);
-    }
+    const auto drawFlatRange = [this, commandList, &batches](
+                                   const std::size_t begin,
+                                   const std::size_t end) {
+        if (begin >= end) {
+            return;
+        }
+        commandList->SetGraphicsRootSignature(impl_->rootSignature.Get());
+        commandList->SetPipelineState(impl_->pipelineState.Get());
+        commandList->IASetVertexBuffers(0, 1, &impl_->vertexView);
+        commandList->SetGraphicsRootConstantBufferView(
+            0, impl_->constantBuffer->GetGPUVirtualAddress());
+        for (std::size_t index = begin; index < end; ++index) {
+            const DrawBatch& batch = batches[index];
+            commandList->IASetPrimitiveTopology(batch.topology);
+            commandList->DrawInstanced(batch.vertexCount, 1,
+                                       batch.startVertex, 0);
+        }
+    };
+    const auto drawTexturedNodes = [this, commandList, &definition, &snapshot](
+                                       const bool deadLayer) {
+        bool hasDrawableSprite = false;
+        for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+            const bool isDead = definition.nodes[index].type == NodeType::Dead;
+            if (isDead == deadLayer && index < snapshot.nodeStates.size() &&
+                snapshot.nodeStates[index].drawable &&
+                impl_->HasSprite(definition, index)) {
+                hasDrawableSprite = true;
+                break;
+            }
+        }
+        if (!hasDrawableSprite) {
+            return;
+        }
+
+        SpriteDrawScope scope{commandList};
+        for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+            const bool isDead = definition.nodes[index].type == NodeType::Dead;
+            if (isDead != deadLayer || index >= snapshot.nodeStates.size() ||
+                !snapshot.nodeStates[index].drawable ||
+                !impl_->HasSprite(definition, index)) {
+                continue;
+            }
+
+            const bool dimmed = !isDead && !snapshot.nodeStates[index].active;
+            const float tint = dimmed ? 0.34f : 1.0f;
+            impl_->nodeSprites[index]->SetColor({tint, tint, tint, 1.0f});
+            impl_->nodeSprites[index]->Draw();
+        }
+    };
+
+    // Preserve the gameplay layer contract while inserting sprite passes:
+    // background/vessels -> dead placeholders/textures -> pulses and
+    // interactive placeholders/textures. GameUiRenderer draws after this call.
+    drawFlatRange(0, vesselBatchEnd);
+    drawFlatRange(vesselBatchEnd, deadBatchEnd);
+    drawTexturedNodes(true);
+    drawFlatRange(deadBatchEnd, batches.size());
+    drawTexturedNodes(false);
 }
 
 void PuzzleRenderer::Finalize() noexcept {
     if (impl_) {
+        impl_->nodeSprites.clear();
+        for (const auto& texture : impl_->textureHandles) {
+            rendering_detail::TextureHandleRegistry::Release(texture.first);
+        }
+        impl_->textureHandles.clear();
         if (impl_->vertexBuffer && impl_->mappedVertices != nullptr) {
             impl_->vertexBuffer->Unmap(0, nullptr);
         }

@@ -8,11 +8,11 @@ namespace {
 constexpr std::size_t kPuzzleCount = 3;
 
 [[nodiscard]] GameFlowResult ClickItem(GameFlow& flow, const std::size_t item,
-                                       const bool currentPuzzleIsLast = false) {
+                                       const bool hasNextPuzzle = false) {
     GameFlowInput input{};
     input.hoveredItem = item;
     input.mousePrimaryPressed = true;
-    return flow.Update(input, kPuzzleCount, currentPuzzleIsLast);
+    return flow.Update(input, kPuzzleCount, hasNextPuzzle);
 }
 
 void TestMainMenu(TestContext& context) {
@@ -130,26 +130,26 @@ void TestPlayingAndPause(TestContext& context) {
 void TestSolvedMenus(TestContext& context) {
     GameFlow flow;
     flow.EnterSolved();
-    context.Expect(flow.GetItemCount(kPuzzleCount, false) == 3,
-                   "non-final solved menu contains next, level select, and retry");
-    context.Expect(ClickItem(flow, 0).command == GameCommand::NextPuzzle,
-                   "non-final solved menu can advance to the next puzzle");
-    context.Expect(ClickItem(flow, 1).command == GameCommand::OpenLevelSelect,
-                   "non-final solved menu can open level select");
-    context.Expect(ClickItem(flow, 2).command == GameCommand::RetryPuzzle,
-                   "non-final solved menu can retry the current puzzle");
+    context.Expect(flow.GetItemCount(kPuzzleCount, true) == 3,
+                   "solved menu with a valid next puzzle contains next, level select, and retry");
+    context.Expect(ClickItem(flow, 0, true).command == GameCommand::NextPuzzle,
+                   "solved menu can advance when a valid next puzzle exists");
+    context.Expect(ClickItem(flow, 1, true).command == GameCommand::OpenLevelSelect,
+                   "solved menu with next can open level select");
+    context.Expect(ClickItem(flow, 2, true).command == GameCommand::RetryPuzzle,
+                   "solved menu with next can retry the current puzzle");
 
     flow.EnterSolved();
-    context.Expect(flow.GetItemCount(kPuzzleCount, true) == 2,
-                   "final solved menu omits next puzzle");
-    context.Expect(ClickItem(flow, 0, true).command == GameCommand::OpenLevelSelect,
-                   "final solved menu returns to level select");
-    context.Expect(ClickItem(flow, 1, true).command == GameCommand::RetryPuzzle,
-                   "final solved menu retains retry");
+    context.Expect(flow.GetItemCount(kPuzzleCount, false) == 2,
+                   "solved menu without a valid next puzzle omits next");
+    context.Expect(ClickItem(flow, 0, false).command == GameCommand::OpenLevelSelect,
+                   "solved menu without next returns to level select");
+    context.Expect(ClickItem(flow, 1, false).command == GameCommand::RetryPuzzle,
+                   "solved menu without next retains retry");
 
     GameFlowInput escape{};
     escape.escapePressed = true;
-    const GameFlowResult escaped = flow.Update(escape, kPuzzleCount, true);
+    const GameFlowResult escaped = flow.Update(escape, kPuzzleCount, false);
     context.Expect(escaped.command == GameCommand::OpenLevelSelect,
                    "escape requests level select from solved");
     context.Expect(!escaped.simulatePuzzle,

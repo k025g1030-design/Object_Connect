@@ -18,6 +18,8 @@ public:
     PuzzleRenderer& operator=(const PuzzleRenderer&) = delete;
 
     [[nodiscard]] bool Initialize(std::size_t maxVertices, std::string& error);
+    [[nodiscard]] bool PreparePuzzle(const PuzzleDefinition& definition,
+                                     std::string& error);
     void Draw(const PuzzleDefinition& definition,
               const PuzzleBoardSnapshot& snapshot,
               float elapsedSeconds);

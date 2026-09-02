@@ -1,9 +1,10 @@
 #include "ObjectConnect/Rendering/GameUiRenderer.hpp"
 
+#include "TextureHandleRegistry.hpp"
+
 #include <2d/DebugText.h>
 #include <2d/Sprite.h>
 #include <base/DirectXCommon.h>
-#include <base/TextureManager.h>
 
 #include <algorithm>
 #include <array>
@@ -46,7 +47,7 @@ constexpr float kTextScale = 1.55f;
 
 [[nodiscard]] MenuLayout MakeMenuLayout(const GameScreen screen,
                                         const PuzzleCatalog& catalog,
-                                        const bool currentPuzzleIsLast) {
+                                        const bool hasNextPuzzle) {
     MenuLayout layout;
     float top = 280.0f;
     switch (screen) {
@@ -66,7 +67,7 @@ constexpr float kTextScale = 1.55f;
         break;
     case GameScreen::Solved:
         top = 280.0f;
-        if (!currentPuzzleIsLast) {
+        if (hasNextPuzzle) {
             layout.labels.push_back("NEXT PUZZLE");
         }
         layout.labels.push_back("LEVEL SELECT");
@@ -106,6 +107,20 @@ struct GameUiRenderer::Impl final {
     std::unique_ptr<KamataEngine::Sprite> selection;
     std::unique_ptr<KamataEngine::Sprite> hudWarning;
     std::unique_ptr<KamataEngine::Sprite> messageWarning;
+    std::string texturePath;
+    bool ownsTexture = false;
+
+    ~Impl() {
+        // Sprites must release their descriptor references before the shared
+        // registry is allowed to unload the underlying texture.
+        messageWarning.reset();
+        hudWarning.reset();
+        selection.reset();
+        background.reset();
+        if (ownsTexture) {
+            rendering_detail::TextureHandleRegistry::Release(texturePath);
+        }
+    }
 };
 
 GameUiRenderer::GameUiRenderer() noexcept = default;
@@ -117,7 +132,10 @@ bool GameUiRenderer::Initialize(std::string& error) {
     try {
         auto next = std::make_unique<Impl>();
         next->debugText = KamataEngine::DebugText::GetInstance();
-        const std::uint32_t white = KamataEngine::TextureManager::Load("white1x1.png");
+        next->texturePath = "white1x1.png";
+        const std::uint32_t white =
+            rendering_detail::TextureHandleRegistry::Acquire(next->texturePath);
+        next->ownsTexture = true;
         next->background.reset(KamataEngine::Sprite::Create(
             white, {0.0f, 0.0f}, {0.03f, 0.01f, 0.02f, 0.94f}));
         next->selection.reset(KamataEngine::Sprite::Create(
@@ -151,14 +169,13 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
                           const PuzzleCatalog& catalog,
                           const std::optional<std::size_t> currentPuzzleIndex,
                           const PuzzleBoardSnapshot* const board,
+                          const bool hasNextPuzzle,
                           const bool solvedMenuReady) {
     if (!impl_) {
         return;
     }
 
-    const bool currentIsLast = currentPuzzleIndex.has_value() &&
-                               *currentPuzzleIndex + 1 >= catalog.GetPuzzles().size();
-    const MenuLayout layout = MakeMenuLayout(screen, catalog, currentIsLast);
+    const MenuLayout layout = MakeMenuLayout(screen, catalog, hasNextPuzzle);
     const bool showFullBackground = screen == GameScreen::MainMenu ||
                                     screen == GameScreen::LevelSelect;
     const bool showOverlay = screen == GameScreen::Paused ||
@@ -184,11 +201,15 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         *currentPuzzleIndex < catalog.GetPuzzles().size()) {
         const PuzzleDefinition& puzzle = catalog.GetPuzzles()[*currentPuzzleIndex];
         for (const NodeDefinition& node : puzzle.nodes) {
-            const float labelWidth = static_cast<float>(node.label.size()) *
+            const std::optional<Vec2> center = node.GetCenterPosition();
+            if (!center.has_value() || node.displayName.empty()) {
+                continue;
+            }
+            const float labelWidth = static_cast<float>(node.displayName.size()) *
                                      KamataEngine::DebugText::kFontWidth;
-            Print(*impl_->debugText, node.label,
-                  node.position.x - labelWidth * 0.5f,
-                  node.position.y - KamataEngine::DebugText::kFontHeight * 0.5f,
+            Print(*impl_->debugText, node.displayName,
+                  center->x - labelWidth * 0.5f,
+                  center->y - KamataEngine::DebugText::kFontHeight * 0.5f,
                   1.0f);
         }
         Print(*impl_->debugText,
@@ -255,7 +276,7 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
 
 std::optional<std::size_t> GameUiRenderer::HitTest(
     const GameScreen screen, const UiPoint point, const std::size_t puzzleCount,
-    const bool currentPuzzleIsLast, const bool solvedMenuReady) const noexcept {
+    const bool hasNextPuzzle, const bool solvedMenuReady) const noexcept {
     if (!impl_ || screen == GameScreen::Playing ||
         (screen == GameScreen::Solved && !solvedMenuReady)) {
         return std::nullopt;
@@ -267,7 +288,7 @@ std::optional<std::size_t> GameUiRenderer::HitTest(
         puzzles[index].title = "PUZZLE " + std::to_string(index + 1);
     }
     placeholder = PuzzleCatalog(std::move(puzzles));
-    const MenuLayout layout = MakeMenuLayout(screen, placeholder, currentPuzzleIsLast);
+    const MenuLayout layout = MakeMenuLayout(screen, placeholder, hasNextPuzzle);
     for (std::size_t index = 0; index < layout.bounds.size(); ++index) {
         if (layout.bounds[index].Contains(point)) {
             return index;

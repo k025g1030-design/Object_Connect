@@ -4,7 +4,7 @@ namespace object_connect {
 
 GameFlowResult GameFlow::Update(const GameFlowInput& input,
                                 const std::size_t puzzleCount,
-                                const bool currentPuzzleIsLast) noexcept {
+                                const bool hasNextPuzzle) noexcept {
     if (screen_ == GameScreen::Playing) {
         if (input.escapePressed || input.focusLost) {
             EnterPaused();
@@ -26,7 +26,7 @@ GameFlowResult GameFlow::Update(const GameFlowInput& input,
         return {GameCommand::OpenLevelSelect, std::nullopt, false, false};
     }
 
-    const std::size_t itemCount = GetItemCount(puzzleCount, currentPuzzleIsLast);
+    const std::size_t itemCount = GetItemCount(puzzleCount, hasNextPuzzle);
     ApplyNavigation(input, itemCount);
 
     const bool clickedItem = input.mousePrimaryPressed && input.hoveredItem.has_value() &&
@@ -38,7 +38,7 @@ GameFlowResult GameFlow::Update(const GameFlowInput& input,
     if (!input.confirmPressed && !clickedItem) {
         return {};
     }
-    return ActivateSelected(puzzleCount, currentPuzzleIsLast);
+    return ActivateSelected(puzzleCount, hasNextPuzzle);
 }
 
 void GameFlow::EnterLevelSelect() noexcept {
@@ -67,7 +67,7 @@ void GameFlow::ReturnToMainMenu() noexcept {
 }
 
 std::size_t GameFlow::GetItemCount(const std::size_t puzzleCount,
-                                   const bool currentPuzzleIsLast) const noexcept {
+                                   const bool hasNextPuzzle) const noexcept {
     switch (screen_) {
     case GameScreen::MainMenu:
         return 2;
@@ -78,7 +78,7 @@ std::size_t GameFlow::GetItemCount(const std::size_t puzzleCount,
     case GameScreen::Paused:
         return 4;
     case GameScreen::Solved:
-        return currentPuzzleIsLast ? 2 : 3;
+        return hasNextPuzzle ? 3 : 2;
     }
     return 0;
 }
@@ -108,7 +108,7 @@ void GameFlow::ApplyNavigation(const GameFlowInput& input,
 }
 
 GameFlowResult GameFlow::ActivateSelected(const std::size_t puzzleCount,
-                                          const bool currentPuzzleIsLast) noexcept {
+                                          const bool hasNextPuzzle) noexcept {
     switch (screen_) {
     case GameScreen::MainMenu:
         return selectedItem_ == 0
@@ -140,7 +140,7 @@ GameFlowResult GameFlow::ActivateSelected(const std::size_t puzzleCount,
         }
 
     case GameScreen::Solved:
-        if (currentPuzzleIsLast) {
+        if (!hasNextPuzzle) {
             return selectedItem_ == 0
                        ? GameFlowResult{GameCommand::OpenLevelSelect, std::nullopt, false, false}
                        : GameFlowResult{GameCommand::RetryPuzzle, std::nullopt, false, false};

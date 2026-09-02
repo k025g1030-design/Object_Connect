@@ -44,7 +44,7 @@ class GameFlow final {
 public:
     [[nodiscard]] GameFlowResult Update(const GameFlowInput& input,
                                         std::size_t puzzleCount,
-                                        bool currentPuzzleIsLast) noexcept;
+                                        bool hasNextPuzzle) noexcept;
 
     void EnterLevelSelect() noexcept;
     void EnterPlaying() noexcept;
@@ -55,12 +55,12 @@ public:
     [[nodiscard]] GameScreen GetScreen() const noexcept { return screen_; }
     [[nodiscard]] std::size_t GetSelectedItem() const noexcept { return selectedItem_; }
     [[nodiscard]] std::size_t GetItemCount(std::size_t puzzleCount,
-                                           bool currentPuzzleIsLast) const noexcept;
+                                           bool hasNextPuzzle) const noexcept;
 
 private:
     void ApplyNavigation(const GameFlowInput& input, std::size_t itemCount) noexcept;
     [[nodiscard]] GameFlowResult ActivateSelected(std::size_t puzzleCount,
-                                                  bool currentPuzzleIsLast) noexcept;
+                                                  bool hasNextPuzzle) noexcept;
 
     GameScreen screen_ = GameScreen::MainMenu;
     std::size_t selectedItem_ = 0;

@@ -65,8 +65,9 @@ set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/kamata.ico"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/nodes.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/connections.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/obstacles.csv"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/first_link.csv"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/around_block.csv"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/clot_path.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.obj"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.mtl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.jpg"
@@ -152,6 +153,7 @@ set(OBJECT_CONNECT_RUNTIME_SOURCES
     src/ObjectConnect/Input/InputSystem.cpp
     src/ObjectConnect/Rendering/GameUiRenderer.cpp
     src/ObjectConnect/Rendering/PuzzleRenderer.cpp
+    src/ObjectConnect/Rendering/TextureHandleRegistry.cpp
 )
 
 set(OBJECT_CONNECT_ENTRY_SOURCE src/main.cpp)

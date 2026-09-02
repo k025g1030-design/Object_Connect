@@ -1,11 +1,13 @@
 #pragma once
 
 #include "ObjectConnect/Data/PuzzleData.hpp"
+#include "ObjectConnect/Geometry/Geometry2D.hpp"
 #include "ObjectConnect/Tentacle/BloodTentacle.hpp"
 #include "ObjectConnect/Tentacle/RibbonStrip.hpp"
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -24,12 +26,28 @@ struct TentacleRenderSnapshot final {
     bool preview = false;
 };
 
+struct NodeRuntimeSnapshot final {
+    bool drawable = false;
+    bool active = false;
+    bool availableSource = false;
+    std::size_t incomingUsed = 0;
+    std::size_t outgoingUsed = 0;
+    float committedOutgoingLength = 0.0f;
+};
+
+struct CommittedLine final {
+    std::size_t fromNodeIndex = 0;
+    std::size_t toNodeIndex = 0;
+    float committedLength = 0.0f;
+};
+
 struct PuzzleBoardSnapshot final {
     std::vector<TentacleRenderSnapshot> tentacles;
+    std::vector<NodeRuntimeSnapshot> nodeStates;
     float totalLength = 0.0f;
     float remainingLength = 0.0f;
     float reservedLength = 0.0f;
-    std::optional<std::size_t> activeNodeIndex;
+    std::optional<std::size_t> selectedSourceNodeIndex;
     bool dragging = false;
     bool retracting = false;
     bool solved = false;
@@ -38,7 +56,8 @@ struct PuzzleBoardSnapshot final {
 
 class PuzzleBoard final {
 public:
-    [[nodiscard]] bool Initialize(const PuzzleDefinition& definition, std::string& error);
+    [[nodiscard]] bool Initialize(const PuzzleDefinition& definition,
+                                  std::string& error);
     void Update(const BoardPointerInput& input, float deltaSeconds) noexcept;
     void CancelDrag(bool immediate) noexcept;
 
@@ -46,24 +65,23 @@ public:
     [[nodiscard]] const PuzzleDefinition& GetDefinition() const noexcept {
         return definition_;
     }
-    [[nodiscard]] float GetTotalLength() const noexcept { return definition_.totalLength; }
+    [[nodiscard]] float GetTotalLength() const noexcept;
     [[nodiscard]] float GetRemainingLength() const noexcept;
     [[nodiscard]] float GetReservedLength() const noexcept;
+    [[nodiscard]] float GetRemainingOutgoingLength(
+        std::size_t nodeIndex) const noexcept;
     [[nodiscard]] bool IsSolved() const noexcept { return solved_; }
     [[nodiscard]] bool IsDragging() const noexcept;
     [[nodiscard]] bool IsLengthExhausted() const noexcept;
     [[nodiscard]] std::size_t GetCompletedConnectionCount() const noexcept {
-        return committedConnectionIndices_.size();
-    }
-    // Read-only route progress for optional systems such as scoring. Indices refer
-    // to GetDefinition().nodes/connections; PuzzleBoard deliberately does not
-    // assign points or interpret nodes as organs.
-    [[nodiscard]] const std::vector<std::size_t>& GetVisitedNodeIndices() const noexcept {
-        return visitedNodeIndices_;
+        return committedLines_.size();
     }
     [[nodiscard]] const std::vector<std::size_t>&
-    GetCommittedConnectionIndices() const noexcept {
-        return committedConnectionIndices_;
+    GetActivatedNodeIndices() const noexcept {
+        return activatedNodeIndices_;
+    }
+    [[nodiscard]] const std::vector<CommittedLine>& GetCommittedLines() const noexcept {
+        return committedLines_;
     }
     [[nodiscard]] bool IsInitialized() const noexcept { return initialized_; }
 
@@ -73,46 +91,64 @@ private:
         Retracting,
     };
 
+    struct NodeState final {
+        bool active = false;
+        std::size_t incomingUsed = 0;
+        std::size_t outgoingUsed = 0;
+        float committedOutgoingLength = 0.0f;
+    };
+
     struct Segment final {
         BloodTentacle tentacle;
         TentacleStyle style{};
-        std::size_t connectionIndex = 0;
-        float committedLength = 0.0f;
+        CommittedLine line{};
     };
 
     struct Preview final {
         BloodTentacle tentacle;
         TentacleStyle style{};
-        std::size_t connectionIndex = 0;
+        std::size_t sourceNodeIndex = 0;
         PreviewState state = PreviewState::Dragging;
         float reservedLength = 0.0f;
         float retractElapsedSeconds = 0.0f;
     };
 
-    void StartDrag(std::size_t connectionIndex) noexcept;
-    [[nodiscard]] bool SelectPreviewConnection(std::size_t connectionIndex,
-                                               Vec2 pointerTarget) noexcept;
+    void StartDrag(std::size_t sourceNodeIndex) noexcept;
     void UpdateDrag(const BoardPointerInput& input, float deltaSeconds) noexcept;
     void UpdateRetraction(float deltaSeconds) noexcept;
-    void CommitConnection(std::size_t connectionIndex) noexcept;
+    void CommitConnection(std::size_t targetNodeIndex) noexcept;
     void BeginRetraction() noexcept;
-    [[nodiscard]] bool CanCommitConnection(std::size_t connectionIndex,
-                                           Vec2 pointerPosition) const noexcept;
-    [[nodiscard]] std::optional<std::size_t> HitTestNode(Vec2 point) const noexcept;
+    void ActivateNode(std::size_t nodeIndex) noexcept;
+    void EvaluateSolved() noexcept;
+
+    [[nodiscard]] bool IsDrawable(std::size_t nodeIndex) const noexcept;
+    [[nodiscard]] bool CanUseAsSource(std::size_t nodeIndex) const noexcept;
+    [[nodiscard]] bool CanUseAsTarget(std::size_t nodeIndex) const noexcept;
+    [[nodiscard]] bool CanCommitTo(std::size_t targetNodeIndex,
+                                   Vec2 pointerPosition) const noexcept;
+    [[nodiscard]] bool IsDuplicateConnection(std::size_t sourceNodeIndex,
+                                             std::size_t targetNodeIndex) const noexcept;
+    [[nodiscard]] bool WouldCreateCycle(std::size_t sourceNodeIndex,
+                                        std::size_t targetNodeIndex) const noexcept;
+    [[nodiscard]] bool IsBlockedByDeadNode(Vec2 start, Vec2 end,
+                                           float clearance) const noexcept;
+    [[nodiscard]] Vec2 ClampTipTargetToDeadNodes(
+        Vec2 start, Vec2 desiredEnd, float clearance) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> FindSourceAt(Vec2 point) const noexcept;
     [[nodiscard]] std::optional<std::size_t>
-    FindOutgoingConnectionAt(Vec2 point) const noexcept;
-    [[nodiscard]] std::optional<std::size_t>
-    GetFirstOutgoingConnection() const noexcept;
-    [[nodiscard]] bool HasOutgoingConnection(std::size_t nodeIndex) const noexcept;
-    [[nodiscard]] TentacleStyle MakeStyle(const ConnectionDefinition& connection,
-                                          std::size_t connectionIndex) const noexcept;
+    FindCommitTargetAt(Vec2 point) const noexcept;
+    [[nodiscard]] std::optional<AxisAlignedBox>
+    GetNodeBounds(std::size_t nodeIndex) const noexcept;
+    [[nodiscard]] std::optional<Vec2>
+    GetNodeCenter(std::size_t nodeIndex) const noexcept;
+    [[nodiscard]] TentacleStyle MakeStyle(std::size_t lineIndex) const noexcept;
 
     PuzzleDefinition definition_{};
+    std::vector<NodeState> nodeStates_;
     std::vector<Segment> segments_;
     std::optional<Preview> preview_;
-    std::vector<std::size_t> committedConnectionIndices_;
-    std::vector<std::size_t> visitedNodeIndices_;
-    std::size_t currentNodeIndex_ = 0;
+    std::vector<std::size_t> activatedNodeIndices_;
+    std::vector<CommittedLine> committedLines_;
     float committedLength_ = 0.0f;
     bool solved_ = false;
     bool initialized_ = false;

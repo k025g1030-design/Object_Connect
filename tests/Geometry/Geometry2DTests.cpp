@@ -8,103 +8,89 @@
 namespace object_connect::tests {
 namespace {
 
-void TestPointAndCircleRectangle(TestContext& context) {
-    context.Expect(PointInCircle({2.0f, 3.0f}, {2.0f, 3.0f}, 5.0f),
-                   "circle contains its center");
-    context.Expect(PointInCircle({5.0f, 3.0f}, {2.0f, 3.0f}, 3.0f),
-                   "circle includes its boundary");
-    context.Expect(!PointInCircle({5.1f, 3.0f}, {2.0f, 3.0f}, 3.0f),
-                   "circle excludes points beyond its boundary");
-    context.Expect(!PointInCircle({0.0f, 0.0f}, {0.0f, 0.0f}, -1.0f),
-                   "negative circle radius is invalid");
+void TestAxisAlignedBoxValidityAndPointHit(TestContext& context) {
+    const AxisAlignedBox box{{16.0f, 32.0f}, {48.0f, 64.0f}};
+    context.Expect(IsValidAxisAlignedBox(box), "ordered finite AABB is valid");
+    context.Expect(PointInAxisAlignedBox({32.0f, 48.0f}, box),
+                   "point inside a tile AABB hits");
+    context.Expect(PointInAxisAlignedBox({16.0f, 64.0f}, box),
+                   "AABB boundary is part of the hit area");
+    context.Expect(!PointInAxisAlignedBox({15.99f, 48.0f}, box),
+                   "point outside a tile AABB misses");
 
-    context.Expect(CircleOverlapsRectangle({0.0f, 0.0f}, 1.0f, {0.0f, 0.0f},
-                                           4.0f, 2.0f),
-                   "circle inside a rectangle overlaps it");
-    context.Expect(CircleOverlapsRectangle({3.0f, 0.0f}, 1.0f, {0.0f, 0.0f},
-                                           4.0f, 2.0f),
-                   "circle tangent to a rectangle counts as overlap");
-    context.Expect(!CircleOverlapsRectangle({3.1f, 0.0f}, 1.0f, {0.0f, 0.0f},
-                                            4.0f, 2.0f),
-                   "separated circle and rectangle do not overlap");
+    const AxisAlignedBox reversed{{48.0f, 32.0f}, {16.0f, 64.0f}};
+    context.Expect(!IsValidAxisAlignedBox(reversed),
+                   "AABB with reversed limits is invalid");
+    context.Expect(!PointInAxisAlignedBox({32.0f, 48.0f}, reversed),
+                   "invalid AABB never receives a point hit");
 }
 
-void TestSegmentCircle(TestContext& context) {
-    context.Expect(SegmentIntersectsCircle({-5.0f, 0.0f}, {5.0f, 0.0f},
-                                           {0.0f, 0.0f}, 2.0f),
-                   "segment crossing a circle intersects it");
-    context.Expect(SegmentIntersectsCircle({-5.0f, 2.0f}, {5.0f, 2.0f},
-                                           {0.0f, 0.0f}, 2.0f),
-                   "segment tangent to a circle intersects it");
-    context.Expect(!SegmentIntersectsCircle({-5.0f, 2.1f}, {5.0f, 2.1f},
-                                            {0.0f, 0.0f}, 2.0f),
-                   "segment beyond a circle misses it");
-    context.Expect(SegmentIntersectsCircle({1.0f, 0.0f}, {1.0f, 0.0f},
-                                           {0.0f, 0.0f}, 2.0f),
-                   "degenerate segment inside a circle intersects it");
-    context.Expect(!SegmentIntersectsCircle({3.0f, 0.0f}, {3.0f, 0.0f},
-                                            {0.0f, 0.0f}, 2.0f),
-                   "degenerate segment outside a circle misses it");
+void TestExpansion(TestContext& context) {
+    const AxisAlignedBox box{{16.0f, 32.0f}, {48.0f, 64.0f}};
+    const AxisAlignedBox expanded = ExpandAxisAlignedBox(box, 8.0f);
+    context.Expect(expanded.minimum == Vec2{8.0f, 24.0f} &&
+                       expanded.maximum == Vec2{56.0f, 72.0f},
+                   "clearance expands all four AABB sides");
+
+    const AxisAlignedBox invalid = ExpandAxisAlignedBox(box, -1.0f);
+    context.Expect(!IsValidAxisAlignedBox(invalid),
+                   "negative clearance produces an invalid fail-closed box");
 }
 
-void TestSegmentRectangle(TestContext& context) {
-    context.Expect(SegmentIntersectsRectangle({-5.0f, 0.0f}, {5.0f, 0.0f},
-                                              {0.0f, 0.0f}, 4.0f, 2.0f),
-                   "segment crossing a rectangle intersects it");
-    context.Expect(SegmentIntersectsRectangle({-5.0f, 1.0f}, {5.0f, 1.0f},
-                                              {0.0f, 0.0f}, 4.0f, 2.0f),
-                   "segment along a rectangle edge intersects it");
-    context.Expect(!SegmentIntersectsRectangle({-5.0f, 1.1f}, {5.0f, 1.1f},
-                                               {0.0f, 0.0f}, 4.0f, 2.0f),
-                   "parallel segment beyond a rectangle misses it");
-    context.Expect(SegmentIntersectsRectangle({0.0f, 0.0f}, {0.0f, 0.0f},
-                                              {0.0f, 0.0f}, 4.0f, 2.0f),
-                   "degenerate segment inside a rectangle intersects it");
-    context.Expect(!SegmentIntersectsRectangle({4.0f, 4.0f}, {4.0f, 4.0f},
-                                               {0.0f, 0.0f}, 4.0f, 2.0f),
-                   "degenerate segment outside a rectangle misses it");
+void TestSegmentIntersection(TestContext& context) {
+    const AxisAlignedBox box{{16.0f, 16.0f}, {32.0f, 32.0f}};
+    context.Expect(SegmentIntersectsAxisAlignedBox({0.0f, 24.0f}, {48.0f, 24.0f}, box),
+                   "segment crossing a tile AABB intersects");
+    context.Expect(!SegmentIntersectsAxisAlignedBox({0.0f, 8.0f}, {48.0f, 8.0f}, box),
+                   "parallel segment outside a tile AABB misses");
+    context.Expect(SegmentIntersectsAxisAlignedBox({0.0f, 16.0f}, {48.0f, 16.0f}, box),
+                   "segment touching an AABB edge is blocked");
+    context.Expect(SegmentIntersectsAxisAlignedBox({24.0f, 24.0f}, {24.0f, 24.0f}, box),
+                   "stationary segment inside an AABB intersects");
+    context.Expect(!SegmentIntersectsAxisAlignedBox({4.0f, 4.0f}, {4.0f, 4.0f}, box),
+                   "stationary segment outside an AABB misses");
+
+    const std::optional<float> entry = SegmentAxisAlignedBoxEntryTime(
+        {0.0f, 24.0f}, {48.0f, 24.0f}, box);
+    context.Expect(entry.has_value() && NearlyEqual(*entry, 1.0f / 3.0f, 0.0001f),
+                   "AABB entry time identifies the first blocking boundary");
+    const std::optional<float> insideEntry = SegmentAxisAlignedBoxEntryTime(
+        {24.0f, 24.0f}, {48.0f, 24.0f}, box);
+    context.Expect(insideEntry.has_value() && NearlyEqual(*insideEntry, 0.0f),
+                   "segment beginning inside an AABB enters at time zero");
+    context.Expect(!SegmentAxisAlignedBoxEntryTime(
+                        {0.0f, 8.0f}, {48.0f, 8.0f}, box).has_value(),
+                   "clear segment has no AABB entry time");
 }
 
-void TestObstacleClearance(TestContext& context) {
-    ObstacleDefinition rectangle;
-    rectangle.shape = ObstacleShape::Rectangle;
-    rectangle.center = {5.0f, 3.0f};
-    rectangle.width = 2.0f;
-    rectangle.height = 2.0f;
-
-    ObstacleDefinition circle;
-    circle.shape = ObstacleShape::Circle;
-    circle.center = {8.0f, 5.0f};
-    circle.radius = 1.0f;
-
-    const std::vector<ObstacleDefinition> obstacles{rectangle, circle};
-    context.Expect(!IsConnectionBlocked({0.0f, 0.0f}, {10.0f, 0.0f}, obstacles, 0.0f),
-                   "clear connection misses all obstacles");
-    context.Expect(IsConnectionBlocked({0.0f, 0.0f}, {10.0f, 0.0f}, obstacles, 2.0f),
-                   "vessel clearance expands a rectangle into the route");
-    context.Expect(IsConnectionBlocked({0.0f, 5.0f}, {10.0f, 5.0f}, obstacles, 0.0f),
-                   "connection through a circle is blocked");
+void TestAnyBoxAndClearance(TestContext& context) {
+    const std::vector<AxisAlignedBox> boxes{
+        {{32.0f, 32.0f}, {48.0f, 48.0f}},
+        {{96.0f, 32.0f}, {112.0f, 48.0f}},
+    };
+    context.Expect(!SegmentIntersectsAnyAxisAlignedBox(
+                       {0.0f, 23.0f}, {128.0f, 23.0f}, boxes, 8.0f),
+                   "segment beyond dead-node clearance remains clear");
+    context.Expect(SegmentIntersectsAnyAxisAlignedBox(
+                       {0.0f, 24.0f}, {128.0f, 24.0f}, boxes, 8.0f),
+                   "touching expanded dead-node boundary is blocked");
+    context.Expect(SegmentIntersectsAnyAxisAlignedBox(
+                       {0.0f, 24.0f}, {128.0f, 24.0f}, boxes, -1.0f),
+                   "invalid clearance fails closed");
 
     const float nan = (std::numeric_limits<float>::quiet_NaN)();
-    context.Expect(IsConnectionBlocked({0.0f, 0.0f}, {10.0f, 0.0f}, obstacles, nan),
-                   "invalid clearance fails closed");
-    context.Expect(IsConnectionBlocked({nan, 0.0f}, {10.0f, 0.0f}, obstacles, 0.0f),
-                   "invalid segment coordinates fail closed");
-
-    ObstacleDefinition invalid = rectangle;
-    invalid.width = -1.0f;
-    context.Expect(IsConnectionBlocked({0.0f, 0.0f}, {10.0f, 0.0f},
-                                       std::vector<ObstacleDefinition>{invalid}, 0.0f),
-                   "invalid obstacle geometry fails closed");
+    context.Expect(SegmentIntersectsAnyAxisAlignedBox(
+                       {nan, 0.0f}, {128.0f, 24.0f}, boxes, 0.0f),
+                   "non-finite segment fails closed");
 }
 
 } // namespace
 
 void RunGeometry2DTests(TestContext& context) {
-    TestPointAndCircleRectangle(context);
-    TestSegmentCircle(context);
-    TestSegmentRectangle(context);
-    TestObstacleClearance(context);
+    TestAxisAlignedBoxValidityAndPointHit(context);
+    TestExpansion(context);
+    TestSegmentIntersection(context);
+    TestAnyBoxAndClearance(context);
 }
 
 } // namespace object_connect::tests

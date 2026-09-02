@@ -1,0 +1,3 @@
+instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
+heart,heart_root,,,,,HEART,21,21,,1,700
+brain,brain_end,,,,,,56,21,1,,

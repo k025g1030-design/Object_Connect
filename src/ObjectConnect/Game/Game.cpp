@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace object_connect {
 namespace {
@@ -40,9 +41,29 @@ struct Game::Impl final {
     float elapsedSeconds = 0.0f;
     float solvedElapsedSeconds = 0.0f;
 
-    [[nodiscard]] bool IsCurrentPuzzleLast() const noexcept {
-        return currentPuzzleIndex.has_value() &&
-               *currentPuzzleIndex + 1 >= catalog.GetPuzzles().size();
+    [[nodiscard]] std::optional<std::size_t> GetNextPuzzleIndex() const noexcept {
+        if (!currentPuzzleIndex.has_value() ||
+            *currentPuzzleIndex >= catalog.GetPuzzles().size()) {
+            return std::nullopt;
+        }
+
+        const PuzzleDefinition& current =
+            catalog.GetPuzzles()[*currentPuzzleIndex];
+        if (!current.nextLevelId.has_value() || current.nextLevelId->empty()) {
+            return std::nullopt;
+        }
+
+        const std::vector<PuzzleDefinition>& puzzles = catalog.GetPuzzles();
+        for (std::size_t index = 0; index < puzzles.size(); ++index) {
+            if (puzzles[index].id == *current.nextLevelId) {
+                return index;
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] bool HasNextPuzzle() const noexcept {
+        return GetNextPuzzleIndex().has_value();
     }
 
     [[nodiscard]] bool StartPuzzle(const std::size_t index, std::string& error) {
@@ -51,8 +72,12 @@ struct Game::Impl final {
             error = "The selected puzzle index is out of range.";
             return false;
         }
+        const PuzzleDefinition& definition = catalog.GetPuzzles()[index];
         auto nextBoard = std::make_unique<PuzzleBoard>();
-        if (!nextBoard->Initialize(catalog.GetPuzzles()[index], error)) {
+        if (!nextBoard->Initialize(definition, error)) {
+            return false;
+        }
+        if (!puzzleRenderer.PreparePuzzle(definition, error)) {
             return false;
         }
         board = std::move(nextBoard);
@@ -106,8 +131,8 @@ struct Game::Impl final {
             if (!currentPuzzleIndex.has_value()) {
                 throw std::runtime_error("Next puzzle was requested without an active puzzle.");
             }
-            if (*currentPuzzleIndex + 1 < catalog.GetPuzzles().size()) {
-                RequireStartPuzzle(*currentPuzzleIndex + 1);
+            if (const std::optional<std::size_t> next = GetNextPuzzleIndex()) {
+                RequireStartPuzzle(*next);
             } else {
                 LeavePuzzleForLevelSelect();
             }
@@ -149,14 +174,14 @@ struct Game::Impl final {
         flowInput.mousePrimaryPressed = state.mouse.leftPressed;
         flowInput.hoveredItem = ui.HitTest(
             screenBeforeInput, {state.mouse.positionX, state.mouse.positionY},
-            catalog.GetPuzzles().size(), IsCurrentPuzzleLast(), solvedMenuReady);
+            catalog.GetPuzzles().size(), HasNextPuzzle(), solvedMenuReady);
 
         if (screenBeforeInput == GameScreen::Solved && !solvedMenuReady) {
             flowInput = {};
         }
 
         const GameFlowResult flowResult = flow.Update(
-            flowInput, catalog.GetPuzzles().size(), IsCurrentPuzzleLast());
+            flowInput, catalog.GetPuzzles().size(), HasNextPuzzle());
         ApplyCommand(flowResult);
 
         if (flowResult.simulatePuzzle && board && flow.GetScreen() == GameScreen::Playing) {
@@ -189,6 +214,7 @@ struct Game::Impl final {
         }
         ui.Draw(flow.GetScreen(), flow.GetSelectedItem(), catalog,
                 currentPuzzleIndex, snapshot ? &*snapshot : nullptr,
+                HasNextPuzzle(),
                 solvedElapsedSeconds >= kSolvedMenuDelaySeconds);
     }
 };
