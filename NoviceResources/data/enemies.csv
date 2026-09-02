@@ -1,3 +1,0 @@
-enemy_id,kind,damage,attack_interval_seconds,hp,defense,hitbox_radius,hitbox_height,render_width,render_height,texture_name,frame_width_px,frame_height_px
-melee_basic,melee,15,0.90,50,5,0.20,0.80,0.973913,0.80,assets/textures/enemies/blood_dog_sheet_full.png,560,460
-ranged_basic,ranged,10,1.25,40,0,0.20,1.60,1.230769,1.60,assets/textures/enemies/spitter_sheet_full.png,700,910

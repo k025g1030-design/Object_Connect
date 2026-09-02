@@ -1,44 +1,86 @@
-# Object_FPS
+# Object_Connect
 
-C++20 と KamataEngine で構築した 2.5D 一人称視点 FPS の MVP です。ゲームルールは 2D XZ
-グリッド上で動作し、床と壁面は 3D の透視投影カメラ、深度テスト、OBJ の四角形
-インスタンスを使用して描画します。
+`Object_Connect` 是以 C++20 與 KamataEngine 製作的 2D 節點連線解謎 MVP。玩家從目前亮起的末端拖出一條血管，在合法候選節點中選擇下一站；所有已完成段落和正在拖曳的段落，共用關卡唯一的一筆 `total_length`。
 
-現在の MVP には、以下の機能が含まれています。
+這個專案以 Game Jam 的開發速度與新人可讀性為優先：核心規則不依賴 KamataEngine、資料使用四份小型 CSV、流程沒有 fade、沒有 ECS 或完整物理引擎。血管不是 sprite 動畫，而是由 8–12 個 2D 粒子、Verlet integration、距離約束和 triangle strip 即時生成，再以格點量化、深色外緣與程序化肉質像素呈現。
 
-- テキストの `#`、`.`、`P`、`M`、`R`、`D` を検証済み `TileType` に変換する
-- 通行可能セルと壁セルの境界に基づいて床と壁面を生成する
-- キーボード／マウス対応の開始メニュー、操作説明、ポーズメニュー、`Results` シーン
-- CSV catalog による敵、Atlas animation、武器、線形レベル進行のデータ駆動設定
-- kill quota を満たすまで非表示／無効となる白い仮ドアと、公開 `MapSceneManager` による黒い scene fade
-- WASD による水平移動
-- マウスによる yaw／pitch の視点操作（pitch は XZ 移動に影響しない）
-- 左クリックの中心 hitscan、白い曳光球、マガジン／予備弾、R キー reload、射撃 cooldown と recoil
-- 近接型／遠距離型の動的 spawn、4 状態 AI、A* 経路探索と grid line-of-sight
-- 近接 attack の直接 damage、回避可能な橙色 enemy projectile、enemy hit flash
-- プレイヤー／敵の円とグリッド壁の 2D コリジョン、壁沿いの移動、swept-circle によるすり抜け防止
-- 戦闘用 ray／segment と垂直 capsule の最近 hit、および swept projectile 判定
-- 緑色の仮 weapon、crosshair、HP／弾薬／reload HUD
-- `CampaignRunState` による room ごとの実 kill 数と、成功／死亡別 Results
-- プレイヤーを向き続ける透過 Atlas の world-space billboard と、idle／move／attack／dead animation
-- camera の平行移動だけを追従する 50m sky sphere
-- world 3D だけに適用する brightness 1.25／gamma 2.2 の linear-space post-process
+## 遊戲流程
 
-ジャンプ、階段、高低差、複数階、天井、武器交換、拾得物、reload animation と新規音声は、
-現在のスコープには含まれません。
+```text
+MAIN MENU
+  PLAY -> LEVEL SELECT -> PLAYING
+  EXIT                    |
+                          +-- Esc 或失焦 -> PAUSED
+                          |                  RESUME
+                          |                  LEVEL SELECT
+                          |                  MAIN MENU
+                          |                  EXIT GAME
+                          |
+                          +-- 連到路徑終點 -> SOLVED
+                                             NEXT PUZZLE（非最後一關）
+                                             LEVEL SELECT
+                                             RETRY
+```
 
-## 必要な環境
+所有關卡一開始就能選擇，不保存解鎖進度。切換、離開或重玩關卡時會建立新的 `PuzzleBoard`，因此整關長度與連線狀態會完整重置。末端抵達唯一終點後約 0.6 秒才顯示完成選單。
 
-- Windows x64
-- Visual Studio 2026 の「C++ によるデスクトップ開発」ワークロード
-- MSVC v145 および Windows SDK
-- `Visual Studio 18 2026` ジェネレーターをサポートする CMake。現在の `Build.ps1` は
-  Visual Studio 付属版を優先して検索し、見つからない場合は PATH 上に互換バージョンが必要
-- KamataEngine（デフォルトの場所は `D:\code\Runtime\KamataEngine`）
+## 操作
 
-プロジェクトは C++20 を使用し、MSVC の `/W4 /WX /sdl /permissive-` でビルドします。
+- `W`／`↑`、`S`／`↓`：選單上一項／下一項。
+- `Enter` 或滑鼠左鍵：確認選單項目。
+- 在目前亮起的末端節點按住滑鼠左鍵，拖到任一合法候選 target，放開後完成連線。
+- `Esc`：遊戲中暫停；暫停中回到遊戲；選關畫面回主選單；完成畫面回選關。
+- `R`：遊戲中或暫停中重玩目前關卡。
 
-## ビルドと実行
+滑鼠游標全程可見，不會被 capture。視窗失去焦點時，正在拖曳的 preview 會立即取消，遊戲自動暫停；重新取得焦點不會自動恢復。
+
+## 全域長度規則
+
+每關只有一個 `total_length`。每個節點不擁有自己的血管長度，各個連線段落都從同一筆預算扣除：
+
+```text
+已固定段落長度總和
++ 本次拖曳暫時保留的長度
++ 可用剩餘長度
+= 關卡 total_length
+```
+
+拖曳距離會乘上 `minimum_slack_ratio`，得到這次需要保留的長度：
+
+```text
+reservedLength = max(
+    previousReservedLength,
+    distance(source, cursor) * minimumSlackRatio
+)
+```
+
+因此拖遠只會增加保留量，拖回來不會自動縮短。玩家可以先拉遠，再回到 target，刻意留出更多鬆弛量；但前段用太多，後段就可能沒有足夠長度，只能按 `R` 重開整關。游標超出剩餘長度能到達的範圍時，tip 會被限制，血管呈現繃緊效果。
+
+放開時必須落在目前末端的一個候選 target、長度足夠，而且 source 到 target 的直線沒有被障礙物阻擋。成功時保留量成為固定段落的 rest length，選中的 target 成為唯一新末端；舊節點不能再拉出分支。失敗、放在空白或放錯節點時，preview 約 0.22 秒收回，保留量完整退還。
+
+畫面左上會顯示 `REMAINING n / total`。剩餘量無法完成下一段時會以紅色顯示 `NOT ENOUGH LENGTH`。
+
+核心不內建器官分數。`PuzzleBoard::GetVisitedNodeIndices()` 與
+`GetCommittedConnectionIndices()` 會以唯讀方式提供玩家實際選中的路徑，後續系統可據此計算經過器官數、加權分數或彩蛋獎勵，而不把背景名稱寫死在解謎規則裡。
+
+## 內建關卡
+
+- `FIRST LINK`：A → B，無障礙，顯示答案提示線。
+- `AROUND BLOCK`：A → B → C → D，中央有矩形障礙，顯示答案提示線。
+- `CLOT PATH`：七個節點與多條候選路徑，中央有矩形與圓形障礙，不顯示答案提示線；可選直達、短路線或較長路線。
+
+三關都保留有限容錯，且不同連線可設定粒子數、粗細、跟隨延遲與初始方向。
+
+## 必要環境
+
+- Windows x64。
+- Visual Studio 2026，安裝「使用 C++ 的桌面開發」、MSVC v145 與 Windows SDK。
+- 支援 `Visual Studio 18 2026` generator 的 CMake；`Build.ps1` 會優先使用 Visual Studio 內附版本。
+- KamataEngine。預設位置是 `D:\code\Runtime\KamataEngine`。
+
+專案使用 C++20，MSVC 以 `/W4 /WX /sdl /permissive- /utf-8` 編譯。Debug 與 Release 都必須保持 warning-free。
+
+## 建置與執行
 
 Debug：
 
@@ -52,206 +94,147 @@ Release：
 .\Build.ps1 -Configuration Release
 ```
 
-KamataEngine が別の場所にある場合：
+KamataEngine 位於其他位置時：
 
 ```powershell
 .\Build.ps1 -Configuration Debug -KamataEngineRoot "D:\your\KamataEngine"
 ```
 
-ビルドして実行：
+建置後執行：
 
 ```powershell
 .\Run.ps1 -Configuration Debug
 ```
 
-すでにビルド済みの場合は、再ビルドを省略できます。
+略過重建、直接執行既有 binary：
 
 ```powershell
 .\Run.ps1 -Configuration Debug -SkipBuild
 ```
 
-実行ファイルは `target/<Configuration>/Object_FPS.exe` にあります。`Application` は起動時に
-作業ディレクトリを実行ファイルのあるディレクトリへ切り替えるため、CLion、`Run.ps1`、
-エクスプローラーのいずれから起動しても、同じデプロイ済みリソースを使用します。
+執行檔位於 `target/<Configuration>/Object_Connect.exe`。CMake 每次建置都會把 `NoviceResources/` 同步到執行檔旁的 `Resources/`；程式啟動時也會把 working directory 設為執行檔目錄，所以資料和 shader 路徑不依賴啟動位置。
 
-## CLion
+若在 CLion 使用 x64 Visual Studio toolchain，可選 `clion-debug` 或 `clion-release` CMake preset。
 
-CLion でこのディレクトリを開き、x64 Visual Studio ツールチェーンを使用して、次のいずれかを選択します。
+## 執行測試
 
-- `clion-debug`
-- `clion-release`
-
-どちらのプリセットも Ninja を使用します。MSVC 環境は CLion ツールチェーンから提供されます。
-
-## 操作
-
-- メニューの方向キーまたは `W`／`S`：項目選択
-- `Enter` または左クリック：決定
-- `W`／`S`：前進／後退
-- `A`／`D`：左／右へ平行移動
-- マウスの水平移動：Yaw
-- マウスの垂直移動：Pitch
-- 左クリック：射撃（初期 pistol は semi-auto）
-- `R`：マガジンに空きがあり予備弾がある場合に reload
-- `Esc`：プレイ中はポーズ、ポーズ中は再開、操作説明では戻る
-
-各 room の kill quota を達成すると白いドアが表示され、再度ドアへ入ることで次 room へ進みます。
-最後の room を完了すると `MISSION COMPLETE`、HP が 0 になると `GAME OVER` の独立した
-`Results` シーンへ切り替わります。到達済み room ごとの実 kill 数と中央の `MAIN MENU` ボタンを表示し、
-`Enter` または左クリックでメインメニューへ戻ります。
-`Results` では `Esc` は何も行いません。
-
-カーソルはプレイ中だけロックして非表示にし、メニュー、操作説明、ポーズ中は解放して表示します。
-プレイ中にフォーカスを失うか最小化すると自動的にポーズし、再びフォーカスを取得しても自動再開はしません。
-ASCII UI と mouse hit-test は 1280×720 の同じ座標系を使うため、ゲームウィンドウの resize は無効です。
-Input 層は物理キー、マウス、フォーカスと capture 状態のみを報告し、メニューや WASD の意味は上位層が解釈します。
-
-開始、次マップ、最終マップから `Results`、`Results`／ポーズからメインメニューへの切り替えは、
-同じ公開 `MapSceneManager` を使い、標準で 0.4 秒 fade-out、0.4 秒 fade-in します。
-`Results` への全黒 commit 時に active level は破棄され、`Results` は 3D level を保持しません。
-切り替え中はプレイヤー、カメラ、AI、projectile、reload と cooldown を含む simulation が停止し、Esc や
-メニュー入力も破棄されます。切り替え中にフォーカスを失っても animation は継続し、完了時にも
-未フォーカスで遷移先が gameplay の場合だけ、その後 Paused になります。
-
-敵は level CSV の生成額度と同時生存上限に従い、`M`／`R` marker を row-major の round-robin で再利用して
-近接型から交互に動的生成されます。安全な marker がない場合は額度を保持して次 frame に再試行します。
-近接型は 0.8m、遠距離型は 1.6m の textured billboard で、表示寸法と gameplay hitbox は
-別々の CSV 値です。`render_width`／`render_height` は透明余白を含む共通 frame canvas 全体の world size で、
-hitbox の高さや半径から再計算されません。共通 canvas を固定したまま描くため、動作ごとに alpha bounds が
-大きく変わってもキャラクターの縮尺や足元 anchor は跳ねません。近接型は
-A* を使って壁を迂回しながらプレイヤーへ接近します。遠距離型は
-近すぎる場合は経路探索で後退し、射程と視線を確保できる場所へ移動します。敵は常にプレイヤーを
-認識します。attack event は Atlas の 0-based event frame を跨いだ時に一度だけ発生します。近接はその時点で
-距離と LOS を再確認するため蓄力中に回避でき、遠距離は CSV の muzzle pixel から発射時点の player capsule 中心へ
-橙色 projectile を撃ちます。敵は有効 damage を受けると短時間白く flash し、lethal hit は room kill に一度だけ
-記録されます。死亡 animation は 0.4 秒表示され、active count と combat collision からは即座に外れますが、
-表示中は spawn marker を占有します。生存中の敵と
-プレイヤーは互いに通り抜けられず、敵同士は重なれます。Paused と scene fade 中は AI、cooldown、
-reload、projectile、state elapsed、billboard pose を含む level simulation 全体が停止します。
-
-プレイヤー射撃は camera 中心から最大 50m の ray を飛ばし、wall／floor／enemy capsule の最近 hit を
-即時に解決します。さらに右下 weapon の muzzle から aim point まで遮蔽を再確認し、壁越しの命中を防ぎます。
-表示される白球は hit 結果を遅延させない visual tracer です。damage は
-`max(1, weapon damage - enemy defense)`、enemy projectile は swept segment で wall／player capsule を判定します。
-
-## マップ形式
-
-元のマップは `NoviceResources/maps/mvp_map.txt` と `mvp_map_02.txt` にあり、ビルド後は
-同じ相対パスで `Resources/maps/` にデプロイされます。進行順、表示名、map path、次 level ID、
-敵生成額度、同時生存上限と door 解放 kill 数は `levels.csv` で定義します。空の `next_level_id` が
-最終 room を示し、`GameConfig::startLevelId` が開始 level、`GameConfig::mapTransition` が fade 時間を設定します。
-
-```text
-# = 通行不可の壁
-. = 通行可能な空間
-P = プレイヤーのスポーン位置（必ず 1 つだけ）
-M = 近接型敵のスポーン位置（0 個以上）
-R = 遠距離型敵のスポーン位置（0 個以上）
-D = 次マップへの出口。最終マップでは Results への出口（必ず 1 つだけ）
-```
-
-すべての行は同じ幅で、空であってはなりません。`P`、`M`、`R`、`D` は通行可能で、
-旧形式の `E` を含む未定義文字は拒否されます。
-列はワールドの `+X`、行はワールドの `+Z` に対応し、マップ範囲外は常に壁として扱います。
-
-文字から enum への変換は `GridMapLoader` だけが担当し、`GridMap` は `TileType` と marker 座標だけを保持します。
-ファイルの読み取りとテキスト解析は
-`GridMapLoader` が担当します。Rendering 用のジオメトリと Gameplay 用のコリジョンは、どちらも同じ
-`GridMap` を読み取りますが、互いにジオメトリを受け渡すことはありません。
-
-## リソースのデプロイ
-
-`NoviceResources/` は、意図的に維持している KamataEngine の基本リソースの格納元です。一般的な
-プロジェクト慣例に合わせるためだけに、無理に `assets/` へ改名することはありません。CMake の独立した
-`Object_FPS_Resources` ターゲットは、ビルドのたびにディレクトリを実行ファイルの隣にある
-`Resources/` へ同期します。そのため、マップ、シェーダー、モデルだけを変更した場合でも、古いデプロイ済み
-ファイルが残ることはありません。パスは引き続き KamataEngine のリソースルートおよび OBJ/MTL の
-相対パス規則に準拠します。
-
-ゲームデータの原本は次の 4 catalog です。実行時は同じ相対位置の `Resources/data/` から読み込みます。
-
-- `NoviceResources/data/enemies.csv`：enemy ID、combat、hitbox／render size、sheet texture、共通 frame size
-- `NoviceResources/data/enemy_animation_clips.csv`：enemy／state、atlas origin、frame count／timing、attack event、ranged muzzle
-- `NoviceResources/data/weapons.csv`：weapon ID、damage、magazine／reserve、recoil、automatic、fire interval、reload、texture
-- `NoviceResources/data/levels.csv`：level ID／name／map／next ID、敵生成額度、active limit、clear kill count
-
-CSV reader は BOM、LF／CRLF、quoted field と quote escape を扱い、header、型、範囲、重複 ID、参照、
-resource path／存在、敵 kind と線形 level chain を preflight します。失敗時は file、row、column／field を含む
-診断を返します。
-
-MVP のマップモデルは次の場所にあります。
-
-- `NoviceResources/map_floor/`
-- `NoviceResources/map_wall/`
-- `NoviceResources/cube/`（`white1x1.png` を上書き適用する出口の仮モデル）
-
-floor／wall は 4 頂点／2 三角形の単位四角形です。出口は既存 cube を扁平な門形に scale します。
-敵 billboard は `map_wall.obj` を共通 quad として再利用し、2 枚の sheet texture と 33 個の frame material を
-definition ID で cache します。UV は frame 境界から half texel inset し、KamataEngine の C++ material constant
-buffer と同じ packed layout で atlas offset を読み取ります。透明 pixel は alpha cutoff で depth を書きません。
-sky は `assets/textures/sky/sky_sphere.png` 全体を equirectangular texture として使用します。
-
-## テスト
-
-対応する構成のビルドを完了してから、次を実行します。
+先建置對應 configuration，再執行：
 
 ```powershell
 ctest --test-dir build/vs2026-x64 -C Debug --output-on-failure
 ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 ```
 
-テストソースは責務ごとに `World`、`Collision`、`Rendering`、`Data`、`Gameplay`、`Game` の
-headless suite に分かれています。マップの enum 解析／読み込み／エラー座標、
-World の所有権／設定、マップ形状の生成、円／グリッドのコリジョン、壁沿いの移動、
-動的円のすり抜け防止、ray／capsule／swept segment、白い出口 geometry、平面移動、Player の設定、
-CSV catalog／animation validation、Atlas UV／loop／clamp、post-process curve、Weapon／reload／cooldown、projectile、
-動的 enemy spawn／状態／A*／LOS／近接追跡／遠距離退避、attack frame／回避／muzzle／death retention、
-damage／kill、`CampaignRunState`、メニュー／ポーズ／Results の状態遷移、
-fade phase／opacity／commit barrier／input lock と最終マップから Results への progression、
-正式な 2 map の P/M/R/D 可達性を
-網羅しています。これらは GPU やウィンドウを必要としない契約テストです。
+`Object_Connect_CoreTests` 不建立視窗，也不需要 GPU。測試涵蓋 CSV 與正式四表整合、候選 DAG、路徑選擇、全域長度不變量、障礙幾何、末端解鎖、血管約束與下垂、跟隨延遲、ribbon 頂點與像素格點，以及主選單／選關／暫停／完成流程。實際拖曳手感、肉質像素密度、triangle strip 裂縫、圖層順序和失焦行為仍需執行遊戲人工確認。
 
-この機能追加後の構成ごとの build／CTest 結果は、上記コマンドで個別に確認してください。ここでは、
-まだ完了していない構成を検証済みとは記載しません。
+## CSV 關卡資料
 
-自動化環境では非表示の DirectX バックバッファを確実にキャプチャできないため、床／壁面／白い出口の視認性、
-起動、メニュー／Results の hover/click、WASD、マウス視点、ポーズ、scene fade とカーソル capture は、引き続き手動での実行時回帰テストが
-必要です。ローカルでは Ninja プリセットの構成とビルドグラフを検証済みです。この Codex Windows
-実行環境では Ninja が MSVC の子プロセスを待機する際に停止するため、CLion/Ninja の完全なリンクが
-成功したとはしていません。Visual Studio ジェネレーターの Debug／Release ビルドは、この問題の影響を受けません。
+原始資料位於 `NoviceResources/data/`，執行時從 `Resources/data/` 讀取。不是 JSON，也沒有內建關卡程式碼；四份 CSV 合在一起描述整個 puzzle catalog。
 
-## プログラム構成
+### `levels.csv`
 
 ```text
-include/RetroFPS/             公開 API
-  Core/                       Application とフレームタイミングの契約
-  Math/                       エンジン非依存の値型
-  Input/                      生のキーボード／マウス状態と入力アダプター
-  World/                      GridMap、ローダー、World、設定
-  Data/                       CSV parser と enemy／weapon／level catalog
-  Collision/                  XZ movement と ray／segment／capsule combat query
-  Gameplay/Player/            Player、HP、設定、コントローラー
-  Gameplay/Weapon/            弾薬、射撃、reload、cooldown と recoil state
-  Gameplay/Enemy/             動的 spawn、enemy state、A*／LOS AI、damage／attack event
-  Gameplay/Combat/            tracer と enemy projectile simulation
-  Rendering/                  Camera、map、billboard、projectile、weapon／HUD、UI／fade
-  Game/                       組み立て、CampaignRunState、GameFlow、MapSceneManager
-src/                          非公開実装とプラットフォーム固有の詳細
-tests/
-  World/                      マップ読み込みと World の所有権／設定
-  Collision/                  movement と combat collision
-  Rendering/                  CPU によるマップ形状生成
-  Gameplay/                   Player／Weapon／Enemy／Projectile の engine-independent tests
-  Data/                       CSV と catalog validation
-  Game/                       campaign、メニュー／ポーズ／Results／map scene transition
-Docs/Architecture.md          依存関係、所有権、拡張ガイド
-NoviceResources/              KamataEngine 互換の元リソース
+puzzle_id,title,start_node_id,total_length,minimum_slack_ratio,background_color,show_target_connections,vessel_color,base_width,tip_width,width_variation
 ```
 
-利用側のプログラムは `include/RetroFPS/...` をインクルードしてください。`src/` 内のヘッダー（Win32 の
-マウスキャプチャなど）は非公開実装であり、安定した API ではありません。公開型は
-`fps` 名前空間にあります。
+- 每個 `puzzle_id` 一列。
+- `total_length` 使用 1280×720 的邏輯像素，範圍為 `(0, 100000]`。
+- `minimum_slack_ratio` 範圍為 `[1, 4]`，建議從 1.05 開始。
+- `show_target_connections=true` 會顯示低透明度答案線。
+- `base_width`、`tip_width`、`width_variation` 控制整關的血管外觀。兩個寬度相等會取消根部到末端的漸縮，variation 只向內切出局部凹缺；內建關卡使用 16 像素外輪廓、`0.16` 凹凸量與深紅色 `#861B2B`。Renderer 再套用 2 像素格點、深色外緣及亮紅／暗紅肉質斑塊。
 
-以前の MT3 授業用実装は、このプロジェクトには含まれません。過去の数学処理やコリジョン技法を参照する
-必要がある場合は、[MT3](https://github.com/k025g1030-design/MT3/) を直接確認してください。Object_FPS はこのディレクトリを
-リンクもインクルードもしません。
+### `nodes.csv`
+
+```text
+puzzle_id,node_id,label,x,y,radius,color
+```
+
+節點圓形必須完整位於 1280×720 畫布內，不得互相重疊，也不得與障礙重疊。
+
+### `connections.csv`
+
+```text
+puzzle_id,from_node_id,to_node_id,point_count,thickness_scale,follow_delay_seconds,initial_direction_degrees
+```
+
+- 連線有方向，從 `start_node_id` 形成候選路徑圖；資料可有多條 outgoing／incoming，但玩家實際血管始終只選一條。
+- 所有 connection 必須從起點可達，整張圖必須無循環且只有一個可達終點。
+- 不允許循環、自連線、重複 edge、未知 node、斷開的 connection 或多終點。
+- `point_count` 必須是 8–12。
+- `thickness_scale` 最大為 8；同一路徑所有段落都設為 `1` 時，跨節點也會維持一致粗細。`follow_delay_seconds` 最大為 1 秒，初始方向限制為 `[-360, 360]` 度。
+- Loader 保留 CSV 列順序；遊戲依目前末端和玩家選中的 target 決定路徑，不以列順序決定流程。
+
+### `obstacles.csv`
+
+```text
+puzzle_id,obstacle_id,shape,center_x,center_y,width,height,radius,color
+```
+
+- `shape` 只接受 `rectangle` 或 `circle`。
+- 矩形填 `width`／`height`，`radius` 留空。
+- 圓形填 `radius`，`width`／`height` 留空。
+- 障礙必須完整位於畫布內。
+
+顏色接受 `#RRGGBB` 或 `#RRGGBBAA`。ID、標題與 label 使用可顯示的英文 ASCII。CSV reader 接受 UTF-8 BOM、LF／CRLF、quoted field、quoted newline 與 `""` quote escape；header 名稱與順序則必須完全符合契約。
+
+啟動時 loader 會一次驗證四表：型別、finite 數值、安全範圍、重複 ID、跨表引用、拓樸、畫布範圍、重疊、障礙阻擋，以及：
+
+```text
+shortest_path_sum(distance(from, to)) * minimum_slack_ratio <= total_length
+```
+
+未選候選邊不計入長度；Loader 只要求至少一條起點到終點的路線可以完成。血管 clearance 會用該段最大半寬再加一個 2 像素格點擴張障礙，涵蓋像素量化位移；碰到邊界也算阻擋。任一錯誤都會使整份 catalog 載入失敗，不會留下 partial catalog；錯誤訊息包含檔名、row 與 column／field。
+
+## 程式結構
+
+```text
+include/ObjectConnect/         公開 API；object_connect namespace
+  Core/                        Application、FrameTimer
+  Data/                        CSV、PuzzleData、catalog loader
+  Game/                        Game、GameConfig、GameFlow
+  Geometry/                    segment-circle、segment-AABB 等純 2D query
+  Input/                       鍵盤、滑鼠、focus 的原始狀態
+  Math/                        Vec2、Color
+  Puzzle/                      PuzzleBoard 與 render snapshot
+  Rendering/                   DirectX/KamataEngine renderer adapter
+  Tentacle/                    Verlet simulation 與 ribbon builder
+src/
+  main.cpp                     Win32 程式進入點
+  ObjectConnect/               實作；目錄與 include/ObjectConnect 一致
+    Core/                      Application、FrameTimer
+    Data/                      CSV 與 catalog loader
+    Game/                      Game、GameFlow
+    Geometry/                  純 2D geometry query
+    Input/                     KamataEngine input adapter
+    Puzzle/                    PuzzleBoard
+    Rendering/                 DirectX/KamataEngine renderer
+    Tentacle/                  Verlet 與 ribbon builder
+tests/                         無引擎依賴的 core contract tests
+NoviceResources/data/          四份關卡 CSV 原本
+NoviceResources/shaders/       flat-color 2D shader
+Docs/Architecture.md           依賴、ownership、每幀流程與擴充界線
+```
+
+`NoviceResources/axis/` 與 `Obj*.hlsl` 看起來像 3D 遺留物，但 KamataEngine 啟動時會固定初始化 Model／AxisIndicator；它們是引擎 bootstrap 資源，不能刪除。遊戲本身不使用 3D 模型玩法。
+
+CMake target 的責任也保持簡單：
+
+- `object_connect_core`：Math、Data、Geometry、PuzzleBoard、GameFlow、BloodTentacle、RibbonStrip；不依賴 KamataEngine。
+- `object_connect_runtime`：Application、Input、Game、UI 與 DirectX renderer。
+- `Object_Connect`：Win32 執行檔。
+- `Object_Connect_CoreTests`：headless core tests。
+
+## 新人建議閱讀順序
+
+1. 先看 `NoviceResources/data/` 的三關，理解「四張表共同描述一關」。
+2. 看 `PuzzleData.hpp`，認識 loader 產出的只讀 definition。
+3. 看 `PuzzleBoard.hpp/.cpp`，追蹤拖曳、保留、退還與 commit。
+4. 看 `BloodTentacle.hpp/.cpp`，理解單一段落如何模擬；不要把它和全域長度預算混在一起。
+5. 看 `RibbonStrip.hpp/.cpp`，理解中心點如何變成可畫的左右頂點。
+6. 最後看 `Game.cpp`，了解輸入、流程、board snapshot 與 renderer 如何組裝。
+
+加入新關卡通常只需要編輯四份 CSV；若只改規則，優先修改 `object_connect_core` 並先補 core test。Renderer 只讀 snapshot，不應回寫 `PuzzleBoard`。
+
+## 範圍外
+
+本 MVP 不支援 JSON、存檔、關卡解鎖、熱重載、中文 UI、音訊、血管貼圖、粒子對障礙的物理碰撞、可移動 body、creature controller、ECS、scene graph 或完整物理引擎。固定解析度為 1280×720。

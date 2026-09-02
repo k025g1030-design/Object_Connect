@@ -5,7 +5,7 @@
 #include <string_view>
 #include <utility>
 
-namespace fps::tests {
+namespace object_connect::tests {
 
 class TestContext final {
 public:
@@ -45,22 +45,11 @@ private:
     return std::fabs(left - right) <= tolerance;
 }
 
-void RunWorldTests(TestContext& context);
-void RunCollisionTests(TestContext& context);
-void RunCombatCollisionTests(TestContext& context);
-void RunMapGeometryTests(TestContext& context);
-void RunEnemyBillboardTests(TestContext& context);
-void RunScenePostProcessTests(TestContext& context);
-void RunPlayerControllerTests(TestContext& context);
-void RunPlayerCombatStateTests(TestContext& context);
-void RunWeaponControllerTests(TestContext& context);
-void RunProjectileSystemTests(TestContext& context);
-void RunEnemySystemTests(TestContext& context);
-void RunEnemySpawnDirectorTests(TestContext& context);
-void RunGameDataCatalogTests(TestContext& context);
+void RunPuzzleCatalogTests(TestContext& context);
 void RunGameFlowTests(TestContext& context);
-void RunMapSceneManagerTests(TestContext& context);
-void RunCampaignResourceTests(TestContext& context);
-void RunCampaignRunStateTests(TestContext& context);
+void RunGeometry2DTests(TestContext& context);
+void RunPuzzleBoardTests(TestContext& context);
+void RunBloodTentacleTests(TestContext& context);
+void RunRibbonStripTests(TestContext& context);
 
-} // namespace fps::tests
+} // namespace object_connect::tests

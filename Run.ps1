@@ -22,7 +22,7 @@ if (-not $SkipBuild) {
 
 $executablePath = Join-Path `
     $PSScriptRoot `
-    "target\$Configuration\Object_FPS.exe"
+    "target\$Configuration\Object_Connect.exe"
 
 if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
     throw "Executable not found: $executablePath. Run Build.ps1 first."
@@ -36,5 +36,5 @@ $process = Start-Process `
     -Wait
 
 if ($process.ExitCode -ne 0) {
-    throw "Object_FPS exited with code $($process.ExitCode)."
+    throw "Object_Connect exited with code $($process.ExitCode)."
 }

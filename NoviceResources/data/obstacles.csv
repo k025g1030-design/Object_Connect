@@ -1,0 +1,4 @@
+puzzle_id,obstacle_id,shape,center_x,center_y,width,height,radius,color
+around_block,central_clot,rectangle,640,360,220,190,,#49313A
+clot_path,central_clot,rectangle,600,360,240,180,,#49313A
+clot_path,round_clot,circle,870,360,,,90,#5A3540

@@ -89,7 +89,7 @@ if ($KamataEngineRoot) {
 }
 
 Write-Host "Using CMake: $cmakeExecutable"
-Write-Host "Configuring Object_FPS..."
+Write-Host "Configuring Object_Connect..."
 
 Push-Location -LiteralPath $PSScriptRoot
 try {
@@ -110,6 +110,6 @@ finally {
 
 $executablePath = Join-Path `
     $PSScriptRoot `
-    "target\$Configuration\Object_FPS.exe"
+    "target\$Configuration\Object_Connect.exe"
 
 Write-Host "Build completed: $executablePath"

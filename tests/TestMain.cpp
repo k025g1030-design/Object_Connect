@@ -9,31 +9,20 @@ namespace {
 
 struct TestSuite {
     const char* name;
-    void (*run)(fps::tests::TestContext&);
+    void (*run)(object_connect::tests::TestContext&);
 };
 
 } // namespace
 
 int main() {
-    fps::tests::TestContext context;
-    constexpr std::array<TestSuite, 17> suites = {{
-        {"World", fps::tests::RunWorldTests},
-        {"Collision", fps::tests::RunCollisionTests},
-        {"Collision.Combat", fps::tests::RunCombatCollisionTests},
-        {"Rendering.MapGeometry", fps::tests::RunMapGeometryTests},
-        {"Rendering.EnemyBillboard", fps::tests::RunEnemyBillboardTests},
-        {"Rendering.ScenePostProcess", fps::tests::RunScenePostProcessTests},
-        {"Gameplay.PlayerController", fps::tests::RunPlayerControllerTests},
-        {"Gameplay.PlayerCombatState", fps::tests::RunPlayerCombatStateTests},
-        {"Gameplay.WeaponController", fps::tests::RunWeaponControllerTests},
-        {"Gameplay.ProjectileSystem", fps::tests::RunProjectileSystemTests},
-        {"Gameplay.EnemySystem", fps::tests::RunEnemySystemTests},
-        {"Gameplay.EnemySpawnDirector", fps::tests::RunEnemySpawnDirectorTests},
-        {"Data.GameDataCatalog", fps::tests::RunGameDataCatalogTests},
-        {"Game.Flow", fps::tests::RunGameFlowTests},
-        {"Game.MapSceneManager", fps::tests::RunMapSceneManagerTests},
-        {"Game.CampaignResources", fps::tests::RunCampaignResourceTests},
-        {"Game.CampaignRunState", fps::tests::RunCampaignRunStateTests},
+    object_connect::tests::TestContext context;
+    constexpr std::array<TestSuite, 6> suites = {{
+        {"Data.PuzzleCatalog", object_connect::tests::RunPuzzleCatalogTests},
+        {"Game.Flow", object_connect::tests::RunGameFlowTests},
+        {"Geometry.2D", object_connect::tests::RunGeometry2DTests},
+        {"Puzzle.Board", object_connect::tests::RunPuzzleBoardTests},
+        {"Tentacle.Simulation", object_connect::tests::RunBloodTentacleTests},
+        {"Tentacle.Ribbon", object_connect::tests::RunRibbonStripTests},
     }};
 
     for (const TestSuite& suite : suites) {
@@ -48,10 +37,10 @@ int main() {
     }
 
     if (context.GetFailureCount() != 0) {
-        std::cerr << context.GetFailureCount() << " core test(s) failed.\n";
+        std::cerr << context.GetFailureCount() << " Object_Connect core test(s) failed.\n";
         return 1;
     }
 
-    std::cout << "All core tests passed.\n";
+    std::cout << "All Object_Connect core tests passed.\n";
     return 0;
 }

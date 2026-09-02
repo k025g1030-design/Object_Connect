@@ -9,7 +9,7 @@
     {
       "name": "vs2026-x64",
       "displayName": "Visual Studio 2026 - x64",
-      "description": "Configure Object_FPS with the Visual Studio 2026 generator.",
+      "description": "Configure Object_Connect with the Visual Studio 2026 generator.",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/vs2026-x64",
