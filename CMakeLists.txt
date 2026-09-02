@@ -41,6 +41,8 @@ set(KAMATA_INCLUDE_DIR "${KAMATA_ENGINE_ROOT}/External/KamataEngine/include")
 set(DIRECTXTEX_INCLUDE_DIR "${KAMATA_ENGINE_ROOT}/External/DirectXTex/include")
 set(IMGUI_INCLUDE_DIR "${KAMATA_ENGINE_ROOT}/External/imgui")
 set(OBJECT_CONNECT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(NLOHMANN_JSON_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/single_include")
 set(OBJECT_CONNECT_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/NoviceResources")
 set(OBJECT_CONNECT_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/$<CONFIG>")
 
@@ -63,15 +65,22 @@ set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/white1x1.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/debugfont.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/kamata.ico"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/nodes.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/connections.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/obstacles.csv"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/catalog.json"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/tileset.json"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/node_types.json"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels/first_link.json"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels/around_block.json"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels/clot_path.json"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/data/tiles/organ_atlas.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.obj"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.mtl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.jpg"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Flat2D.hlsli"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Flat2DVS.hlsl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Flat2DPS.hlsl"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Tile2D.hlsli"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Tile2DVS.hlsl"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Tile2DPS.hlsl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Obj.hlsli"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/ObjVS.hlsl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/ObjPS.hlsl"
@@ -90,6 +99,16 @@ set(_required_project_resources
 foreach(_required_path IN LISTS _required_project_resources)
     if(NOT EXISTS "${_required_path}")
         message(FATAL_ERROR "Required Object_Connect resource was not found:\n  ${_required_path}")
+    endif()
+endforeach()
+
+set(_required_vendored_files
+    "${NLOHMANN_JSON_INCLUDE_DIR}/nlohmann/json.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/LICENSE.MIT"
+)
+foreach(_required_path IN LISTS _required_vendored_files)
+    if(NOT EXISTS "${_required_path}")
+        message(FATAL_ERROR "Required vendored dependency file was not found:\n  ${_required_path}")
     endif()
 endforeach()
 
@@ -136,11 +155,11 @@ function(configure_object_connect_target target_name)
 endfunction()
 
 set(OBJECT_CONNECT_CORE_SOURCES
-    src/ObjectConnect/Data/Csv.cpp
     src/ObjectConnect/Data/PuzzleCatalogLoader.cpp
     src/ObjectConnect/Game/GameFlow.cpp
     src/ObjectConnect/Geometry/Geometry2D.cpp
     src/ObjectConnect/Puzzle/PuzzleBoard.cpp
+    src/ObjectConnect/Rendering/TileMesh.cpp
     src/ObjectConnect/Tentacle/BloodTentacle.cpp
     src/ObjectConnect/Tentacle/RibbonStrip.cpp
 )
@@ -168,7 +187,10 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 add_library(object_connect_core STATIC ${OBJECT_CONNECT_CORE_SOURCES})
-target_include_directories(object_connect_core PUBLIC "${OBJECT_CONNECT_INCLUDE_DIR}")
+target_include_directories(object_connect_core
+    PUBLIC "${OBJECT_CONNECT_INCLUDE_DIR}"
+    PRIVATE "${NLOHMANN_JSON_INCLUDE_DIR}"
+)
 target_compile_definitions(object_connect_core PRIVATE NOMINMAX)
 configure_object_connect_target(object_connect_core)
 add_library(ObjectConnect::Core ALIAS object_connect_core)
@@ -231,10 +253,14 @@ if(BUILD_TESTING)
         tests/Game/GameFlowTests.cpp
         tests/Geometry/Geometry2DTests.cpp
         tests/Puzzle/PuzzleBoardTests.cpp
+        tests/Rendering/TileMeshTests.cpp
         tests/Tentacle/BloodTentacleTests.cpp
         tests/Tentacle/RibbonStripTests.cpp
     )
-    target_include_directories(Object_Connect_CoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_include_directories(Object_Connect_CoreTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        "${NLOHMANN_JSON_INCLUDE_DIR}"
+    )
     target_link_libraries(Object_Connect_CoreTests PRIVATE ObjectConnect::Core)
     target_compile_definitions(Object_Connect_CoreTests PRIVATE
         NOMINMAX

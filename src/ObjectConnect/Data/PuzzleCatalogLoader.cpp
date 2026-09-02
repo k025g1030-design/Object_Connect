@@ -1,17 +1,20 @@
 #include "ObjectConnect/Data/PuzzleCatalogLoader.hpp"
 
-#include "ObjectConnect/Data/Csv.hpp"
 #include "ObjectConnect/Geometry/Geometry2D.hpp"
-#include "ObjectConnect/Tentacle/RibbonStrip.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <initializer_list>
+#include <iterator>
 #include <limits>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,38 +27,30 @@
 namespace object_connect {
 namespace {
 
-constexpr std::string_view kLevelsCatalogName{"levels.csv"};
-constexpr std::string_view kNodesCatalogName{"nodes.csv"};
-constexpr std::string_view kConnectionsCatalogName{"connections.csv"};
-constexpr std::string_view kObstaclesCatalogName{"obstacles.csv"};
-constexpr float kCanvasWidth = 1280.0f;
-constexpr float kCanvasHeight = 720.0f;
-constexpr std::size_t kMinimumPointCount = 8;
-constexpr std::size_t kMaximumPointCount = 12;
+using Json = nlohmann::json;
+
 constexpr std::size_t kMaximumIdentifierLength = 64;
 constexpr std::size_t kMaximumDisplayTextLength = 64;
+constexpr std::size_t kMaximumPathLength = 512;
+constexpr std::size_t kMaximumLevels = 128;
+constexpr std::size_t kMaximumTiles = 65535;
+constexpr std::size_t kMaximumAtlasDimension = 4096;
+constexpr std::size_t kMaximumNodeTypes = 512;
+constexpr std::size_t kMaximumStampColumns = kPuzzleGridColumns;
+constexpr std::size_t kMaximumStampRows = kPuzzleGridRows;
+constexpr std::size_t kMaximumStampCells =
+    kPuzzleGridColumns * kPuzzleGridRows;
+constexpr std::size_t kMaximumNodes = 512;
+constexpr std::size_t kMaximumConnections = 4096;
+constexpr std::size_t kMaximumNodeCapacity = 32;
+constexpr std::uintmax_t kMaximumJsonFileBytes = 16u * 1024u * 1024u;
 constexpr float kMaximumTotalLength = 100000.0f;
 constexpr float kMaximumSlackRatio = 4.0f;
 constexpr float kMaximumVesselWidth = 256.0f;
 constexpr float kMaximumThicknessScale = 8.0f;
 constexpr float kMaximumFollowDelaySeconds = 1.0f;
-
-constexpr std::array<std::string_view, 11> kLevelsHeader{
-    "puzzle_id",          "title",          "start_node_id", "total_length",
-    "minimum_slack_ratio", "background_color", "show_target_connections",
-    "vessel_color",       "base_width",     "tip_width",     "width_variation",
-};
-constexpr std::array<std::string_view, 7> kNodesHeader{
-    "puzzle_id", "node_id", "label", "x", "y", "radius", "color",
-};
-constexpr std::array<std::string_view, 7> kConnectionsHeader{
-    "puzzle_id", "from_node_id", "to_node_id", "point_count", "thickness_scale",
-    "follow_delay_seconds", "initial_direction_degrees",
-};
-constexpr std::array<std::string_view, 9> kObstaclesHeader{
-    "puzzle_id", "obstacle_id", "shape", "center_x", "center_y", "width", "height",
-    "radius", "color",
-};
+constexpr float kMaximumDirectionDegrees = 360.0f;
+constexpr float kObstacleClearancePadding = 2.0f;
 
 class PuzzleDataError final : public std::runtime_error {
 public:
@@ -63,155 +58,272 @@ public:
         : std::runtime_error(message) {}
 };
 
-template <std::size_t Size>
-[[nodiscard]] std::string JoinHeader(const std::array<std::string_view, Size>& header) {
-    std::string result;
-    for (std::size_t index = 0; index < header.size(); ++index) {
-        if (index != 0) {
-            result.push_back(',');
+[[nodiscard]] std::string EscapePointerToken(const std::string_view token) {
+    std::string escaped;
+    escaped.reserve(token.size());
+    for (const char character : token) {
+        if (character == '~') {
+            escaped += "~0";
+        } else if (character == '/') {
+            escaped += "~1";
+        } else {
+            escaped.push_back(character);
         }
-        result += header[index];
+    }
+    return escaped;
+}
+
+[[nodiscard]] std::string ChildPointer(const std::string_view parent,
+                                       const std::string_view child) {
+    std::string result{parent};
+    result.push_back('/');
+    result += EscapePointerToken(child);
+    return result;
+}
+
+[[nodiscard]] std::string IndexPointer(const std::string_view parent,
+                                       const std::size_t index) {
+    return ChildPointer(parent, std::to_string(index));
+}
+
+[[noreturn]] void ThrowDataError(const std::string_view filename,
+                                 const std::string_view pointer,
+                                 const std::string& detail) {
+    const std::string effectiveFilename =
+        filename.empty() ? std::string{"<memory>"} : std::string{filename};
+    const std::string effectivePointer =
+        pointer.empty() ? std::string{"/"} : std::string{pointer};
+    throw PuzzleDataError(effectiveFilename + "#" + effectivePointer + ": " + detail);
+}
+
+[[nodiscard]] Json ParseJsonDocument(const PuzzleJsonSource& source) {
+    if (source.contents.size() > kMaximumJsonFileBytes) {
+        ThrowDataError(source.filename, "/", "JSON document exceeds the 16 MiB limit");
+    }
+    try {
+        std::vector<std::unordered_set<std::string>> objectKeys;
+        const Json::parser_callback_t rejectDuplicateKeys =
+            [&objectKeys, &source](const int depth,
+                                   const Json::parse_event_t event,
+                                   Json& parsed) {
+                if (event == Json::parse_event_t::object_start) {
+                    const std::size_t objectDepth = static_cast<std::size_t>(depth);
+                    if (objectKeys.size() <= objectDepth) {
+                        objectKeys.resize(objectDepth + 1);
+                    }
+                    objectKeys[objectDepth].clear();
+                } else if (event == Json::parse_event_t::key) {
+                    const std::size_t keyDepth = static_cast<std::size_t>(depth);
+                    if (keyDepth == 0 || objectKeys.size() < keyDepth) {
+                        ThrowDataError(source.filename, "/",
+                                       "invalid JSON object nesting");
+                    }
+                    const std::string key = parsed.get<std::string>();
+                    if (!objectKeys[keyDepth - 1].insert(key).second) {
+                        ThrowDataError(source.filename, "/",
+                                       "duplicate object key '" + key + "'");
+                    }
+                }
+                return true;
+            };
+        return Json::parse(source.contents.begin(), source.contents.end(),
+                           rejectDuplicateKeys);
+    } catch (const Json::parse_error& exception) {
+        ThrowDataError(source.filename, "/",
+                       std::string{"invalid JSON syntax: "} + exception.what());
+    }
+}
+
+void RequireExactKeys(const Json& value,
+                      const std::initializer_list<std::string_view> expected,
+                      const PuzzleJsonSource& source,
+                      const std::string_view pointer) {
+    if (!value.is_object()) {
+        ThrowDataError(source.filename, pointer, "expected an object");
+    }
+
+    for (const std::string_view key : expected) {
+        if (!value.contains(std::string{key})) {
+            ThrowDataError(source.filename, ChildPointer(pointer, key),
+                           "missing required key");
+        }
+    }
+    for (auto iterator = value.cbegin(); iterator != value.cend(); ++iterator) {
+        const bool known = std::any_of(
+            expected.begin(), expected.end(), [&iterator](const std::string_view key) {
+                return iterator.key() == key;
+            });
+        if (!known) {
+            ThrowDataError(source.filename, ChildPointer(pointer, iterator.key()),
+                           "unexpected key");
+        }
+    }
+}
+
+void RequireArray(const Json& value, const PuzzleJsonSource& source,
+                  const std::string_view pointer) {
+    if (!value.is_array()) {
+        ThrowDataError(source.filename, pointer, "expected an array");
+    }
+}
+
+[[nodiscard]] std::uint64_t ReadUnsigned(const Json& value,
+                                         const std::uint64_t maximum,
+                                         const PuzzleJsonSource& source,
+                                         const std::string_view pointer) {
+    if (!value.is_number_integer()) {
+        ThrowDataError(source.filename, pointer, "expected an integer");
+    }
+
+    std::uint64_t result = 0;
+    if (value.is_number_unsigned()) {
+        result = value.get<std::uint64_t>();
+    } else {
+        const std::int64_t signedValue = value.get<std::int64_t>();
+        if (signedValue < 0) {
+            ThrowDataError(source.filename, pointer,
+                           "expected a non-negative integer");
+        }
+        result = static_cast<std::uint64_t>(signedValue);
+    }
+    if (result > maximum) {
+        ThrowDataError(source.filename, pointer,
+                       "integer exceeds the supported range");
     }
     return result;
 }
 
-template <std::size_t Size>
-void ValidateHeader(const data::CsvDocument& document,
-                    const std::array<std::string_view, Size>& expected,
-                    const std::string_view catalogName) {
-    std::size_t mismatch = 0;
-    const std::size_t sharedSize = (std::min)(document.header.size(), expected.size());
-    while (mismatch < sharedSize && document.header[mismatch] == expected[mismatch]) {
-        ++mismatch;
-    }
-    if (mismatch == sharedSize && document.header.size() == expected.size()) {
-        return;
-    }
-    throw PuzzleDataError(std::string{catalogName} + " line 1, column " +
-                          std::to_string(mismatch + 1) +
-                          ": header must be exactly: " + JoinHeader(expected));
+[[nodiscard]] std::size_t ReadSize(const Json& value, const std::size_t maximum,
+                                   const PuzzleJsonSource& source,
+                                   const std::string_view pointer) {
+    return static_cast<std::size_t>(ReadUnsigned(value, maximum, source, pointer));
 }
 
-template <std::size_t Size>
-[[noreturn]] void ThrowFieldError(const std::string_view catalogName,
-                                  const std::size_t lineNumber,
-                                  const std::string_view fieldName,
-                                  const std::array<std::string_view, Size>& header,
-                                  const std::string& detail) {
-    std::size_t column = 0;
-    for (std::size_t index = 0; index < header.size(); ++index) {
-        if (header[index] == fieldName) {
-            column = index + 1;
-            break;
-        }
+[[nodiscard]] float ReadFiniteNumber(const Json& value,
+                                     const PuzzleJsonSource& source,
+                                     const std::string_view pointer) {
+    if (!value.is_number()) {
+        ThrowDataError(source.filename, pointer, "expected a number");
     }
-    throw PuzzleDataError(std::string{catalogName} + " line " +
-                          std::to_string(lineNumber) + ", column " +
-                          std::to_string(column) + ", field '" + std::string{fieldName} +
-                          "': " + detail);
+    const double parsed = value.get<double>();
+    if (!std::isfinite(parsed) ||
+        parsed < -static_cast<double>((std::numeric_limits<float>::max)()) ||
+        parsed > static_cast<double>((std::numeric_limits<float>::max)())) {
+        ThrowDataError(source.filename, pointer, "expected a finite float value");
+    }
+    return static_cast<float>(parsed);
 }
 
-[[nodiscard]] std::string ParseDefinitionId(const std::string& text,
-                                            const std::string_view catalogName,
-                                            const std::size_t lineNumber,
-                                            const std::string_view fieldName,
-                                            const auto& header) {
+[[nodiscard]] bool ReadBoolean(const Json& value,
+                               const PuzzleJsonSource& source,
+                               const std::string_view pointer) {
+    if (!value.is_boolean()) {
+        ThrowDataError(source.filename, pointer, "expected a boolean");
+    }
+    return value.get<bool>();
+}
+
+[[nodiscard]] std::string ReadString(const Json& value,
+                                     const PuzzleJsonSource& source,
+                                     const std::string_view pointer) {
+    if (!value.is_string()) {
+        ThrowDataError(source.filename, pointer, "expected a string");
+    }
+    return value.get<std::string>();
+}
+
+[[nodiscard]] std::string ReadId(const Json& value,
+                                 const PuzzleJsonSource& source,
+                                 const std::string_view pointer) {
+    const std::string text = ReadString(value, source, pointer);
     if (text.empty() || text.size() > kMaximumIdentifierLength ||
         text.front() < 'a' || text.front() > 'z' || text.back() == '_') {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "ID must be at most 64 characters, use lower_snake_case, and begin "
-                        "with a lowercase letter");
+        ThrowDataError(source.filename, pointer,
+                       "ID must be 1-64 characters of lower_snake_case");
     }
     bool previousUnderscore = false;
     for (const char character : text) {
-        const bool lowercaseLetter = character >= 'a' && character <= 'z';
+        const bool lowercase = character >= 'a' && character <= 'z';
         const bool digit = character >= '0' && character <= '9';
         const bool underscore = character == '_';
-        if ((!lowercaseLetter && !digit && !underscore) ||
+        if ((!lowercase && !digit && !underscore) ||
             (underscore && previousUnderscore)) {
-            ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                            "ID must use lower_snake_case and contain no repeated underscores");
+            ThrowDataError(source.filename, pointer,
+                           "ID must be lower_snake_case without repeated underscores");
         }
         previousUnderscore = underscore;
     }
     return text;
 }
 
-[[nodiscard]] std::string ParseAsciiText(const std::string& text,
-                                         const std::string_view catalogName,
-                                         const std::size_t lineNumber,
-                                         const std::string_view fieldName,
-                                         const auto& header) {
+[[nodiscard]] std::string ReadDisplayText(const Json& value,
+                                          const PuzzleJsonSource& source,
+                                          const std::string_view pointer) {
+    const std::string text = ReadString(value, source, pointer);
     if (text.empty() || text.size() > kMaximumDisplayTextLength) {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "text must contain between 1 and 64 characters");
+        ThrowDataError(source.filename, pointer,
+                       "text must contain between 1 and 64 characters");
     }
-    bool hasVisibleCharacter = false;
+    bool visible = false;
     for (const unsigned char character : text) {
-        if (character < 0x20u || character > 0x7Eu) {
-            ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                            "text must contain printable ASCII characters only");
+        if (character < 0x20u || character > 0x7eu) {
+            ThrowDataError(source.filename, pointer,
+                           "text must contain printable ASCII characters only");
         }
-        hasVisibleCharacter = hasVisibleCharacter || character != static_cast<unsigned char>(' ');
+        visible = visible || character != static_cast<unsigned char>(' ');
     }
-    if (!hasVisibleCharacter) {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "text must contain at least one visible character");
+    if (!visible) {
+        ThrowDataError(source.filename, pointer,
+                       "text must contain a visible character");
     }
     return text;
 }
 
-[[nodiscard]] float ParseFloat(const std::string& text,
-                               const std::string_view catalogName,
-                               const std::size_t lineNumber,
-                               const std::string_view fieldName,
-                               const auto& header) {
-    float value = 0.0f;
-    const char* const begin = text.data();
-    const char* const end = begin + text.size();
-    const std::from_chars_result result =
-        std::from_chars(begin, end, value, std::chars_format::general);
-    if (text.empty() || result.ec != std::errc{} || result.ptr != end ||
-        !std::isfinite(value)) {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "expected a finite decimal number");
+[[nodiscard]] std::string ReadRelativePath(const Json& value,
+                                           const PuzzleJsonSource& source,
+                                           const std::string_view pointer) {
+    const std::string path = ReadString(value, source, pointer);
+    if (path.empty() || path.size() > kMaximumPathLength || path.front() == '/' ||
+        path.back() == '/' || path.find('\\') != std::string::npos ||
+        path.find(':') != std::string::npos || path.find('\0') != std::string::npos) {
+        ThrowDataError(source.filename, pointer,
+                       "path must be a safe, non-empty relative path using '/' separators");
     }
-    return value;
+
+    std::size_t componentStart = 0;
+    while (componentStart < path.size()) {
+        const std::size_t separator = path.find('/', componentStart);
+        const std::size_t componentEnd =
+            separator == std::string::npos ? path.size() : separator;
+        const std::string_view component{path.data() + componentStart,
+                                         componentEnd - componentStart};
+        if (component.empty() || component == "." || component == "..") {
+            ThrowDataError(source.filename, pointer,
+                           "path must not contain empty, '.' or '..' components");
+        }
+        for (const unsigned char character : component) {
+            const bool letter =
+                (character >= static_cast<unsigned char>('a') &&
+                 character <= static_cast<unsigned char>('z')) ||
+                (character >= static_cast<unsigned char>('A') &&
+                 character <= static_cast<unsigned char>('Z'));
+            const bool digit = character >= static_cast<unsigned char>('0') &&
+                               character <= static_cast<unsigned char>('9');
+            const bool punctuation =
+                character == static_cast<unsigned char>('_') ||
+                character == static_cast<unsigned char>('-') ||
+                character == static_cast<unsigned char>('.');
+            if (!letter && !digit && !punctuation) {
+                ThrowDataError(source.filename, pointer,
+                               "path components may contain only ASCII letters, digits, '_', '-' and '.'");
+            }
+        }
+        componentStart = componentEnd + 1;
+    }
+    return path;
 }
 
-[[nodiscard]] std::size_t ParseSize(const std::string& text,
-                                    const std::string_view catalogName,
-                                    const std::size_t lineNumber,
-                                    const std::string_view fieldName,
-                                    const auto& header) {
-    std::uint64_t value = 0;
-    const char* const begin = text.data();
-    const char* const end = begin + text.size();
-    const std::from_chars_result result = std::from_chars(begin, end, value, 10);
-    if (text.empty() || result.ec != std::errc{} || result.ptr != end ||
-        value > static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)())) {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "expected a non-negative integer that fits size_t");
-    }
-    return static_cast<std::size_t>(value);
-}
-
-[[nodiscard]] bool ParseBoolean(const std::string& text,
-                                const std::string_view catalogName,
-                                const std::size_t lineNumber,
-                                const std::string_view fieldName,
-                                const auto& header) {
-    if (text == "true") {
-        return true;
-    }
-    if (text == "false") {
-        return false;
-    }
-    ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                    "expected exactly 'true' or 'false'");
-}
-
-[[nodiscard]] int ParseHexDigit(const char character) noexcept {
+[[nodiscard]] int HexDigit(const char character) noexcept {
     if (character >= '0' && character <= '9') {
         return character - '0';
     }
@@ -224,24 +336,23 @@ template <std::size_t Size>
     return -1;
 }
 
-[[nodiscard]] Color ParseColor(const std::string& text,
-                               const std::string_view catalogName,
-                               const std::size_t lineNumber,
-                               const std::string_view fieldName,
-                               const auto& header) {
+[[nodiscard]] Color ReadColor(const Json& value,
+                              const PuzzleJsonSource& source,
+                              const std::string_view pointer) {
+    const std::string text = ReadString(value, source, pointer);
     if ((text.size() != 7 && text.size() != 9) || text.front() != '#') {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "expected #RRGGBB or #RRGGBBAA");
+        ThrowDataError(source.filename, pointer,
+                       "expected #RRGGBB or #RRGGBBAA");
     }
 
     std::array<int, 4> channels{0, 0, 0, 255};
     const std::size_t channelCount = text.size() == 9 ? 4 : 3;
     for (std::size_t index = 0; index < channelCount; ++index) {
-        const int high = ParseHexDigit(text[1 + index * 2]);
-        const int low = ParseHexDigit(text[2 + index * 2]);
+        const int high = HexDigit(text[1 + index * 2]);
+        const int low = HexDigit(text[2 + index * 2]);
         if (high < 0 || low < 0) {
-            ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                            "expected #RRGGBB or #RRGGBBAA with hexadecimal digits");
+            ThrowDataError(source.filename, pointer,
+                           "color contains a non-hexadecimal digit");
         }
         channels[index] = high * 16 + low;
     }
@@ -254,710 +365,1022 @@ template <std::size_t Size>
     };
 }
 
-void ValidatePositive(const float value, const std::string_view catalogName,
-                      const std::size_t lineNumber, const std::string_view fieldName,
-                      const auto& header) {
-    if (value <= 0.0f) {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "value must be greater than zero");
+void ValidateSchemaVersion(const Json& root, const PuzzleJsonSource& source) {
+    const std::string pointer = "/schema_version";
+    if (!root.at("schema_version").is_number_integer() ||
+        ReadUnsigned(root.at("schema_version"), 1, source, pointer) != 1) {
+        ThrowDataError(source.filename, pointer,
+                       "schema_version must be the integer 1");
     }
 }
 
-void ValidateNonNegative(const float value, const std::string_view catalogName,
-                         const std::size_t lineNumber, const std::string_view fieldName,
-                         const auto& header) {
-    if (value < 0.0f) {
-        ThrowFieldError(catalogName, lineNumber, fieldName, header,
-                        "value must be non-negative");
-    }
+[[nodiscard]] std::string NormalizeName(const std::string_view name) {
+    return std::filesystem::path{std::string{name}}.lexically_normal().generic_string();
 }
 
-struct RawConnection final {
-    ConnectionDefinition definition;
-    std::size_t lineNumber = 0;
+[[nodiscard]] std::string ResolveName(const std::string_view baseFilename,
+                                      const std::string_view relativePath) {
+    const std::filesystem::path base{std::string{baseFilename}};
+    return (base.parent_path() / std::filesystem::path{std::string{relativePath}})
+        .lexically_normal()
+        .generic_string();
+}
+
+struct CatalogManifest final {
+    std::string tilesetPath;
+    std::string nodeTypesPath;
+    std::vector<std::string> levelPaths;
 };
 
-struct WorkingPuzzle final {
-    PuzzleDefinition definition;
-    std::size_t levelLineNumber = 0;
+[[nodiscard]] CatalogManifest ParseCatalogManifest(const Json& root,
+                                                   const PuzzleJsonSource& source) {
+    RequireExactKeys(root,
+                     {"schema_version", "canvas", "tileset", "node_types", "levels"},
+                     source, "");
+    ValidateSchemaVersion(root, source);
+
+    const Json& canvas = root.at("canvas");
+    RequireExactKeys(canvas, {"width", "height", "tile_size"}, source,
+                     "/canvas");
+    const std::size_t width = ReadSize(canvas.at("width"), kPuzzleCanvasWidth,
+                                       source, "/canvas/width");
+    const std::size_t height = ReadSize(canvas.at("height"), kPuzzleCanvasHeight,
+                                        source, "/canvas/height");
+    const std::size_t tileSize = ReadSize(canvas.at("tile_size"), kPuzzleTileSize,
+                                          source, "/canvas/tile_size");
+    if (width != kPuzzleCanvasWidth || height != kPuzzleCanvasHeight ||
+        tileSize != kPuzzleTileSize) {
+        ThrowDataError(source.filename, "/canvas",
+                       "canvas must be exactly 1280x720 with tile_size 16");
+    }
+
+    CatalogManifest manifest;
+    manifest.tilesetPath =
+        ReadRelativePath(root.at("tileset"), source, "/tileset");
+    manifest.nodeTypesPath =
+        ReadRelativePath(root.at("node_types"), source, "/node_types");
+    if (!manifest.tilesetPath.ends_with(".json")) {
+        ThrowDataError(source.filename, "/tileset",
+                       "tileset path must reference a lowercase .json file");
+    }
+    if (!manifest.nodeTypesPath.ends_with(".json")) {
+        ThrowDataError(source.filename, "/node_types",
+                       "node_types path must reference a lowercase .json file");
+    }
+    if (manifest.tilesetPath == manifest.nodeTypesPath) {
+        ThrowDataError(source.filename, "/node_types",
+                       "tileset and node_types must reference different documents");
+    }
+    const Json& levels = root.at("levels");
+    RequireArray(levels, source, "/levels");
+    if (levels.empty() || levels.size() > kMaximumLevels) {
+        ThrowDataError(source.filename, "/levels",
+                       "levels must contain between 1 and 128 paths");
+    }
+    std::unordered_set<std::string> uniquePaths;
+    uniquePaths.insert(manifest.tilesetPath);
+    uniquePaths.insert(manifest.nodeTypesPath);
+    manifest.levelPaths.reserve(levels.size());
+    for (std::size_t index = 0; index < levels.size(); ++index) {
+        const std::string pointer = IndexPointer("/levels", index);
+        std::string path = ReadRelativePath(levels[index], source, pointer);
+        if (!path.ends_with(".json")) {
+            ThrowDataError(source.filename, pointer,
+                           "level path must reference a lowercase .json file");
+        }
+        if (!uniquePaths.insert(path).second) {
+            ThrowDataError(source.filename, pointer,
+                           "document path is referenced more than once");
+        }
+        manifest.levelPaths.push_back(std::move(path));
+    }
+    return manifest;
+}
+
+[[nodiscard]] TilesetDefinition ParseTileset(
+    const Json& root, const PuzzleJsonSource& source,
+    std::unordered_set<TileId>& knownTileIds) {
+    RequireExactKeys(root,
+                     {"schema_version", "atlas_path", "atlas_columns", "atlas_rows",
+                      "tiles"},
+                     source, "");
+    ValidateSchemaVersion(root, source);
+
+    TilesetDefinition tileset;
+    const std::string atlasRelative =
+        ReadRelativePath(root.at("atlas_path"), source, "/atlas_path");
+    if (!atlasRelative.ends_with(".png")) {
+        ThrowDataError(source.filename, "/atlas_path",
+                       "atlas_path must reference a lowercase .png file");
+    }
+    tileset.atlasPath = ResolveName(source.filename, atlasRelative);
+    tileset.atlasColumns =
+        ReadSize(root.at("atlas_columns"), kMaximumAtlasDimension, source,
+                 "/atlas_columns");
+    tileset.atlasRows =
+        ReadSize(root.at("atlas_rows"), kMaximumAtlasDimension, source,
+                 "/atlas_rows");
+    if (tileset.atlasColumns == 0 || tileset.atlasRows == 0) {
+        ThrowDataError(source.filename, "/atlas_columns",
+                       "atlas dimensions must be greater than zero");
+    }
+
+    const Json& tiles = root.at("tiles");
+    RequireArray(tiles, source, "/tiles");
+    if (tiles.empty() || tiles.size() > kMaximumTiles) {
+        ThrowDataError(source.filename, "/tiles",
+                       "tiles must contain between 1 and 65535 definitions");
+    }
+
+    std::unordered_set<std::string> names;
+    std::unordered_set<std::size_t> atlasCells;
+    tileset.tiles.reserve(tiles.size());
+    knownTileIds.reserve(tiles.size());
+    for (std::size_t index = 0; index < tiles.size(); ++index) {
+        const std::string pointer = IndexPointer("/tiles", index);
+        const Json& tileJson = tiles[index];
+        RequireExactKeys(tileJson,
+                         {"id", "name", "atlas_column", "atlas_row"},
+                         source, pointer);
+
+        TileDefinition tile;
+        const std::string idPointer = ChildPointer(pointer, "id");
+        const std::uint64_t tileId = ReadUnsigned(
+            tileJson.at("id"), (std::numeric_limits<TileId>::max)(), source,
+            idPointer);
+        if (tileId == 0) {
+            ThrowDataError(source.filename, idPointer,
+                           "tile ID 0 is reserved for empty cells");
+        }
+        tile.id = static_cast<TileId>(tileId);
+        if (!knownTileIds.insert(tile.id).second) {
+            ThrowDataError(source.filename, idPointer, "duplicate tile ID");
+        }
+
+        const std::string namePointer = ChildPointer(pointer, "name");
+        tile.name = ReadId(tileJson.at("name"), source, namePointer);
+        if (!names.insert(tile.name).second) {
+            ThrowDataError(source.filename, namePointer, "duplicate tile name");
+        }
+
+        tile.atlasColumn = ReadSize(tileJson.at("atlas_column"),
+                                   tileset.atlasColumns, source,
+                                   ChildPointer(pointer, "atlas_column"));
+        tile.atlasRow = ReadSize(tileJson.at("atlas_row"), tileset.atlasRows,
+                                source, ChildPointer(pointer, "atlas_row"));
+        if (tile.atlasColumn >= tileset.atlasColumns ||
+            tile.atlasRow >= tileset.atlasRows) {
+            ThrowDataError(source.filename, ChildPointer(pointer, "atlas_column"),
+                           "atlas cell is outside atlas dimensions");
+        }
+        const std::size_t atlasIndex =
+            tile.atlasRow * tileset.atlasColumns + tile.atlasColumn;
+        if (!atlasCells.insert(atlasIndex).second) {
+            ThrowDataError(source.filename, ChildPointer(pointer, "atlas_column"),
+                           "multiple tiles reference the same atlas cell");
+        }
+        tileset.tiles.push_back(std::move(tile));
+    }
+    return tileset;
+}
+
+[[nodiscard]] TileId ReadTileId(const Json& value,
+                                const std::unordered_set<TileId>& knownTileIds,
+                                const PuzzleJsonSource& source,
+                                const std::string_view pointer) {
+    const std::uint64_t parsed = ReadUnsigned(
+        value, (std::numeric_limits<TileId>::max)(), source, pointer);
+    const TileId id = static_cast<TileId>(parsed);
+    if (id != 0 && !knownTileIds.contains(id)) {
+        ThrowDataError(source.filename, pointer,
+                       "tile ID is not declared by the tileset");
+    }
+    return id;
+}
+
+[[nodiscard]] std::vector<NodeTypeDefinition> ParseNodeTypes(
+    const Json& root, const PuzzleJsonSource& source,
+    const std::unordered_set<TileId>& knownTileIds) {
+    RequireExactKeys(root, {"schema_version", "node_types"}, source, "");
+    ValidateSchemaVersion(root, source);
+
+    const Json& types = root.at("node_types");
+    RequireArray(types, source, "/node_types");
+    if (types.empty() || types.size() > kMaximumNodeTypes) {
+        ThrowDataError(source.filename, "/node_types",
+                       "node_types must contain between 1 and 512 definitions");
+    }
+
+    std::unordered_set<std::string> typeIds;
+    std::vector<NodeTypeDefinition> result;
+    result.reserve(types.size());
+    for (std::size_t typeIndex = 0; typeIndex < types.size(); ++typeIndex) {
+        const std::string pointer = IndexPointer("/node_types", typeIndex);
+        const Json& typeJson = types[typeIndex];
+        RequireExactKeys(typeJson,
+                         {"type_id", "display_name", "stamp", "anchor"},
+                         source, pointer);
+
+        NodeTypeDefinition type;
+        const std::string typeIdPointer = ChildPointer(pointer, "type_id");
+        type.typeId = ReadId(typeJson.at("type_id"), source, typeIdPointer);
+        if (!typeIds.insert(type.typeId).second) {
+            ThrowDataError(source.filename, typeIdPointer,
+                           "duplicate node type ID");
+        }
+        type.displayName =
+            ReadDisplayText(typeJson.at("display_name"), source,
+                            ChildPointer(pointer, "display_name"));
+
+        const std::string stampPointer = ChildPointer(pointer, "stamp");
+        const Json& stamp = typeJson.at("stamp");
+        RequireArray(stamp, source, stampPointer);
+        if (stamp.empty() || stamp.size() > kMaximumStampRows) {
+            ThrowDataError(source.filename, stampPointer,
+                           "stamp must contain between 1 and 45 rows");
+        }
+        if (!stamp.front().is_array()) {
+            ThrowDataError(source.filename, IndexPointer(stampPointer, 0),
+                           "stamp rows must be arrays");
+        }
+        const std::size_t columns = stamp.front().size();
+        if (columns == 0 || columns > kMaximumStampColumns ||
+            columns * stamp.size() > kMaximumStampCells) {
+            ThrowDataError(source.filename, stampPointer,
+                           "stamp must be rectangular, non-empty, at most 80x45, and contain at most 3600 cells");
+        }
+
+        type.stamp.columns = columns;
+        type.stamp.rows = stamp.size();
+        type.stamp.cells.reserve(columns * stamp.size());
+        type.stamp.occupiedMask.reserve(columns * stamp.size());
+        std::size_t occupiedCount = 0;
+        for (std::size_t row = 0; row < stamp.size(); ++row) {
+            const std::string rowPointer = IndexPointer(stampPointer, row);
+            if (!stamp[row].is_array()) {
+                ThrowDataError(source.filename, rowPointer,
+                               "stamp rows must be arrays");
+            }
+            if (stamp[row].size() != columns) {
+                ThrowDataError(source.filename, rowPointer,
+                               "stamp rows must form a rectangle");
+            }
+            for (std::size_t column = 0; column < columns; ++column) {
+                const std::string cellPointer = IndexPointer(rowPointer, column);
+                const TileId id =
+                    ReadTileId(stamp[row][column], knownTileIds, source, cellPointer);
+                type.stamp.cells.push_back(id);
+                const std::uint8_t occupied = id == 0 ? 0u : 1u;
+                type.stamp.occupiedMask.push_back(occupied);
+                occupiedCount += occupied;
+            }
+        }
+        if (occupiedCount == 0) {
+            ThrowDataError(source.filename, stampPointer,
+                           "stamp must contain at least one occupied tile");
+        }
+
+        const std::string anchorPointer = ChildPointer(pointer, "anchor");
+        const Json& anchor = typeJson.at("anchor");
+        RequireExactKeys(anchor, {"column", "row"}, source, anchorPointer);
+        type.stamp.anchor.column =
+            ReadSize(anchor.at("column"), columns, source,
+                     ChildPointer(anchorPointer, "column"));
+        type.stamp.anchor.row =
+            ReadSize(anchor.at("row"), type.stamp.rows, source,
+                     ChildPointer(anchorPointer, "row"));
+        if (type.stamp.anchor.column >= columns ||
+            type.stamp.anchor.row >= type.stamp.rows) {
+            ThrowDataError(source.filename, anchorPointer,
+                           "anchor must be inside the stamp");
+        }
+        if (!type.stamp.IsOccupied(type.stamp.anchor.column,
+                                   type.stamp.anchor.row)) {
+            ThrowDataError(source.filename, anchorPointer,
+                           "anchor must select an occupied stamp cell");
+        }
+        result.push_back(std::move(type));
+    }
+    return result;
+}
+
+[[nodiscard]] TileGrid ParseFixedGrid(
+    const Json& matrix, const PuzzleJsonSource& source,
+    const std::string_view pointer,
+    const std::unordered_set<TileId>& knownTileIds) {
+    RequireArray(matrix, source, pointer);
+    if (matrix.size() != kPuzzleGridRows) {
+        ThrowDataError(source.filename, pointer,
+                       "tile layer must contain exactly 45 rows");
+    }
+
+    TileGrid result;
+    result.columns = kPuzzleGridColumns;
+    result.rows = kPuzzleGridRows;
+    result.cells.reserve(kPuzzleGridColumns * kPuzzleGridRows);
+    for (std::size_t row = 0; row < matrix.size(); ++row) {
+        const std::string rowPointer = IndexPointer(pointer, row);
+        if (!matrix[row].is_array()) {
+            ThrowDataError(source.filename, rowPointer,
+                           "tile layer rows must be arrays");
+        }
+        if (matrix[row].size() != kPuzzleGridColumns) {
+            ThrowDataError(source.filename, rowPointer,
+                           "tile layer rows must contain exactly 80 cells");
+        }
+        for (std::size_t column = 0; column < matrix[row].size(); ++column) {
+            const std::string cellPointer = IndexPointer(rowPointer, column);
+            result.cells.push_back(ReadTileId(matrix[row][column], knownTileIds,
+                                              source, cellPointer));
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] bool IsConnectionBlockedByTiles(const Vec2 start, const Vec2 end,
+                                              const TileGrid& obstacles,
+                                              const float clearance) noexcept {
+    const float expandedSize =
+        static_cast<float>(kPuzzleTileSize) + clearance * 2.0f;
+    for (std::size_t row = 0; row < obstacles.rows; ++row) {
+        for (std::size_t column = 0; column < obstacles.columns; ++column) {
+            if (obstacles.cells[row * obstacles.columns + column] == 0) {
+                continue;
+            }
+            const Vec2 center{
+                (static_cast<float>(column) + 0.5f) *
+                    static_cast<float>(kPuzzleTileSize),
+                (static_cast<float>(row) + 0.5f) *
+                    static_cast<float>(kPuzzleTileSize),
+            };
+            if (SegmentIntersectsRectangle(start, end, center, expandedSize,
+                                           expandedSize)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] float ReadNumberInRange(const Json& value, const float minimum,
+                                      const float maximum,
+                                      const PuzzleJsonSource& source,
+                                      const std::string_view pointer,
+                                      const bool includeMinimum = true,
+                                      const bool includeMaximum = true) {
+    const float parsed = ReadFiniteNumber(value, source, pointer);
+    const bool below = includeMinimum ? parsed < minimum : parsed <= minimum;
+    const bool above = includeMaximum ? parsed > maximum : parsed >= maximum;
+    if (below || above) {
+        ThrowDataError(source.filename, pointer,
+                       "number is outside the supported range");
+    }
+    return parsed;
+}
+
+struct ParsedNodeMetadata final {
+    std::string pointer;
+};
+
+[[nodiscard]] PuzzleDefinition ParseLevel(
+    const Json& root, const PuzzleJsonSource& source,
+    const std::unordered_set<TileId>& knownTileIds,
+    const std::vector<NodeTypeDefinition>& nodeTypes,
+    const std::unordered_map<std::string, std::size_t>& nodeTypeIndices) {
+    RequireExactKeys(root,
+                     {"schema_version", "id", "title", "background_color", "rules",
+                      "layers", "nodes", "connections"},
+                     source, "");
+    ValidateSchemaVersion(root, source);
+
+    PuzzleDefinition puzzle;
+    puzzle.id = ReadId(root.at("id"), source, "/id");
+    puzzle.title = ReadDisplayText(root.at("title"), source, "/title");
+    puzzle.backgroundColor =
+        ReadColor(root.at("background_color"), source, "/background_color");
+
+    const Json& rules = root.at("rules");
+    RequireExactKeys(rules,
+                     {"total_length", "minimum_slack_ratio",
+                      "show_target_connections", "vessel"},
+                     source, "/rules");
+    puzzle.totalLength = ReadNumberInRange(
+        rules.at("total_length"), 0.0f, kMaximumTotalLength, source,
+        "/rules/total_length", false, true);
+    puzzle.minimumSlackRatio = ReadNumberInRange(
+        rules.at("minimum_slack_ratio"), 1.0f, kMaximumSlackRatio, source,
+        "/rules/minimum_slack_ratio");
+    puzzle.showTargetConnections =
+        ReadBoolean(rules.at("show_target_connections"), source,
+                    "/rules/show_target_connections");
+
+    const Json& vessel = rules.at("vessel");
+    RequireExactKeys(vessel,
+                     {"color", "base_width", "tip_width", "width_variation"},
+                     source, "/rules/vessel");
+    puzzle.vesselColor =
+        ReadColor(vessel.at("color"), source, "/rules/vessel/color");
+    puzzle.baseWidth = ReadNumberInRange(
+        vessel.at("base_width"), 0.0f, kMaximumVesselWidth, source,
+        "/rules/vessel/base_width", false, true);
+    puzzle.tipWidth = ReadNumberInRange(
+        vessel.at("tip_width"), 0.0f, kMaximumVesselWidth, source,
+        "/rules/vessel/tip_width", false, true);
+    if (puzzle.baseWidth < puzzle.tipWidth) {
+        ThrowDataError(source.filename, "/rules/vessel/base_width",
+                       "base_width must be greater than or equal to tip_width");
+    }
+    puzzle.widthVariation = ReadNumberInRange(
+        vessel.at("width_variation"), 0.0f, 1.0f, source,
+        "/rules/vessel/width_variation", true, false);
+
+    const Json& layers = root.at("layers");
+    RequireExactKeys(layers, {"background", "obstacles"}, source, "/layers");
+    puzzle.backgroundTiles = ParseFixedGrid(
+        layers.at("background"), source, "/layers/background", knownTileIds);
+    puzzle.obstacleTiles = ParseFixedGrid(
+        layers.at("obstacles"), source, "/layers/obstacles", knownTileIds);
+
+    const Json& nodes = root.at("nodes");
+    RequireArray(nodes, source, "/nodes");
+    if (nodes.empty() || nodes.size() > kMaximumNodes) {
+        ThrowDataError(source.filename, "/nodes",
+                       "nodes must contain between 1 and 512 definitions");
+    }
+
     std::unordered_map<std::string, std::size_t> nodeIndices;
-    std::vector<std::size_t> nodeLineNumbers;
-    std::vector<RawConnection> rawConnections;
-    std::unordered_set<std::string> obstacleIds;
-};
+    nodeIndices.reserve(nodes.size());
+    std::vector<ParsedNodeMetadata> nodeMetadata;
+    nodeMetadata.reserve(nodes.size());
+    std::vector<std::size_t> occupiedOwners(
+        kPuzzleGridColumns * kPuzzleGridRows,
+        (std::numeric_limits<std::size_t>::max)());
+    puzzle.nodes.reserve(nodes.size());
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        const std::string pointer = IndexPointer("/nodes", index);
+        const Json& nodeJson = nodes[index];
+        RequireExactKeys(nodeJson,
+                         {"id", "type_id", "column", "row", "is_root", "is_goal",
+                          "max_incoming", "max_outgoing"},
+                         source, pointer);
 
-[[nodiscard]] bool CirclesOverlap(const Vec2 leftCenter, const float leftRadius,
-                                  const Vec2 rightCenter, const float rightRadius) noexcept {
-    const double deltaX = static_cast<double>(leftCenter.x) - rightCenter.x;
-    const double deltaY = static_cast<double>(leftCenter.y) - rightCenter.y;
-    const double combinedRadius = static_cast<double>(leftRadius) + rightRadius;
-    return deltaX * deltaX + deltaY * deltaY <= combinedRadius * combinedRadius;
-}
-
-void ValidateNodeInsideCanvas(const NodeDefinition& node, const std::size_t lineNumber) {
-    if (node.position.x - node.radius < 0.0f ||
-        node.position.y - node.radius < 0.0f ||
-        node.position.x + node.radius > kCanvasWidth ||
-        node.position.y + node.radius > kCanvasHeight) {
-        ThrowFieldError(kNodesCatalogName, lineNumber, "radius", kNodesHeader,
-                        "node circle must fit completely inside the 1280x720 canvas");
-    }
-}
-
-void ValidateObstacleInsideCanvas(const ObstacleDefinition& obstacle,
-                                  const std::size_t lineNumber) {
-    if (obstacle.shape == ObstacleShape::Rectangle) {
-        const float halfWidth = obstacle.width * 0.5f;
-        const float halfHeight = obstacle.height * 0.5f;
-        if (obstacle.center.x - halfWidth < 0.0f ||
-            obstacle.center.y - halfHeight < 0.0f ||
-            obstacle.center.x + halfWidth > kCanvasWidth ||
-            obstacle.center.y + halfHeight > kCanvasHeight) {
-            ThrowFieldError(kObstaclesCatalogName, lineNumber, "width",
-                            kObstaclesHeader,
-                            "rectangle must fit completely inside the 1280x720 canvas");
-        }
-        return;
-    }
-    if (obstacle.center.x - obstacle.radius < 0.0f ||
-        obstacle.center.y - obstacle.radius < 0.0f ||
-        obstacle.center.x + obstacle.radius > kCanvasWidth ||
-        obstacle.center.y + obstacle.radius > kCanvasHeight) {
-        ThrowFieldError(kObstaclesCatalogName, lineNumber, "radius",
-                        kObstaclesHeader,
-                        "circle must fit completely inside the 1280x720 canvas");
-    }
-}
-
-[[nodiscard]] std::vector<WorkingPuzzle> ParseLevels(const data::CsvDocument& document) {
-    ValidateHeader(document, kLevelsHeader, kLevelsCatalogName);
-    if (document.records.empty()) {
-        throw PuzzleDataError("levels.csv must contain at least one puzzle");
-    }
-
-    std::vector<WorkingPuzzle> puzzles;
-    puzzles.reserve(document.records.size());
-    std::unordered_set<std::string> puzzleIds;
-    for (const data::CsvRecord& record : document.records) {
-        WorkingPuzzle working;
-        PuzzleDefinition& puzzle = working.definition;
-        puzzle.id = ParseDefinitionId(record.fields[0], kLevelsCatalogName,
-                                      record.lineNumber, kLevelsHeader[0], kLevelsHeader);
-        if (!puzzleIds.insert(puzzle.id).second) {
-            ThrowFieldError(kLevelsCatalogName, record.lineNumber, kLevelsHeader[0],
-                            kLevelsHeader, "duplicate puzzle ID");
-        }
-        puzzle.title = ParseAsciiText(record.fields[1], kLevelsCatalogName,
-                                      record.lineNumber, kLevelsHeader[1], kLevelsHeader);
-        puzzle.startNodeId = ParseDefinitionId(record.fields[2], kLevelsCatalogName,
-                                               record.lineNumber, kLevelsHeader[2],
-                                               kLevelsHeader);
-        puzzle.totalLength = ParseFloat(record.fields[3], kLevelsCatalogName,
-                                        record.lineNumber, kLevelsHeader[3], kLevelsHeader);
-        ValidatePositive(puzzle.totalLength, kLevelsCatalogName, record.lineNumber,
-                         kLevelsHeader[3], kLevelsHeader);
-        if (puzzle.totalLength > kMaximumTotalLength) {
-            ThrowFieldError(kLevelsCatalogName, record.lineNumber, kLevelsHeader[3],
-                            kLevelsHeader, "value must not exceed 100000 pixels");
-        }
-        puzzle.minimumSlackRatio =
-            ParseFloat(record.fields[4], kLevelsCatalogName, record.lineNumber,
-                       kLevelsHeader[4], kLevelsHeader);
-        if (puzzle.minimumSlackRatio < 1.0f ||
-            puzzle.minimumSlackRatio > kMaximumSlackRatio) {
-            ThrowFieldError(kLevelsCatalogName, record.lineNumber, kLevelsHeader[4],
-                            kLevelsHeader, "value must be in the range [1, 4]");
-        }
-        puzzle.backgroundColor = ParseColor(record.fields[5], kLevelsCatalogName,
-                                            record.lineNumber, kLevelsHeader[5],
-                                            kLevelsHeader);
-        puzzle.showTargetConnections =
-            ParseBoolean(record.fields[6], kLevelsCatalogName, record.lineNumber,
-                         kLevelsHeader[6], kLevelsHeader);
-        puzzle.vesselColor = ParseColor(record.fields[7], kLevelsCatalogName,
-                                        record.lineNumber, kLevelsHeader[7], kLevelsHeader);
-        puzzle.baseWidth = ParseFloat(record.fields[8], kLevelsCatalogName,
-                                      record.lineNumber, kLevelsHeader[8], kLevelsHeader);
-        puzzle.tipWidth = ParseFloat(record.fields[9], kLevelsCatalogName,
-                                     record.lineNumber, kLevelsHeader[9], kLevelsHeader);
-        ValidatePositive(puzzle.baseWidth, kLevelsCatalogName, record.lineNumber,
-                         kLevelsHeader[8], kLevelsHeader);
-        ValidatePositive(puzzle.tipWidth, kLevelsCatalogName, record.lineNumber,
-                         kLevelsHeader[9], kLevelsHeader);
-        if (puzzle.baseWidth > kMaximumVesselWidth ||
-            puzzle.tipWidth > kMaximumVesselWidth) {
-            ThrowFieldError(kLevelsCatalogName, record.lineNumber, kLevelsHeader[8],
-                            kLevelsHeader, "vessel widths must not exceed 256 pixels");
-        }
-        if (puzzle.baseWidth < puzzle.tipWidth) {
-            ThrowFieldError(kLevelsCatalogName, record.lineNumber, kLevelsHeader[8],
-                            kLevelsHeader,
-                            "base_width must be greater than or equal to tip_width");
-        }
-        puzzle.widthVariation =
-            ParseFloat(record.fields[10], kLevelsCatalogName, record.lineNumber,
-                       kLevelsHeader[10], kLevelsHeader);
-        if (puzzle.widthVariation < 0.0f || puzzle.widthVariation >= 1.0f) {
-            ThrowFieldError(kLevelsCatalogName, record.lineNumber, kLevelsHeader[10],
-                            kLevelsHeader, "value must be in the range [0, 1)");
-        }
-        working.levelLineNumber = record.lineNumber;
-        puzzles.push_back(std::move(working));
-    }
-    return puzzles;
-}
-
-[[nodiscard]] std::unordered_map<std::string, std::size_t> BuildPuzzleIndex(
-    const std::vector<WorkingPuzzle>& puzzles) {
-    std::unordered_map<std::string, std::size_t> indices;
-    indices.reserve(puzzles.size());
-    for (std::size_t index = 0; index < puzzles.size(); ++index) {
-        indices.emplace(puzzles[index].definition.id, index);
-    }
-    return indices;
-}
-
-[[nodiscard]] WorkingPuzzle& RequirePuzzle(
-    std::vector<WorkingPuzzle>& puzzles,
-    const std::unordered_map<std::string, std::size_t>& puzzleIndices,
-    const std::string& puzzleId, const std::string_view catalogName,
-    const std::size_t lineNumber, const auto& header) {
-    const auto found = puzzleIndices.find(puzzleId);
-    if (found == puzzleIndices.end()) {
-        ThrowFieldError(catalogName, lineNumber, header[0], header,
-                        "referenced puzzle ID does not exist");
-    }
-    return puzzles[found->second];
-}
-
-void ParseNodes(const data::CsvDocument& document, std::vector<WorkingPuzzle>& puzzles,
-                const std::unordered_map<std::string, std::size_t>& puzzleIndices) {
-    ValidateHeader(document, kNodesHeader, kNodesCatalogName);
-    for (const data::CsvRecord& record : document.records) {
-        const std::string puzzleId = ParseDefinitionId(
-            record.fields[0], kNodesCatalogName, record.lineNumber, kNodesHeader[0],
-            kNodesHeader);
-        WorkingPuzzle& puzzle = RequirePuzzle(puzzles, puzzleIndices, puzzleId,
-                                              kNodesCatalogName, record.lineNumber,
-                                              kNodesHeader);
         NodeDefinition node;
-        node.id = ParseDefinitionId(record.fields[1], kNodesCatalogName,
-                                    record.lineNumber, kNodesHeader[1], kNodesHeader);
-        if (puzzle.nodeIndices.contains(node.id)) {
-            ThrowFieldError(kNodesCatalogName, record.lineNumber, kNodesHeader[1],
-                            kNodesHeader, "duplicate node ID within puzzle");
+        const std::string idPointer = ChildPointer(pointer, "id");
+        node.id = ReadId(nodeJson.at("id"), source, idPointer);
+        if (!nodeIndices.emplace(node.id, index).second) {
+            ThrowDataError(source.filename, idPointer, "duplicate node ID");
         }
-        node.label = ParseAsciiText(record.fields[2], kNodesCatalogName,
-                                    record.lineNumber, kNodesHeader[2], kNodesHeader);
-        node.position.x = ParseFloat(record.fields[3], kNodesCatalogName,
-                                     record.lineNumber, kNodesHeader[3], kNodesHeader);
-        node.position.y = ParseFloat(record.fields[4], kNodesCatalogName,
-                                     record.lineNumber, kNodesHeader[4], kNodesHeader);
-        node.radius = ParseFloat(record.fields[5], kNodesCatalogName,
-                                 record.lineNumber, kNodesHeader[5], kNodesHeader);
-        ValidatePositive(node.radius, kNodesCatalogName, record.lineNumber,
-                         kNodesHeader[5], kNodesHeader);
-        node.color = ParseColor(record.fields[6], kNodesCatalogName,
-                                record.lineNumber, kNodesHeader[6], kNodesHeader);
-        ValidateNodeInsideCanvas(node, record.lineNumber);
 
-        const std::size_t nodeIndex = puzzle.definition.nodes.size();
-        puzzle.nodeIndices.emplace(node.id, nodeIndex);
-        puzzle.definition.nodes.push_back(std::move(node));
-        puzzle.nodeLineNumbers.push_back(record.lineNumber);
-    }
-
-    for (WorkingPuzzle& puzzle : puzzles) {
-        if (puzzle.definition.nodes.size() < 2) {
-            ThrowFieldError(kLevelsCatalogName, puzzle.levelLineNumber, kLevelsHeader[0],
-                            kLevelsHeader, "puzzle must define at least two nodes");
+        const std::string typePointer = ChildPointer(pointer, "type_id");
+        node.typeId = ReadId(nodeJson.at("type_id"), source, typePointer);
+        const auto typeFound = nodeTypeIndices.find(node.typeId);
+        if (typeFound == nodeTypeIndices.end()) {
+            ThrowDataError(source.filename, typePointer,
+                           "node type ID is not declared by node_types.json");
         }
-        const auto start = puzzle.nodeIndices.find(puzzle.definition.startNodeId);
-        if (start == puzzle.nodeIndices.end()) {
-            ThrowFieldError(kLevelsCatalogName, puzzle.levelLineNumber,
-                            kLevelsHeader[2], kLevelsHeader,
-                            "start node ID does not exist in nodes.csv");
-        }
-        puzzle.definition.startNodeIndex = start->second;
+        node.typeIndex = typeFound->second;
+        node.stamp = nodeTypes[node.typeIndex].stamp;
+        node.displayName = nodeTypes[node.typeIndex].displayName;
 
-        for (std::size_t right = 0; right < puzzle.definition.nodes.size(); ++right) {
-            for (std::size_t left = 0; left < right; ++left) {
-                const NodeDefinition& leftNode = puzzle.definition.nodes[left];
-                const NodeDefinition& rightNode = puzzle.definition.nodes[right];
-                if (CirclesOverlap(leftNode.position, leftNode.radius,
-                                   rightNode.position, rightNode.radius)) {
-                    ThrowFieldError(kNodesCatalogName, puzzle.nodeLineNumbers[right],
-                                    kNodesHeader[5], kNodesHeader,
-                                    "node circle overlaps node '" + leftNode.id + "'");
+        node.origin.column =
+            ReadSize(nodeJson.at("column"), kPuzzleGridColumns - 1, source,
+                     ChildPointer(pointer, "column"));
+        node.origin.row =
+            ReadSize(nodeJson.at("row"), kPuzzleGridRows - 1, source,
+                     ChildPointer(pointer, "row"));
+        node.isRoot = ReadBoolean(nodeJson.at("is_root"), source,
+                                  ChildPointer(pointer, "is_root"));
+        node.isGoal = ReadBoolean(nodeJson.at("is_goal"), source,
+                                  ChildPointer(pointer, "is_goal"));
+        node.maxIncoming =
+            ReadSize(nodeJson.at("max_incoming"), kMaximumNodeCapacity, source,
+                     ChildPointer(pointer, "max_incoming"));
+        node.maxOutgoing =
+            ReadSize(nodeJson.at("max_outgoing"), kMaximumNodeCapacity, source,
+                     ChildPointer(pointer, "max_outgoing"));
+
+        std::size_t minimumColumn = kPuzzleGridColumns;
+        std::size_t minimumRow = kPuzzleGridRows;
+        std::size_t maximumColumn = 0;
+        std::size_t maximumRow = 0;
+        for (std::size_t localRow = 0; localRow < node.stamp.rows; ++localRow) {
+            for (std::size_t localColumn = 0; localColumn < node.stamp.columns;
+                 ++localColumn) {
+                if (!node.stamp.IsOccupied(localColumn, localRow)) {
+                    continue;
                 }
+                const std::size_t column = node.origin.column + localColumn;
+                const std::size_t row = node.origin.row + localRow;
+                if (column >= kPuzzleGridColumns || row >= kPuzzleGridRows) {
+                    ThrowDataError(source.filename, ChildPointer(pointer, "column"),
+                                   "occupied node stamp cells must fit inside the 80x45 canvas");
+                }
+                const std::size_t cellIndex = row * kPuzzleGridColumns + column;
+                if (puzzle.obstacleTiles.cells[cellIndex] != 0) {
+                    ThrowDataError(source.filename, pointer,
+                                   "node stamp overlaps a solid obstacle tile");
+                }
+                if (occupiedOwners[cellIndex] !=
+                    (std::numeric_limits<std::size_t>::max)()) {
+                    const std::size_t otherIndex = occupiedOwners[cellIndex];
+                    ThrowDataError(source.filename, pointer,
+                                   "node stamp overlaps node '" +
+                                       puzzle.nodes[otherIndex].id + "'");
+                }
+                occupiedOwners[cellIndex] = index;
+                minimumColumn = (std::min)(minimumColumn, column);
+                minimumRow = (std::min)(minimumRow, row);
+                maximumColumn = (std::max)(maximumColumn, column);
+                maximumRow = (std::max)(maximumRow, row);
             }
         }
+        node.bounds = {
+            minimumColumn,
+            minimumRow,
+            maximumColumn - minimumColumn + 1,
+            maximumRow - minimumRow + 1,
+        };
+        const std::size_t anchorColumn =
+            node.origin.column + node.stamp.anchor.column;
+        const std::size_t anchorRow = node.origin.row + node.stamp.anchor.row;
+        node.anchorPosition = {
+            (static_cast<float>(anchorColumn) + 0.5f) *
+                static_cast<float>(kPuzzleTileSize),
+            (static_cast<float>(anchorRow) + 0.5f) *
+                static_cast<float>(kPuzzleTileSize),
+        };
+        if (node.isRoot) {
+            puzzle.rootNodeIndices.push_back(index);
+        }
+        if (node.isGoal) {
+            puzzle.goalNodeIndices.push_back(index);
+        }
+        puzzle.nodes.push_back(std::move(node));
+        nodeMetadata.push_back({pointer});
     }
-}
+    if (puzzle.rootNodeIndices.empty()) {
+        ThrowDataError(source.filename, "/nodes",
+                       "level must contain at least one root node");
+    }
+    if (puzzle.goalNodeIndices.empty()) {
+        ThrowDataError(source.filename, "/nodes",
+                       "level must contain at least one goal node");
+    }
+    const Json& connections = root.at("connections");
+    RequireArray(connections, source, "/connections");
+    if (connections.size() > kMaximumConnections) {
+        ThrowDataError(source.filename, "/connections",
+                       "connections must not contain more than 4096 definitions");
+    }
+    std::unordered_set<std::string> connectionIds;
+    std::unordered_set<std::string> directedPairs;
+    std::vector<std::vector<std::size_t>> adjacency(puzzle.nodes.size());
+    std::vector<std::size_t> indegrees(puzzle.nodes.size(), 0);
+    puzzle.connections.reserve(connections.size());
+    for (std::size_t index = 0; index < connections.size(); ++index) {
+        const std::string pointer = IndexPointer("/connections", index);
+        const Json& connectionJson = connections[index];
+        RequireExactKeys(
+            connectionJson,
+            {"id", "from", "to", "point_count", "thickness_scale",
+             "follow_delay_seconds", "initial_direction_degrees"},
+            source, pointer);
 
-void ParseObstacles(const data::CsvDocument& document,
-                    std::vector<WorkingPuzzle>& puzzles,
-                    const std::unordered_map<std::string, std::size_t>& puzzleIndices) {
-    ValidateHeader(document, kObstaclesHeader, kObstaclesCatalogName);
-    for (const data::CsvRecord& record : document.records) {
-        const std::string puzzleId = ParseDefinitionId(
-            record.fields[0], kObstaclesCatalogName, record.lineNumber,
-            kObstaclesHeader[0], kObstaclesHeader);
-        WorkingPuzzle& puzzle = RequirePuzzle(puzzles, puzzleIndices, puzzleId,
-                                              kObstaclesCatalogName, record.lineNumber,
-                                              kObstaclesHeader);
-        ObstacleDefinition obstacle;
-        obstacle.id = ParseDefinitionId(record.fields[1], kObstaclesCatalogName,
-                                        record.lineNumber, kObstaclesHeader[1],
-                                        kObstaclesHeader);
-        if (!puzzle.obstacleIds.insert(obstacle.id).second) {
-            ThrowFieldError(kObstaclesCatalogName, record.lineNumber,
-                            kObstaclesHeader[1], kObstaclesHeader,
-                            "duplicate obstacle ID within puzzle");
+        ConnectionDefinition connection;
+        const std::string idPointer = ChildPointer(pointer, "id");
+        connection.id = ReadId(connectionJson.at("id"), source, idPointer);
+        if (!connectionIds.insert(connection.id).second) {
+            ThrowDataError(source.filename, idPointer,
+                           "duplicate connection ID");
         }
-        if (record.fields[2] == "rectangle") {
-            obstacle.shape = ObstacleShape::Rectangle;
-        } else if (record.fields[2] == "circle") {
-            obstacle.shape = ObstacleShape::Circle;
-        } else {
-            ThrowFieldError(kObstaclesCatalogName, record.lineNumber,
-                            kObstaclesHeader[2], kObstaclesHeader,
-                            "expected exactly 'rectangle' or 'circle'");
+        const std::string fromPointer = ChildPointer(pointer, "from");
+        connection.fromNodeId =
+            ReadId(connectionJson.at("from"), source, fromPointer);
+        const auto fromFound = nodeIndices.find(connection.fromNodeId);
+        if (fromFound == nodeIndices.end()) {
+            ThrowDataError(source.filename, fromPointer,
+                           "connection source node does not exist");
         }
-        obstacle.center.x = ParseFloat(record.fields[3], kObstaclesCatalogName,
-                                       record.lineNumber, kObstaclesHeader[3],
-                                       kObstaclesHeader);
-        obstacle.center.y = ParseFloat(record.fields[4], kObstaclesCatalogName,
-                                       record.lineNumber, kObstaclesHeader[4],
-                                       kObstaclesHeader);
-        if (obstacle.shape == ObstacleShape::Rectangle) {
-            obstacle.width = ParseFloat(record.fields[5], kObstaclesCatalogName,
-                                        record.lineNumber, kObstaclesHeader[5],
-                                        kObstaclesHeader);
-            obstacle.height = ParseFloat(record.fields[6], kObstaclesCatalogName,
-                                         record.lineNumber, kObstaclesHeader[6],
-                                         kObstaclesHeader);
-            ValidatePositive(obstacle.width, kObstaclesCatalogName, record.lineNumber,
-                             kObstaclesHeader[5], kObstaclesHeader);
-            ValidatePositive(obstacle.height, kObstaclesCatalogName, record.lineNumber,
-                             kObstaclesHeader[6], kObstaclesHeader);
-            if (!record.fields[7].empty()) {
-                ThrowFieldError(kObstaclesCatalogName, record.lineNumber,
-                                kObstaclesHeader[7], kObstaclesHeader,
-                                "rectangle radius must be empty");
-            }
-        } else {
-            if (!record.fields[5].empty() || !record.fields[6].empty()) {
-                ThrowFieldError(kObstaclesCatalogName, record.lineNumber,
-                                !record.fields[5].empty() ? kObstaclesHeader[5]
-                                                          : kObstaclesHeader[6],
-                                kObstaclesHeader,
-                                "circle width and height must be empty");
-            }
-            obstacle.radius = ParseFloat(record.fields[7], kObstaclesCatalogName,
-                                         record.lineNumber, kObstaclesHeader[7],
-                                         kObstaclesHeader);
-            ValidatePositive(obstacle.radius, kObstaclesCatalogName, record.lineNumber,
-                             kObstaclesHeader[7], kObstaclesHeader);
-        }
-        obstacle.color = ParseColor(record.fields[8], kObstaclesCatalogName,
-                                    record.lineNumber, kObstaclesHeader[8],
-                                    kObstaclesHeader);
-        ValidateObstacleInsideCanvas(obstacle, record.lineNumber);
+        connection.fromNodeIndex = fromFound->second;
 
-        for (const NodeDefinition& node : puzzle.definition.nodes) {
-            const bool overlaps = obstacle.shape == ObstacleShape::Rectangle
-                                      ? CircleOverlapsRectangle(
-                                            node.position, node.radius, obstacle.center,
-                                            obstacle.width, obstacle.height)
-                                      : CirclesOverlap(node.position, node.radius,
-                                                       obstacle.center, obstacle.radius);
-            if (overlaps) {
-                ThrowFieldError(kObstaclesCatalogName, record.lineNumber,
-                                kObstaclesHeader[1], kObstaclesHeader,
-                                "obstacle overlaps node '" + node.id + "'");
-            }
+        const std::string toPointer = ChildPointer(pointer, "to");
+        connection.toNodeId = ReadId(connectionJson.at("to"), source, toPointer);
+        const auto toFound = nodeIndices.find(connection.toNodeId);
+        if (toFound == nodeIndices.end()) {
+            ThrowDataError(source.filename, toPointer,
+                           "connection target node does not exist");
         }
-        puzzle.definition.obstacles.push_back(std::move(obstacle));
-    }
-}
-
-void ParseConnections(const data::CsvDocument& document,
-                      std::vector<WorkingPuzzle>& puzzles,
-                      const std::unordered_map<std::string, std::size_t>& puzzleIndices) {
-    ValidateHeader(document, kConnectionsHeader, kConnectionsCatalogName);
-    for (const data::CsvRecord& record : document.records) {
-        const std::string puzzleId = ParseDefinitionId(
-            record.fields[0], kConnectionsCatalogName, record.lineNumber,
-            kConnectionsHeader[0], kConnectionsHeader);
-        WorkingPuzzle& puzzle = RequirePuzzle(puzzles, puzzleIndices, puzzleId,
-                                              kConnectionsCatalogName, record.lineNumber,
-                                              kConnectionsHeader);
-        RawConnection raw;
-        ConnectionDefinition& connection = raw.definition;
-        connection.fromNodeId = ParseDefinitionId(
-            record.fields[1], kConnectionsCatalogName, record.lineNumber,
-            kConnectionsHeader[1], kConnectionsHeader);
-        connection.toNodeId = ParseDefinitionId(
-            record.fields[2], kConnectionsCatalogName, record.lineNumber,
-            kConnectionsHeader[2], kConnectionsHeader);
-        const auto fromNode = puzzle.nodeIndices.find(connection.fromNodeId);
-        if (fromNode == puzzle.nodeIndices.end()) {
-            ThrowFieldError(kConnectionsCatalogName, record.lineNumber,
-                            kConnectionsHeader[1], kConnectionsHeader,
-                            "referenced from-node ID does not exist");
+        connection.toNodeIndex = toFound->second;
+        if (connection.fromNodeIndex == connection.toNodeIndex) {
+            ThrowDataError(source.filename, toPointer,
+                           "self-connections are not allowed");
         }
-        const auto toNode = puzzle.nodeIndices.find(connection.toNodeId);
-        if (toNode == puzzle.nodeIndices.end()) {
-            ThrowFieldError(kConnectionsCatalogName, record.lineNumber,
-                            kConnectionsHeader[2], kConnectionsHeader,
-                            "referenced to-node ID does not exist");
-        }
-        if (connection.fromNodeId == connection.toNodeId) {
-            ThrowFieldError(kConnectionsCatalogName, record.lineNumber,
-                            kConnectionsHeader[2], kConnectionsHeader,
-                            "connection must not link a node to itself");
-        }
-        connection.fromNodeIndex = fromNode->second;
-        connection.toNodeIndex = toNode->second;
-        connection.pointCount = ParseSize(record.fields[3], kConnectionsCatalogName,
-                                          record.lineNumber, kConnectionsHeader[3],
-                                          kConnectionsHeader);
-        if (connection.pointCount < kMinimumPointCount ||
-            connection.pointCount > kMaximumPointCount) {
-            ThrowFieldError(kConnectionsCatalogName, record.lineNumber,
-                            kConnectionsHeader[3], kConnectionsHeader,
-                            "point_count must be between 8 and 12 inclusive");
-        }
-        connection.thicknessScale =
-            ParseFloat(record.fields[4], kConnectionsCatalogName, record.lineNumber,
-                       kConnectionsHeader[4], kConnectionsHeader);
-        ValidatePositive(connection.thicknessScale, kConnectionsCatalogName,
-                         record.lineNumber, kConnectionsHeader[4], kConnectionsHeader);
-        if (connection.thicknessScale > kMaximumThicknessScale) {
-            ThrowFieldError(kConnectionsCatalogName, record.lineNumber,
-                            kConnectionsHeader[4], kConnectionsHeader,
-                            "thickness_scale must not exceed 8");
-        }
-        connection.followDelaySeconds =
-            ParseFloat(record.fields[5], kConnectionsCatalogName, record.lineNumber,
-                       kConnectionsHeader[5], kConnectionsHeader);
-        ValidateNonNegative(connection.followDelaySeconds, kConnectionsCatalogName,
-                            record.lineNumber, kConnectionsHeader[5],
-                            kConnectionsHeader);
-        if (connection.followDelaySeconds > kMaximumFollowDelaySeconds) {
-            ThrowFieldError(kConnectionsCatalogName, record.lineNumber,
-                            kConnectionsHeader[5], kConnectionsHeader,
-                            "follow_delay_seconds must not exceed 1 second");
-        }
-        connection.initialDirectionDegrees =
-            ParseFloat(record.fields[6], kConnectionsCatalogName, record.lineNumber,
-                       kConnectionsHeader[6], kConnectionsHeader);
-        if (connection.initialDirectionDegrees < -360.0f ||
-            connection.initialDirectionDegrees > 360.0f) {
-            ThrowFieldError(kConnectionsCatalogName, record.lineNumber,
-                            kConnectionsHeader[6], kConnectionsHeader,
-                            "initial_direction_degrees must be in the range [-360, 360]");
-        }
-        raw.lineNumber = record.lineNumber;
-        puzzle.rawConnections.push_back(std::move(raw));
-    }
-}
-
-void ValidateAndStoreConnections(WorkingPuzzle& puzzle) {
-    if (puzzle.rawConnections.empty()) {
-        ThrowFieldError(kLevelsCatalogName, puzzle.levelLineNumber, kLevelsHeader[0],
-                        kLevelsHeader, "puzzle must define at least one connection");
-    }
-
-    const std::size_t nodeCount = puzzle.definition.nodes.size();
-    // The CSV describes candidate routes. More than one edge may leave or enter
-    // a node, while PuzzleBoard still commits only one edge from its current tip.
-    std::vector<std::vector<std::size_t>> outgoing(nodeCount);
-    std::vector<std::size_t> incomingCounts(nodeCount, 0);
-    std::vector<bool> connectedNodes(nodeCount, false);
-    std::unordered_set<std::string> directedEdges;
-    directedEdges.reserve(puzzle.rawConnections.size());
-    for (std::size_t index = 0; index < puzzle.rawConnections.size(); ++index) {
-        const RawConnection& raw = puzzle.rawConnections[index];
-        const ConnectionDefinition& connection = raw.definition;
-        const std::string edgeKey = connection.fromNodeId + "\n" + connection.toNodeId;
-        if (!directedEdges.insert(edgeKey).second) {
-            ThrowFieldError(kConnectionsCatalogName, raw.lineNumber,
-                            kConnectionsHeader[2], kConnectionsHeader,
-                            "duplicate directed connection");
-        }
-        outgoing[connection.fromNodeIndex].push_back(index);
-        ++incomingCounts[connection.toNodeIndex];
-        connectedNodes[connection.fromNodeIndex] = true;
-        connectedNodes[connection.toNodeIndex] = true;
-    }
-
-    // Every authored edge must belong to the graph reachable from the start.
-    // Isolated nodes are allowed as harmless visual/authoring decoys.
-    std::vector<bool> reachableNodes(nodeCount, false);
-    std::vector<bool> reachableConnections(puzzle.rawConnections.size(), false);
-    std::vector<std::size_t> reachableFrontier;
-    reachableFrontier.reserve(nodeCount);
-    reachableNodes[puzzle.definition.startNodeIndex] = true;
-    reachableFrontier.push_back(puzzle.definition.startNodeIndex);
-    std::size_t reachableConnectionCount = 0;
-    for (std::size_t cursor = 0; cursor < reachableFrontier.size(); ++cursor) {
-        const std::size_t nodeIndex = reachableFrontier[cursor];
-        for (const std::size_t connectionIndex : outgoing[nodeIndex]) {
-            if (!reachableConnections[connectionIndex]) {
-                reachableConnections[connectionIndex] = true;
-                ++reachableConnectionCount;
-            }
-            const std::size_t toNodeIndex =
-                puzzle.rawConnections[connectionIndex].definition.toNodeIndex;
-            if (!reachableNodes[toNodeIndex]) {
-                reachableNodes[toNodeIndex] = true;
-                reachableFrontier.push_back(toNodeIndex);
-            }
-        }
-    }
-    if (reachableConnectionCount != puzzle.rawConnections.size()) {
-        for (std::size_t index = 0; index < reachableConnections.size(); ++index) {
-            if (!reachableConnections[index]) {
-                ThrowFieldError(kConnectionsCatalogName,
-                                puzzle.rawConnections[index].lineNumber,
-                                kConnectionsHeader[1], kConnectionsHeader,
-                                "every connection must be reachable from start_node_id");
-            }
-        }
-    }
-
-    // Kahn's algorithm gives a readable cycle check and an order that the
-    // shortest-path validation below can reuse. CSV edge order is not changed.
-    std::vector<std::size_t> remainingIncoming = incomingCounts;
-    std::vector<std::size_t> readyNodes;
-    readyNodes.reserve(nodeCount);
-    std::size_t connectedNodeCount = 0;
-    for (std::size_t nodeIndex = 0; nodeIndex < nodeCount; ++nodeIndex) {
-        if (!connectedNodes[nodeIndex]) {
-            continue;
-        }
-        ++connectedNodeCount;
-        if (remainingIncoming[nodeIndex] == 0) {
-            readyNodes.push_back(nodeIndex);
-        }
-    }
-
-    std::vector<std::size_t> topologicalNodes;
-    topologicalNodes.reserve(connectedNodeCount);
-    for (std::size_t cursor = 0; cursor < readyNodes.size(); ++cursor) {
-        const std::size_t nodeIndex = readyNodes[cursor];
-        topologicalNodes.push_back(nodeIndex);
-        for (const std::size_t connectionIndex : outgoing[nodeIndex]) {
-            const std::size_t toNodeIndex =
-                puzzle.rawConnections[connectionIndex].definition.toNodeIndex;
-            --remainingIncoming[toNodeIndex];
-            if (remainingIncoming[toNodeIndex] == 0) {
-                readyNodes.push_back(toNodeIndex);
-            }
-        }
-    }
-    if (topologicalNodes.size() != connectedNodeCount) {
-        ThrowFieldError(kConnectionsCatalogName,
-                        puzzle.rawConnections.front().lineNumber,
-                        kConnectionsHeader[0], kConnectionsHeader,
-                        "connection topology contains a directed cycle");
-    }
-
-    // One abstract terminal keeps completion data-driven without hard-coding a
-    // story role such as "brain" into the core.
-    std::size_t terminalNodeIndex = nodeCount;
-    std::size_t terminalCount = 0;
-    for (std::size_t nodeIndex = 0; nodeIndex < nodeCount; ++nodeIndex) {
-        if (connectedNodes[nodeIndex] && outgoing[nodeIndex].empty()) {
-            terminalNodeIndex = nodeIndex;
-            ++terminalCount;
-        }
-    }
-    if (terminalCount != 1) {
-        ThrowFieldError(kConnectionsCatalogName,
-                        puzzle.rawConnections.front().lineNumber,
-                        kConnectionsHeader[0], kConnectionsHeader,
-                        "connection topology must have exactly one reachable terminal node");
-    }
-
-    // Every selectable edge must be geometrically valid, even when another edge
-    // offers a shorter route through the puzzle.
-    std::vector<double> connectionLengths(puzzle.rawConnections.size(), 0.0);
-    for (std::size_t index = 0; index < puzzle.rawConnections.size(); ++index) {
-        const RawConnection& raw = puzzle.rawConnections[index];
-        const ConnectionDefinition& connection = raw.definition;
-        const NodeDefinition& from = puzzle.definition.nodes[connection.fromNodeIndex];
-        const NodeDefinition& to = puzzle.definition.nodes[connection.toNodeIndex];
-        const double deltaX = static_cast<double>(to.position.x) - from.position.x;
-        const double deltaY = static_cast<double>(to.position.y) - from.position.y;
-        connectionLengths[index] = std::sqrt(deltaX * deltaX + deltaY * deltaY);
-        if (!std::isfinite(connectionLengths[index])) {
-            ThrowFieldError(kConnectionsCatalogName,
-                            raw.lineNumber,
-                            kConnectionsHeader[2], kConnectionsHeader,
-                            "connection length must remain finite");
+        std::string pairKey = connection.fromNodeId;
+        pairKey.push_back('\0');
+        pairKey += connection.toNodeId;
+        if (!directedPairs.insert(std::move(pairKey)).second) {
+            ThrowDataError(source.filename, toPointer,
+                           "duplicate directed connection");
         }
 
-        const float maximumWidth =
-            (std::max)(puzzle.definition.baseWidth, puzzle.definition.tipWidth);
-        // Vertex snapping can move an edge by part of one pixel cell. Reserve a
-        // full cell so loader validation remains conservative at every angle.
+        connection.pointCount =
+            ReadSize(connectionJson.at("point_count"), 12, source,
+                     ChildPointer(pointer, "point_count"));
+        if (connection.pointCount < 8) {
+            ThrowDataError(source.filename, ChildPointer(pointer, "point_count"),
+                           "point_count must be in the range [8, 12]");
+        }
+        connection.thicknessScale = ReadNumberInRange(
+            connectionJson.at("thickness_scale"), 0.0f,
+            kMaximumThicknessScale, source,
+            ChildPointer(pointer, "thickness_scale"), false, true);
+        connection.followDelaySeconds = ReadNumberInRange(
+            connectionJson.at("follow_delay_seconds"), 0.0f,
+            kMaximumFollowDelaySeconds, source,
+            ChildPointer(pointer, "follow_delay_seconds"));
+        connection.initialDirectionDegrees = ReadNumberInRange(
+            connectionJson.at("initial_direction_degrees"),
+            -kMaximumDirectionDegrees, kMaximumDirectionDegrees, source,
+            ChildPointer(pointer, "initial_direction_degrees"));
+
+        const NodeDefinition& fromNode = puzzle.nodes[connection.fromNodeIndex];
+        const NodeDefinition& toNode = puzzle.nodes[connection.toNodeIndex];
+        if (fromNode.maxOutgoing == 0) {
+            ThrowDataError(source.filename, fromPointer,
+                           "connection source has zero outgoing capacity");
+        }
+        if (toNode.maxIncoming == 0) {
+            ThrowDataError(source.filename, toPointer,
+                           "connection target has zero incoming capacity");
+        }
+        if (fromNode.anchorPosition == toNode.anchorPosition) {
+            ThrowDataError(source.filename, toPointer,
+                           "connection endpoints must have different anchors");
+        }
         const float clearance =
-            maximumWidth * 0.5f * connection.thicknessScale +
-            kDefaultTentaclePixelGridSize;
-        if (IsConnectionBlocked(from.position, to.position,
-                                puzzle.definition.obstacles, clearance)) {
-            ThrowFieldError(kConnectionsCatalogName,
-                            raw.lineNumber,
-                            kConnectionsHeader[2], kConnectionsHeader,
-                            "required connection intersects an obstacle after vessel clearance");
+            (std::max)(puzzle.baseWidth, puzzle.tipWidth) *
+                connection.thicknessScale * 0.5f +
+            kObstacleClearancePadding;
+        if (IsConnectionBlockedByTiles(fromNode.anchorPosition,
+                                       toNode.anchorPosition,
+                                       puzzle.obstacleTiles, clearance)) {
+            ThrowDataError(source.filename, pointer,
+                           "connection is blocked by a solid obstacle tile");
+        }
+
+        adjacency[connection.fromNodeIndex].push_back(connection.toNodeIndex);
+        ++indegrees[connection.toNodeIndex];
+        puzzle.connections.push_back(std::move(connection));
+    }
+
+    std::vector<std::size_t> remainingIndegrees = indegrees;
+    std::queue<std::size_t> ready;
+    for (std::size_t index = 0; index < remainingIndegrees.size(); ++index) {
+        if (remainingIndegrees[index] == 0) {
+            ready.push(index);
         }
     }
-
-    // Candidate edges are alternatives, so only the cheapest complete route is
-    // required to fit the global budget. Unselected edges consume no length.
-    std::vector<double> shortestLengths(nodeCount,
-                                        (std::numeric_limits<double>::infinity)());
-    shortestLengths[puzzle.definition.startNodeIndex] = 0.0;
-    for (const std::size_t nodeIndex : topologicalNodes) {
-        for (const std::size_t connectionIndex : outgoing[nodeIndex]) {
-            const std::size_t toNodeIndex =
-                puzzle.rawConnections[connectionIndex].definition.toNodeIndex;
-            shortestLengths[toNodeIndex] =
-                (std::min)(shortestLengths[toNodeIndex],
-                           shortestLengths[nodeIndex] +
-                               connectionLengths[connectionIndex]);
+    std::size_t visitedByTopologicalSort = 0;
+    while (!ready.empty()) {
+        const std::size_t node = ready.front();
+        ready.pop();
+        ++visitedByTopologicalSort;
+        for (const std::size_t target : adjacency[node]) {
+            --remainingIndegrees[target];
+            if (remainingIndegrees[target] == 0) {
+                ready.push(target);
+            }
         }
     }
-    const double requiredLength =
-        shortestLengths[terminalNodeIndex] *
-        static_cast<double>(puzzle.definition.minimumSlackRatio);
-    if (!std::isfinite(requiredLength) ||
-        static_cast<double>(puzzle.definition.totalLength) < requiredLength) {
-        ThrowFieldError(kLevelsCatalogName, puzzle.levelLineNumber, kLevelsHeader[3],
-                        kLevelsHeader,
-                        "total_length must cover the shortest start-to-terminal path "
-                        "length multiplied by "
-                        "minimum_slack_ratio");
+    if (visitedByTopologicalSort != puzzle.nodes.size()) {
+        ThrowDataError(source.filename, "/connections",
+                       "candidate connection graph must be acyclic");
     }
 
-    puzzle.definition.connections.reserve(puzzle.rawConnections.size());
-    for (RawConnection& raw : puzzle.rawConnections) {
-        puzzle.definition.connections.push_back(std::move(raw.definition));
+    std::vector<bool> reachable(puzzle.nodes.size(), false);
+    std::queue<std::size_t> pending;
+    for (const std::size_t rootIndex : puzzle.rootNodeIndices) {
+        if (!reachable[rootIndex]) {
+            reachable[rootIndex] = true;
+            pending.push(rootIndex);
+        }
     }
+    while (!pending.empty()) {
+        const std::size_t node = pending.front();
+        pending.pop();
+        for (const std::size_t target : adjacency[node]) {
+            if (!reachable[target]) {
+                reachable[target] = true;
+                pending.push(target);
+            }
+        }
+    }
+    for (std::size_t index = 0; index < reachable.size(); ++index) {
+        if (!reachable[index]) {
+            ThrowDataError(source.filename, nodeMetadata[index].pointer,
+                           "node is not reachable from any root");
+        }
+    }
+    for (const std::size_t goalIndex : puzzle.goalNodeIndices) {
+        if (!reachable[goalIndex]) {
+            ThrowDataError(source.filename, nodeMetadata[goalIndex].pointer,
+                           "goal is not reachable from any root");
+        }
+    }
+    return puzzle;
 }
 
-[[nodiscard]] PuzzleCatalog BuildCatalog(const data::CsvDocument& levels,
-                                         const data::CsvDocument& nodes,
-                                         const data::CsvDocument& connections,
-                                         const data::CsvDocument& obstacles) {
-    std::vector<WorkingPuzzle> working = ParseLevels(levels);
-    const std::unordered_map<std::string, std::size_t> puzzleIndices =
-        BuildPuzzleIndex(working);
-    ParseNodes(nodes, working, puzzleIndices);
-    ParseObstacles(obstacles, working, puzzleIndices);
-    ParseConnections(connections, working, puzzleIndices);
-
-    std::vector<PuzzleDefinition> definitions;
-    definitions.reserve(working.size());
-    for (WorkingPuzzle& puzzle : working) {
-        ValidateAndStoreConnections(puzzle);
-        definitions.push_back(std::move(puzzle.definition));
-    }
-    return PuzzleCatalog{std::move(definitions)};
-}
-
-[[nodiscard]] const data::CsvDocument& RequireDocument(
-    const data::CsvParseResult& result, const std::string_view label) {
-    if (!result.document.has_value()) {
-        throw PuzzleDataError(std::string{label} + ": " + result.error);
-    }
-    return *result.document;
-}
-
-[[nodiscard]] std::filesystem::path ValidateCatalogPath(
-    const std::string& text, const std::filesystem::path& resourceRoot,
+[[nodiscard]] const PuzzleJsonSource& RequireSource(
+    const PuzzleJsonSource& source, const std::string_view expectedName,
+    const PuzzleJsonSource& catalogSource, const std::string_view pointer,
     const std::string_view label) {
-    if (text.empty() || text.find('\0') != std::string::npos ||
-        text.find('\r') != std::string::npos || text.find('\n') != std::string::npos ||
-        text.find(':') != std::string::npos) {
-        throw PuzzleDataError(std::string{label} +
-                              " catalog path must be a non-empty relative path");
+    if (NormalizeName(source.filename) != NormalizeName(expectedName)) {
+        ThrowDataError(catalogSource.filename, pointer,
+                       std::string{"source bundle is missing referenced "} +
+                           std::string{label} + " document '" +
+                           std::string{expectedName} + "'");
     }
-    const std::filesystem::path relative{text};
-    if (relative.has_root_path() || relative.has_root_name() || relative.filename().empty()) {
-        throw PuzzleDataError(std::string{label} +
-                              " catalog path must be relative to the resource root");
+    return source;
+}
+
+[[nodiscard]] PuzzleCatalog BuildCatalog(const PuzzleJsonSources& sources) {
+    if (sources.catalog.filename.empty()) {
+        ThrowDataError("<memory>", "/", "catalog source filename must not be empty");
+    }
+    const Json catalogRoot = ParseJsonDocument(sources.catalog);
+    const CatalogManifest manifest =
+        ParseCatalogManifest(catalogRoot, sources.catalog);
+
+    const std::string expectedTilesetName =
+        ResolveName(sources.catalog.filename, manifest.tilesetPath);
+    const std::string expectedNodeTypesName =
+        ResolveName(sources.catalog.filename, manifest.nodeTypesPath);
+    const PuzzleJsonSource& tilesetSource =
+        RequireSource(sources.tileset, expectedTilesetName, sources.catalog,
+                      "/tileset", "tileset");
+    const PuzzleJsonSource& nodeTypesSource =
+        RequireSource(sources.nodeTypes, expectedNodeTypesName, sources.catalog,
+                      "/node_types", "node-types");
+
+    std::unordered_map<std::string, const PuzzleJsonSource*> levelSources;
+    levelSources.reserve(sources.levels.size());
+    for (const PuzzleJsonSource& source : sources.levels) {
+        if (source.filename.empty()) {
+            ThrowDataError(sources.catalog.filename, "/levels",
+                           "level source filename must not be empty");
+        }
+        const std::string normalized = NormalizeName(source.filename);
+        if (!levelSources.emplace(normalized, &source).second) {
+            ThrowDataError(source.filename, "/",
+                           "duplicate level source filename in source bundle");
+        }
+    }
+    if (levelSources.size() != manifest.levelPaths.size()) {
+        ThrowDataError(sources.catalog.filename, "/levels",
+                       "source bundle level count does not match catalog levels");
+    }
+
+    std::unordered_set<TileId> knownTileIds;
+    TilesetDefinition tileset =
+        ParseTileset(ParseJsonDocument(tilesetSource), tilesetSource, knownTileIds);
+    std::vector<NodeTypeDefinition> nodeTypes = ParseNodeTypes(
+        ParseJsonDocument(nodeTypesSource), nodeTypesSource, knownTileIds);
+    std::unordered_map<std::string, std::size_t> nodeTypeIndices;
+    nodeTypeIndices.reserve(nodeTypes.size());
+    for (std::size_t index = 0; index < nodeTypes.size(); ++index) {
+        nodeTypeIndices.emplace(nodeTypes[index].typeId, index);
+    }
+
+    std::unordered_set<std::string> puzzleIds;
+    std::vector<PuzzleDefinition> puzzles;
+    puzzles.reserve(manifest.levelPaths.size());
+    for (std::size_t index = 0; index < manifest.levelPaths.size(); ++index) {
+        const std::string expectedName =
+            ResolveName(sources.catalog.filename, manifest.levelPaths[index]);
+        const auto found = levelSources.find(NormalizeName(expectedName));
+        if (found == levelSources.end()) {
+            ThrowDataError(sources.catalog.filename, IndexPointer("/levels", index),
+                           "source bundle is missing referenced level document '" +
+                               expectedName + "'");
+        }
+        const PuzzleJsonSource& levelSource = *found->second;
+        PuzzleDefinition puzzle = ParseLevel(
+            ParseJsonDocument(levelSource), levelSource, knownTileIds, nodeTypes,
+            nodeTypeIndices);
+        if (!puzzleIds.insert(puzzle.id).second) {
+            ThrowDataError(levelSource.filename, "/id", "duplicate level ID");
+        }
+        puzzles.push_back(std::move(puzzle));
+    }
+    return PuzzleCatalog{std::move(tileset), std::move(nodeTypes),
+                         std::move(puzzles)};
+}
+
+[[nodiscard]] std::string ReadFile(const std::filesystem::path& path,
+                                   const std::string_view diagnosticName) {
+    std::error_code statusError;
+    if (!std::filesystem::is_regular_file(path, statusError)) {
+        std::string detail = "referenced JSON document is not a regular file";
+        if (statusError) {
+            detail += ": " + statusError.message();
+        }
+        ThrowDataError(diagnosticName, "/", detail);
+    }
+    std::error_code sizeError;
+    const std::uintmax_t size = std::filesystem::file_size(path, sizeError);
+    if (sizeError) {
+        ThrowDataError(diagnosticName, "/",
+                       "failed to determine JSON document size: " +
+                           sizeError.message());
+    }
+    if (size > kMaximumJsonFileBytes) {
+        ThrowDataError(diagnosticName, "/",
+                       "JSON document exceeds the 16 MiB limit");
+    }
+
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.is_open()) {
+        ThrowDataError(diagnosticName, "/", "failed to open JSON document");
+    }
+    std::string contents{std::istreambuf_iterator<char>{stream},
+                         std::istreambuf_iterator<char>{}};
+    if (stream.bad()) {
+        ThrowDataError(diagnosticName, "/", "failed to read JSON document");
+    }
+    return contents;
+}
+
+[[nodiscard]] bool IsRegularFile(const std::filesystem::path& path,
+                                 std::string& detail) {
+    std::error_code error;
+    const bool regular = std::filesystem::is_regular_file(path, error);
+    if (!regular) {
+        detail = "referenced resource is not a regular file";
+        if (error) {
+            detail += ": " + error.message();
+        }
+    }
+    return regular;
+}
+
+[[nodiscard]] bool IsInsideResourceRoot(const std::filesystem::path& resourceRoot,
+                                        const std::filesystem::path& asset,
+                                        std::string& detail) {
+    std::error_code rootError;
+    const std::filesystem::path canonicalRoot =
+        std::filesystem::weakly_canonical(resourceRoot, rootError);
+    if (rootError) {
+        detail = "failed to resolve resource root: " + rootError.message();
+        return false;
+    }
+    std::error_code assetError;
+    const std::filesystem::path canonicalAsset =
+        std::filesystem::canonical(asset, assetError);
+    if (assetError) {
+        detail = "failed to resolve referenced resource: " + assetError.message();
+        return false;
+    }
+    const std::filesystem::path relative =
+        canonicalAsset.lexically_relative(canonicalRoot);
+    if (relative.empty() || relative.is_absolute()) {
+        detail = "referenced resource resolves outside the resource root";
+        return false;
     }
     for (const std::filesystem::path& component : relative) {
-        if (component.empty() || component == "." || component == "..") {
-            throw PuzzleDataError(std::string{label} +
-                                  " catalog path must remain within the resource root");
+        if (component == "..") {
+            detail = "referenced resource resolves outside the resource root";
+            return false;
         }
     }
-    return resourceRoot / relative;
+    return true;
+}
+
+void RequireRegularFileInsideResourceRoot(
+    const std::filesystem::path& resourceRoot,
+    const std::filesystem::path& asset,
+    const std::string_view diagnosticName,
+    const std::string_view pointer) {
+    std::string detail;
+    if (!IsRegularFile(asset, detail) ||
+        !IsInsideResourceRoot(resourceRoot, asset, detail)) {
+        ThrowDataError(diagnosticName, pointer, detail);
+    }
+}
+
+[[nodiscard]] std::string ReadResourceFile(
+    const std::filesystem::path& resourceRoot,
+    const std::filesystem::path& asset,
+    const std::string_view diagnosticName) {
+    RequireRegularFileInsideResourceRoot(resourceRoot, asset, diagnosticName, "/");
+    return ReadFile(asset, diagnosticName);
 }
 
 } // namespace
 
-bool PuzzleCatalogLoader::Load(const PuzzleDataPaths& paths,
+bool PuzzleCatalogLoader::Load(const std::string& catalogPath,
                                const std::string& resourceRoot,
-                               PuzzleCatalog& catalog,
-                               std::string& error) {
-    error.clear();
+                               PuzzleCatalog& catalog, std::string& error) {
     try {
-        const std::filesystem::path root{resourceRoot};
-        std::error_code filesystemError;
-        if (resourceRoot.empty() || !std::filesystem::is_directory(root, filesystemError)) {
-            std::string detail = "puzzle-data resource root is not a directory: " +
-                                 root.generic_string();
-            if (filesystemError) {
-                detail += " (" + filesystemError.message() + ")";
-            }
-            throw PuzzleDataError(detail);
+        if (resourceRoot.empty()) {
+            ThrowDataError("<configuration>", "/resource_root",
+                           "resource root must not be empty");
         }
-        const data::CsvParseResult levels =
-            data::Csv::Load(ValidateCatalogPath(paths.levels, root, "levels"));
-        const data::CsvParseResult nodes =
-            data::Csv::Load(ValidateCatalogPath(paths.nodes, root, "nodes"));
-        const data::CsvParseResult connections =
-            data::Csv::Load(ValidateCatalogPath(paths.connections, root, "connections"));
-        const data::CsvParseResult obstacles =
-            data::Csv::Load(ValidateCatalogPath(paths.obstacles, root, "obstacles"));
+        const PuzzleJsonSource configuration{"<configuration>", {}};
+        const Json catalogPathJson = catalogPath;
+        const std::string safeCatalogPath = ReadRelativePath(
+            catalogPathJson, configuration, "/catalog_path");
+        if (!safeCatalogPath.ends_with(".json")) {
+            ThrowDataError("<configuration>", "/catalog_path",
+                           "catalog path must reference a lowercase .json file");
+        }
+        std::error_code rootError;
+        const std::filesystem::path root{resourceRoot};
+        if (!std::filesystem::is_directory(root, rootError)) {
+            std::string detail = "resource root is not a directory";
+            if (rootError) {
+                detail += ": " + rootError.message();
+            }
+            ThrowDataError("<configuration>", "/resource_root", detail);
+        }
 
-        PuzzleCatalog parsed = BuildCatalog(
-            RequireDocument(levels, kLevelsCatalogName),
-            RequireDocument(nodes, kNodesCatalogName),
-            RequireDocument(connections, kConnectionsCatalogName),
-            RequireDocument(obstacles, kObstaclesCatalogName));
-        catalog = std::move(parsed);
+        const std::string catalogName = NormalizeName(safeCatalogPath);
+        std::string catalogText = ReadResourceFile(
+            root, root / std::filesystem::path{catalogName}, catalogName);
+        const PuzzleJsonSource catalogSource{catalogName, catalogText};
+        const Json catalogJson = ParseJsonDocument(catalogSource);
+        const CatalogManifest manifest =
+            ParseCatalogManifest(catalogJson, catalogSource);
+
+        const std::string tilesetName =
+            ResolveName(catalogName, manifest.tilesetPath);
+        const std::string nodeTypesName =
+            ResolveName(catalogName, manifest.nodeTypesPath);
+        std::string tilesetText = ReadResourceFile(
+            root, root / std::filesystem::path{tilesetName}, tilesetName);
+        std::string nodeTypesText = ReadResourceFile(
+            root, root / std::filesystem::path{nodeTypesName}, nodeTypesName);
+
+        std::vector<std::string> levelNames;
+        std::vector<std::string> levelTexts;
+        levelNames.reserve(manifest.levelPaths.size());
+        levelTexts.reserve(manifest.levelPaths.size());
+        for (const std::string& relative : manifest.levelPaths) {
+            levelNames.push_back(ResolveName(catalogName, relative));
+            levelTexts.push_back(ReadResourceFile(
+                root, root / std::filesystem::path{levelNames.back()},
+                levelNames.back()));
+        }
+
+        PuzzleJsonSources sources{
+            {catalogName, catalogText},
+            {tilesetName, tilesetText},
+            {nodeTypesName, nodeTypesText},
+            {},
+        };
+        sources.levels.reserve(levelNames.size());
+        for (std::size_t index = 0; index < levelNames.size(); ++index) {
+            sources.levels.push_back({levelNames[index], levelTexts[index]});
+        }
+
+        PuzzleCatalog built;
+        std::string parseError;
+        if (!Parse(sources, built, parseError)) {
+            error = std::move(parseError);
+            return false;
+        }
+        const std::filesystem::path atlasPath =
+            root / std::filesystem::path{built.GetTileset().atlasPath};
+        RequireRegularFileInsideResourceRoot(
+            root, atlasPath, tilesetName, "/atlas_path");
+
+        catalog = std::move(built);
+        error.clear();
         return true;
-    } catch (const std::exception& exception) {
+    } catch (const PuzzleDataError& exception) {
         error = exception.what();
+        return false;
+    } catch (const std::exception& exception) {
+        error = std::string{"<configuration>#/: unexpected loader failure: "} +
+                exception.what();
         return false;
     }
 }
 
-bool PuzzleCatalogLoader::Parse(const PuzzleCsvSources& sources,
-                                PuzzleCatalog& catalog,
-                                std::string& error) {
-    error.clear();
+bool PuzzleCatalogLoader::Parse(const PuzzleJsonSources& sources,
+                                PuzzleCatalog& catalog, std::string& error) {
     try {
-        const data::CsvParseResult levels = data::Csv::Parse(sources.levels);
-        const data::CsvParseResult nodes = data::Csv::Parse(sources.nodes);
-        const data::CsvParseResult connections = data::Csv::Parse(sources.connections);
-        const data::CsvParseResult obstacles = data::Csv::Parse(sources.obstacles);
-        PuzzleCatalog parsed = BuildCatalog(
-            RequireDocument(levels, kLevelsCatalogName),
-            RequireDocument(nodes, kNodesCatalogName),
-            RequireDocument(connections, kConnectionsCatalogName),
-            RequireDocument(obstacles, kObstaclesCatalogName));
-        catalog = std::move(parsed);
+        PuzzleCatalog built = BuildCatalog(sources);
+        catalog = std::move(built);
+        error.clear();
         return true;
-    } catch (const std::exception& exception) {
+    } catch (const PuzzleDataError& exception) {
         error = exception.what();
+        return false;
+    } catch (const std::exception& exception) {
+        const std::string filename = sources.catalog.filename.empty()
+                                         ? std::string{"<memory>"}
+                                         : std::string{sources.catalog.filename};
+        error = filename + "#/: unexpected loader failure: " + exception.what();
         return false;
     }
 }

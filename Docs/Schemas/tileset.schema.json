@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tileset.schema.json",
+  "title": "Object_Connect tileset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "atlas_path", "atlas_columns", "atlas_rows", "tiles"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "atlas_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?:(?!\\.{1,2}(?:/|$))[A-Za-z0-9_.-]+/)*(?!\\.{1,2}$)[A-Za-z0-9_.-]+\\.png$"
+    },
+    "atlas_columns": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "atlas_rows": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "tiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 65535,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "atlas_column", "atlas_row"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "name": { "$ref": "#/$defs/id" },
+          "atlas_column": { "type": "integer", "minimum": 0 },
+          "atlas_row": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+    }
+  }
+}

@@ -29,6 +29,7 @@ struct GameFlowInput final {
     bool confirmPressed = false;
     bool escapePressed = false;
     bool focusLost = false;
+    bool mouseMoved = false;
     bool mousePrimaryPressed = false;
     std::optional<std::size_t> hoveredItem;
 };

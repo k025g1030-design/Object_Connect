@@ -17,7 +17,9 @@ public:
     PuzzleRenderer(const PuzzleRenderer&) = delete;
     PuzzleRenderer& operator=(const PuzzleRenderer&) = delete;
 
-    [[nodiscard]] bool Initialize(std::size_t maxVertices, std::string& error);
+    [[nodiscard]] bool Initialize(std::size_t initialVertexCapacity,
+                                  const TilesetDefinition& tileset,
+                                  std::string& error);
     void Draw(const PuzzleDefinition& definition,
               const PuzzleBoardSnapshot& snapshot,
               float elapsedSeconds);

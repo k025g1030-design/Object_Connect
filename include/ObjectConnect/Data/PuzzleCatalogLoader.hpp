@@ -4,23 +4,32 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace object_connect {
 
-struct PuzzleCsvSources final {
-    std::string_view levels;
-    std::string_view nodes;
-    std::string_view connections;
-    std::string_view obstacles;
+struct PuzzleJsonSource final {
+    std::string_view filename;
+    std::string_view contents;
+};
+
+// In-memory source bundle used by headless tests and tools. Document filenames
+// are resolved exactly like disk paths: catalog references are relative to the
+// catalog document's directory.
+struct PuzzleJsonSources final {
+    PuzzleJsonSource catalog;
+    PuzzleJsonSource tileset;
+    PuzzleJsonSource nodeTypes;
+    std::vector<PuzzleJsonSource> levels;
 };
 
 class PuzzleCatalogLoader final {
 public:
-    [[nodiscard]] static bool Load(const PuzzleDataPaths& paths,
+    [[nodiscard]] static bool Load(const std::string& catalogPath,
                                    const std::string& resourceRoot,
                                    PuzzleCatalog& catalog,
                                    std::string& error);
-    [[nodiscard]] static bool Parse(const PuzzleCsvSources& sources,
+    [[nodiscard]] static bool Parse(const PuzzleJsonSources& sources,
                                     PuzzleCatalog& catalog,
                                     std::string& error);
 };

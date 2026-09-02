@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "node_types.schema.json",
+  "title": "Object_Connect node types",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "node_types"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "node_types": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type_id", "display_name", "stamp", "anchor"],
+        "properties": {
+          "type_id": { "$ref": "#/$defs/id" },
+          "display_name": { "$ref": "#/$defs/ascii" },
+          "stamp": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 45,
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 80,
+              "items": { "type": "integer", "minimum": 0, "maximum": 65535 }
+            }
+          },
+          "anchor": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["column", "row"],
+            "properties": {
+              "column": { "type": "integer", "minimum": 0, "maximum": 79 },
+              "row": { "type": "integer", "minimum": 0, "maximum": 44 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+    },
+    "ascii": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(?=[ -~]*[!-~])[ -~]+$"
+    }
+  }
+}

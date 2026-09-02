@@ -1,14 +1,11 @@
 #pragma once
 
-#include "ObjectConnect/Data/PuzzleData.hpp"
-
 #include <string>
 
 namespace object_connect {
 
 struct GameConfig final {
-    PuzzleDataPaths data{};
-    std::string resourceRoot{"Resources"};
+    std::string catalogPath{"data/catalog.json"};
 };
 
 } // namespace object_connect

@@ -1,8 +1,13 @@
 #include "TestSupport.hpp"
 
-#include "ObjectConnect/Data/Csv.hpp"
 #include "ObjectConnect/Data/PuzzleCatalogLoader.hpp"
 
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <array>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,378 +16,704 @@
 namespace object_connect::tests {
 namespace {
 
-constexpr std::string_view kValidLevels =
-    "puzzle_id,title,start_node_id,total_length,minimum_slack_ratio,background_color,show_target_connections,vessel_color,base_width,tip_width,width_variation\n"
-    "first_puzzle,FIRST PUZZLE,start_node,500,1.05,#180A12,true,#B51F3E,#PLACEHOLDER,#PLACEHOLDER,#PLACEHOLDER\n";
+using Json = nlohmann::json;
 
-[[nodiscard]] std::string ValidLevels() {
-    std::string result{kValidLevels};
-    const auto replace = [&result](const std::string_view value) {
-        const std::size_t position = result.find("#PLACEHOLDER");
-        if (position != std::string::npos) {
-            result.replace(position, std::string_view{"#PLACEHOLDER"}.size(), value);
-        }
-    };
-    replace("20");
-    replace("7");
-    replace("0.12");
-    return result;
-}
+struct BundleStorage final {
+    std::string catalog;
+    std::string tileset;
+    std::string nodeTypes;
+    std::string level;
 
-constexpr std::string_view kValidNodes =
-    "puzzle_id,node_id,label,x,y,radius,color\n"
-    "first_puzzle,start_node,A,100,100,20,#FF405C\n"
-    "first_puzzle,middle_node,B,300,100,20,#FF8A60FF\n"
-    "first_puzzle,end_node,C,500,200,20,#FFD166\n"
-    "first_puzzle,decoy_node,X,1120,620,20,#777777\n";
-
-// Deliberately reversed to prove that loader validation does not rewrite author order.
-constexpr std::string_view kValidConnections =
-    "puzzle_id,from_node_id,to_node_id,point_count,thickness_scale,follow_delay_seconds,initial_direction_degrees\n"
-    "first_puzzle,middle_node,end_node,12,0.85,0.08,25\n"
-    "first_puzzle,start_node,middle_node,8,1.0,0,-15\n";
-
-constexpr std::string_view kValidObstacles =
-    "puzzle_id,obstacle_id,shape,center_x,center_y,width,height,radius,color\n"
-    "first_puzzle,wall_one,rectangle,760,300,100,80,,#51263A\n"
-    "first_puzzle,cyst_one,circle,920,500,,,35,#7A2038CC\n";
-
-[[nodiscard]] PuzzleCsvSources ValidSources(const std::string& levels) {
-    return {levels, kValidNodes, kValidConnections, kValidObstacles};
-}
-
-[[nodiscard]] std::string ReplaceOnce(const std::string_view source,
-                                      const std::string_view target,
-                                      const std::string_view replacement) {
-    std::string result{source};
-    const std::size_t position = result.find(target);
-    if (position != std::string::npos) {
-        result.replace(position, target.size(), replacement);
+    [[nodiscard]] PuzzleJsonSources Sources() const {
+        return {
+            {"data/catalog.json", catalog},
+            {"data/tileset.json", tileset},
+            {"data/node_types.json", nodeTypes},
+            {{"data/levels/first.json", level}},
+        };
     }
-    return result;
+};
+
+[[nodiscard]] Json EmptyLayer() {
+    Json layer = Json::array();
+    for (std::size_t row = 0; row < kPuzzleGridRows; ++row) {
+        Json values = Json::array();
+        for (std::size_t column = 0; column < kPuzzleGridColumns; ++column) {
+            values.push_back(0);
+        }
+        layer.push_back(std::move(values));
+    }
+    return layer;
 }
 
-void ExpectRejected(TestContext& context, const PuzzleCsvSources& sources,
-                    const std::string_view expectedError,
+[[nodiscard]] BundleStorage MakeValidBundle() {
+    const Json catalog = {
+        {"schema_version", 1},
+        {"canvas", {{"width", 1280}, {"height", 720}, {"tile_size", 16}}},
+        {"tileset", "tileset.json"},
+        {"node_types", "node_types.json"},
+        {"levels", Json::array({"levels/first.json"})},
+    };
+    const Json tileset = {
+        {"schema_version", 1},
+        {"atlas_path", "atlas.png"},
+        {"atlas_columns", 3},
+        {"atlas_rows", 1},
+        {"tiles",
+         Json::array({
+             {{"id", 1}, {"name", "root_tile"}, {"atlas_column", 0},
+              {"atlas_row", 0}},
+             {{"id", 2}, {"name", "relay_tile"}, {"atlas_column", 1},
+              {"atlas_row", 0}},
+             {{"id", 3}, {"name", "goal_tile"}, {"atlas_column", 2},
+              {"atlas_row", 0}},
+         })},
+    };
+    const Json nodeTypes = {
+        {"schema_version", 1},
+        {"node_types",
+         Json::array({
+             {{"type_id", "root_type"}, {"display_name", "ROOT"},
+              {"stamp", Json::array({Json::array({1})})},
+              {"anchor", {{"column", 0}, {"row", 0}}}},
+             {{"type_id", "relay_type"}, {"display_name", "RELAY"},
+              {"stamp", Json::array({Json::array({2})})},
+              {"anchor", {{"column", 0}, {"row", 0}}}},
+             {{"type_id", "goal_type"}, {"display_name", "GOAL"},
+              {"stamp", Json::array({Json::array({3})})},
+              {"anchor", {{"column", 0}, {"row", 0}}}},
+         })},
+    };
+
+    Json background = EmptyLayer();
+    background[0][0] = 1;
+    const Json level = {
+        {"schema_version", 1},
+        {"id", "first_level"},
+        {"title", "FIRST LEVEL"},
+        {"background_color", "#180A12"},
+        {"rules",
+         {{"total_length", 900.0},
+          {"minimum_slack_ratio", 1.05},
+          {"show_target_connections", true},
+          {"vessel",
+           {{"color", "#861B2BFF"},
+            {"base_width", 16.0},
+            {"tip_width", 8.0},
+            {"width_variation", 0.16}}}}},
+        {"layers", {{"background", std::move(background)},
+                    {"obstacles", EmptyLayer()}}},
+        {"nodes",
+         Json::array({
+             {{"id", "root"}, {"type_id", "root_type"}, {"column", 5},
+              {"row", 5}, {"is_root", true}, {"is_goal", false},
+              {"max_incoming", 0}, {"max_outgoing", 2}},
+             {{"id", "relay"}, {"type_id", "relay_type"}, {"column", 20},
+              {"row", 5}, {"is_root", false}, {"is_goal", false},
+              {"max_incoming", 2}, {"max_outgoing", 2}},
+             {{"id", "goal"}, {"type_id", "goal_type"}, {"column", 35},
+              {"row", 5}, {"is_root", false}, {"is_goal", true},
+              {"max_incoming", 2}, {"max_outgoing", 0}},
+         })},
+        {"connections",
+         Json::array({
+             {{"id", "root_to_relay"}, {"from", "root"}, {"to", "relay"},
+              {"point_count", 8}, {"thickness_scale", 1.0},
+              {"follow_delay_seconds", 0.0}, {"initial_direction_degrees", 0.0}},
+             {{"id", "relay_to_goal"}, {"from", "relay"}, {"to", "goal"},
+              {"point_count", 12}, {"thickness_scale", 0.8},
+              {"follow_delay_seconds", 0.1}, {"initial_direction_degrees", 25.0}},
+         })},
+    };
+    return {catalog.dump(), tileset.dump(), nodeTypes.dump(), level.dump()};
+}
+
+template <typename Mutator>
+[[nodiscard]] BundleStorage MutateCatalog(BundleStorage bundle, Mutator&& mutator) {
+    Json json = Json::parse(bundle.catalog);
+    std::forward<Mutator>(mutator)(json);
+    bundle.catalog = json.dump();
+    return bundle;
+}
+
+template <typename Mutator>
+[[nodiscard]] BundleStorage MutateTileset(BundleStorage bundle, Mutator&& mutator) {
+    Json json = Json::parse(bundle.tileset);
+    std::forward<Mutator>(mutator)(json);
+    bundle.tileset = json.dump();
+    return bundle;
+}
+
+template <typename Mutator>
+[[nodiscard]] BundleStorage MutateNodeTypes(BundleStorage bundle, Mutator&& mutator) {
+    Json json = Json::parse(bundle.nodeTypes);
+    std::forward<Mutator>(mutator)(json);
+    bundle.nodeTypes = json.dump();
+    return bundle;
+}
+
+template <typename Mutator>
+[[nodiscard]] BundleStorage MutateLevel(BundleStorage bundle, Mutator&& mutator) {
+    Json json = Json::parse(bundle.level);
+    std::forward<Mutator>(mutator)(json);
+    bundle.level = json.dump();
+    return bundle;
+}
+
+void ExpectRejected(TestContext& context, const BundleStorage& bundle,
+                    const std::string_view expectedFilename,
+                    const std::string_view expectedPointer,
+                    const std::string_view expectedDetail,
                     const std::string_view description) {
     PuzzleDefinition sentinelDefinition;
     sentinelDefinition.id = "sentinel";
-    PuzzleCatalog sentinel{{std::move(sentinelDefinition)}};
+    PuzzleCatalog catalog{{std::move(sentinelDefinition)}};
     std::string error;
-    context.Expect(!PuzzleCatalogLoader::Parse(sources, sentinel, error), description);
-    context.Expect(error.find(expectedError) != std::string::npos,
-                   "rejected puzzle data reports the expected diagnostic category");
-    context.Expect(sentinel.Find("sentinel") != nullptr,
-                   "failed parsing preserves the caller's previous catalog");
+    context.Expect(!PuzzleCatalogLoader::Parse(bundle.Sources(), catalog, error),
+                   description);
+    context.Expect(error.find(expectedFilename) != std::string::npos &&
+                       error.find(expectedPointer) != std::string::npos &&
+                       error.find(expectedDetail) != std::string::npos,
+                   "JSON diagnostic includes filename, JSON pointer, and detail");
+    context.Expect(catalog.Find("sentinel") != nullptr,
+                   "failed JSON parsing preserves the previous catalog transactionally");
 }
 
-void TestCsvReader(TestContext& context) {
-    const data::CsvParseResult parsed = data::Csv::Parse(
-        "\xEF\xBB\xBFname,value\r\n\"A, \"\"B\"\"\",1\r\n\"two\r\nlines\",2\r\n");
-    context.Expect(parsed.Succeeded(),
-                   "puzzle CSV accepts BOM, CRLF, quoted commas, escaped quotes and newlines");
-    if (parsed.document.has_value()) {
-        context.Expect(parsed.document->records.size() == 2,
-                       "puzzle CSV ignores a final line ending");
-        context.Expect(parsed.document->records[0].fields[0] == "A, \"B\"",
-                       "puzzle CSV unescapes a doubled quote");
-        context.Expect(parsed.document->records[1].fields[0] == "two\nlines",
-                       "puzzle CSV normalizes a quoted CRLF");
-    }
-
-    context.Expect(!data::Csv::Parse("a,b\n1\n").Succeeded(),
-                   "puzzle CSV rejects ragged records");
-    context.Expect(!data::Csv::Parse("a\n\"unterminated\n").Succeeded(),
-                   "puzzle CSV rejects unterminated quotes");
-    context.Expect(!data::Csv::Parse("a\r1").Succeeded(),
-                   "puzzle CSV rejects a bare carriage return");
-}
-
-void TestValidCatalogAndTopology(TestContext& context) {
-    const std::string levels = ValidLevels();
+void TestValidNormalizedCatalog(TestContext& context) {
+    const BundleStorage bundle = MakeValidBundle();
     PuzzleCatalog catalog;
-    std::string error;
-    context.Expect(PuzzleCatalogLoader::Parse(ValidSources(levels), catalog, error),
-                   "valid four-table puzzle data parses");
-    context.Expect(error.empty(), "successful puzzle parsing clears the diagnostic");
-    context.Expect(catalog.GetPuzzles().size() == 1,
-                   "catalog owns the configured puzzle");
-    const PuzzleDefinition* const puzzle = catalog.Find("first_puzzle");
-    context.Expect(puzzle != nullptr, "catalog finds a puzzle by ID");
+    std::string error{"stale"};
+    context.Expect(PuzzleCatalogLoader::Parse(bundle.Sources(), catalog, error),
+                   "valid schema-version-1 JSON bundle parses");
+    context.Expect(error.empty(), "successful JSON parsing clears an old diagnostic");
+    context.Expect(catalog.GetTileset().tiles.size() == 3 &&
+                       catalog.GetNodeTypes().size() == 3 &&
+                       catalog.GetPuzzles().size() == 1,
+                   "catalog owns normalized tileset, node types, and levels");
+
+    const PuzzleDefinition* const puzzle = catalog.Find("first_level");
+    context.Expect(puzzle != nullptr, "normalized catalog finds a level by stable ID");
     if (puzzle == nullptr) {
         return;
     }
-    context.Expect(puzzle->nodes.size() == 4,
-                   "catalog retains an unconnected decoy node");
-    context.Expect(puzzle->startNodeIndex == 0,
-                   "catalog resolves the start-node index");
-    context.Expect(puzzle->connections.size() == 2,
-                   "catalog owns every path connection");
-    if (puzzle->connections.size() == 2) {
-        context.Expect(puzzle->connections[0].fromNodeId == "middle_node" &&
-                           puzzle->connections[0].toNodeId == "end_node",
-                       "connection validation preserves CSV author order");
-        context.Expect(puzzle->connections[1].fromNodeId == "start_node" &&
-                           puzzle->connections[1].toNodeId == "middle_node",
-                       "a valid graph need not begin with its start edge in storage order");
-        context.Expect(puzzle->connections[1].fromNodeIndex == 0 &&
-                           puzzle->connections[1].toNodeIndex == 1,
-                       "connection node IDs resolve to stable indices");
-    }
-    context.Expect(puzzle->obstacles.size() == 2,
-                   "rectangle and circle obstacles parse together");
-    context.Expect(puzzle->backgroundColor.a == 1.0f,
-                   "six-digit colors default alpha to one");
-    context.Expect(puzzle->nodes[1].color.a == 1.0f,
-                   "eight-digit FF color alpha parses to one");
+    context.Expect(puzzle->backgroundTiles.columns == 80 &&
+                       puzzle->backgroundTiles.rows == 45 &&
+                       puzzle->backgroundTiles.At(0, 0) == 1 &&
+                       puzzle->obstacleTiles.At(0, 0) == 0,
+                   "45x80 row-major tile layers normalize into TileGrid");
+    context.Expect(puzzle->rootNodeIndices == std::vector<std::size_t>{0} &&
+                       puzzle->goalNodeIndices == std::vector<std::size_t>{2},
+                   "root and goal roles resolve to stable node indices");
+    context.Expect(puzzle->nodes[1].typeIndex == 1 &&
+                       puzzle->nodes[1].displayName == "RELAY" &&
+                       puzzle->nodes[1].stamp.IsOccupied(0, 0) &&
+                       puzzle->nodes[1].bounds == TileBounds{20, 5, 1, 1} &&
+                       NearlyEqual(puzzle->nodes[1].anchorPosition.x, 328.0f) &&
+                       NearlyEqual(puzzle->nodes[1].anchorPosition.y, 88.0f),
+                   "node type, occupied mask, bounds, and anchor pixels are resolved");
+    context.Expect(puzzle->connections[0].fromNodeIndex == 0 &&
+                       puzzle->connections[0].toNodeIndex == 1 &&
+                       puzzle->connections[1].id == "relay_to_goal",
+                   "connection endpoint IDs resolve while author order remains stable");
+    context.Expect(puzzle->nodes[0].maxOutgoing == 2 &&
+                       puzzle->nodes[2].maxIncoming == 2,
+                   "capacity may safely exceed authored candidate degree");
 }
 
-void TestHeadersScalarsColorsAndAscii(TestContext& context) {
-    const std::string levels = ValidLevels();
-    const std::string wrongHeader = ReplaceOnce(levels, "total_length", "length");
-    ExpectRejected(context, ValidSources(wrongHeader), "header must be exactly",
-                   "renamed level header is rejected");
-    PuzzleCatalog diagnosticCatalog;
-    std::string diagnostic;
-    context.Expect(!PuzzleCatalogLoader::Parse(ValidSources(wrongHeader),
-                                               diagnosticCatalog, diagnostic) &&
-                       diagnostic.find("levels.csv line 1, column") !=
-                           std::string::npos,
-                   "header diagnostics identify filename, row, and column");
-
-    PuzzleCsvSources syntaxError = ValidSources(levels);
-    syntaxError.levels = "puzzle_id\n\"unterminated\n";
-    context.Expect(!PuzzleCatalogLoader::Parse(syntaxError, diagnosticCatalog,
-                                               diagnostic) &&
-                       diagnostic.find("levels.csv: line 2, column 1") !=
-                           std::string::npos,
-                   "CSV syntax diagnostics identify filename, row, and column");
-
-    const std::string nonFinite = ReplaceOnce(levels, ",500,1.05,", ",nan,1.05,");
-    ExpectRejected(context, ValidSources(nonFinite), "finite decimal",
-                   "non-finite puzzle length is rejected");
-
-    const std::string looseBoolean = ReplaceOnce(levels, ",true,#B51F3E", ",True,#B51F3E");
-    ExpectRejected(context, ValidSources(looseBoolean), "exactly 'true' or 'false'",
-                   "puzzle booleans are strict and lowercase");
-
-    const std::string badColor = ReplaceOnce(levels, "#180A12", "180A12");
-    ExpectRejected(context, ValidSources(badColor), "#RRGGBB",
-                   "colors require a hash and six or eight hex digits");
-
-    const std::string nonAscii = ReplaceOnce(levels, "FIRST PUZZLE", "PUZZLE \xE2\x98\x85");
-    ExpectRejected(context, ValidSources(nonAscii), "printable ASCII",
-                   "display text rejects non-ASCII glyphs unsupported by DebugText");
-
-    const std::string uniformWidth =
-        ReplaceOnce(levels, ",20,7,0.12", ",14,14,0");
-    PuzzleCatalog uniformCatalog;
-    context.Expect(PuzzleCatalogLoader::Parse(ValidSources(uniformWidth),
-                                               uniformCatalog, diagnostic),
-                   "equal base and tip widths support a uniform vessel ribbon");
-
-    const std::string narrowBase =
-        ReplaceOnce(levels, ",20,7,0.12", ",7,8,0.12");
-    ExpectRejected(context, ValidSources(narrowBase), "greater than or equal",
-                   "vessel width cannot grow from its root toward its tip");
-
-    const std::string excessiveVariation =
-        ReplaceOnce(levels, ",20,7,0.12", ",20,7,1.0");
-    ExpectRejected(context, ValidSources(excessiveVariation), "range [0, 1)",
-                   "width variation cannot collapse or invert the vessel");
-
-    const std::string badPointCount =
-        ReplaceOnce(kValidConnections, "end_node,12,", "end_node,13,");
-    ExpectRejected(context,
-                   {levels, kValidNodes, badPointCount, kValidObstacles},
-                   "between 8 and 12", "tentacle point counts stay in the MVP range");
-
-    const std::string unsafeLength =
-        ReplaceOnce(levels, ",500,1.05,", ",100001,1.05,");
-    ExpectRejected(context, ValidSources(unsafeLength), "must not exceed 100000",
-                   "finite numeric values still respect runtime-safe ranges");
-
-    const std::string unsafeDelay =
-        ReplaceOnce(kValidConnections, ",0.08,25", ",1.01,25");
-    ExpectRejected(context, {levels, kValidNodes, unsafeDelay, kValidObstacles},
-                   "must not exceed 1 second",
-                   "following history cannot grow beyond its configured safe range");
-}
-
-void TestReferencesAndDag(TestContext& context) {
-    const std::string levels = ValidLevels();
-    const std::string unknownNode =
-        ReplaceOnce(kValidConnections, "middle_node,end_node", "middle_node,missing_node");
-    ExpectRejected(context, {levels, kValidNodes, unknownNode, kValidObstacles},
-                   "to-node ID does not exist", "unknown connection nodes are rejected");
-
-    const std::string selfConnection =
-        ReplaceOnce(kValidConnections, "middle_node,end_node", "middle_node,middle_node");
-    ExpectRejected(context, {levels, kValidNodes, selfConnection, kValidObstacles},
-                   "must not link a node to itself", "self connections are rejected");
-
-    const std::string branchAndMerge = std::string{kValidConnections} +
-        "first_puzzle,start_node,end_node,10,1,0,0\n";
-    PuzzleCatalog dagCatalog;
-    std::string dagError;
-    context.Expect(
-        PuzzleCatalogLoader::Parse(
-            {levels, kValidNodes, branchAndMerge, kValidObstacles},
-            dagCatalog, dagError),
-        "a reachable DAG accepts multiple outgoing and multiple incoming connections");
-    const PuzzleDefinition* const dag = dagCatalog.Find("first_puzzle");
-    context.Expect(dag != nullptr && dag->connections.size() == 3,
-                   "the accepted branch-and-merge graph retains every candidate edge");
-    if (dag != nullptr && dag->connections.size() == 3) {
-        context.Expect(dag->connections[2].fromNodeId == "start_node" &&
-                           dag->connections[2].toNodeId == "end_node",
-                       "DAG validation leaves sibling edge priority in author order");
-    }
-
-    const std::string duplicateEdge = std::string{kValidConnections} +
-        "first_puzzle,start_node,middle_node,10,1,0,0\n";
-    ExpectRejected(context, {levels, kValidNodes, duplicateEdge, kValidObstacles},
-                   "duplicate directed", "duplicate directed edges are rejected explicitly");
-
-    const std::string cycle =
-        std::string{kValidConnections} +
-        "first_puzzle,end_node,middle_node,10,1,0,0\n";
-    ExpectRejected(context, {levels, kValidNodes, cycle, kValidObstacles}, "cycle",
-                   "a reachable directed cycle is rejected anywhere in the graph");
-
-    const std::string disconnected = std::string{kValidConnections} +
-        "first_puzzle,decoy_node,end_node,10,1,0,0\n";
-    ExpectRejected(context, {levels, kValidNodes, disconnected, kValidObstacles},
-                   "reachable from start_node_id",
-                   "every candidate edge must be reachable from the configured start");
-
-    const std::string multipleTerminals = std::string{kValidConnections} +
-        "first_puzzle,start_node,decoy_node,10,1,0,0\n";
-    ExpectRejected(context, {levels, kValidNodes, multipleTerminals, kValidObstacles},
-                   "exactly one reachable terminal node",
-                   "the reachable graph has one abstract completion endpoint");
-
-    const std::string noConnections =
-        "puzzle_id,from_node_id,to_node_id,point_count,thickness_scale,follow_delay_seconds,initial_direction_degrees\n";
-    ExpectRejected(context, {levels, kValidNodes, noConnections, kValidObstacles},
-                   "at least one connection", "a puzzle cannot be trivially empty");
-}
-
-void TestCanvasObstaclesAndLength(TestContext& context) {
-    const std::string levels = ValidLevels();
-    const std::string outsideNode = ReplaceOnce(kValidNodes, "100,100,20", "10,100,20");
-    ExpectRejected(context, {levels, outsideNode, kValidConnections, kValidObstacles},
-                   "inside the 1280x720 canvas", "node circles must fit in the canvas");
-
-    const std::string overlappingNodes =
-        ReplaceOnce(kValidNodes, "300,100,20", "130,100,20");
-    ExpectRejected(context,
-                   {levels, overlappingNodes, kValidConnections, kValidObstacles},
-                   "overlaps node", "node hit circles must not overlap");
-
-    const std::string wrongUnusedShapeField =
-        ReplaceOnce(kValidObstacles, "100,80,,#", "100,80,0,#");
-    ExpectRejected(context,
-                   {levels, kValidNodes, kValidConnections, wrongUnusedShapeField},
-                   "radius must be empty", "unused rectangle radius must stay empty");
-
-    const std::string outsideObstacle =
-        ReplaceOnce(kValidObstacles, "920,500,,,35", "1270,500,,,35");
-    ExpectRejected(context, {levels, kValidNodes, kValidConnections, outsideObstacle},
-                   "inside the 1280x720 canvas",
-                   "obstacle bounds must fit in the canvas");
-
-    const std::string overlapsNode =
-        ReplaceOnce(kValidObstacles, "920,500,,,35", "500,200,,,35");
-    ExpectRejected(context, {levels, kValidNodes, kValidConnections, overlapsNode},
-                   "overlaps node", "obstacles must not cover an interactive node");
-
-    const std::string blocksConnection =
-        ReplaceOnce(kValidObstacles, "760,300,100,80", "400,150,20,20");
-    ExpectRejected(context,
-                   {levels, kValidNodes, kValidConnections, blocksConnection},
-                   "intersects an obstacle",
-                   "required vessel routes include their rendered-width clearance");
-
-    const std::string blocksOnlyAfterPixelSnap =
-        ReplaceOnce(kValidObstacles, "760,300,100,80", "200,121,20,20");
+void TestStrictSchemaAndDiagnostics(TestContext& context) {
     ExpectRejected(
         context,
-        {levels, kValidNodes, kValidConnections, blocksOnlyAfterPixelSnap},
-        "intersects an obstacle",
-        "route clearance includes the extra cell used by pixel-grid snapping");
+        MutateCatalog(MakeValidBundle(), [](Json& json) { json["extra"] = 1; }),
+        "data/catalog.json", "#/extra", "unexpected key",
+        "catalog rejects unknown root keys");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["rules"]["vessel"]["extra"] = true;
+        }),
+        "data/levels/first.json", "#/rules/vessel/extra", "unexpected key",
+        "nested objects reject unknown keys");
+    ExpectRejected(
+        context,
+        MutateCatalog(MakeValidBundle(), [](Json& json) {
+            json["schema_version"] = 1.0;
+        }),
+        "data/catalog.json", "#/schema_version", "integer 1",
+        "schema version must be an integer, not a numerically equal float");
+    ExpectRejected(
+        context,
+        MutateCatalog(MakeValidBundle(), [](Json& json) {
+            json["canvas"]["tile_size"] = 8;
+        }),
+        "data/catalog.json", "#/canvas", "exactly 1280x720",
+        "catalog canvas is fixed to the approved 16-pixel grid");
+    ExpectRejected(
+        context,
+        MutateCatalog(MakeValidBundle(), [](Json& json) {
+            json["tileset"] = "../tileset.json";
+        }),
+        "data/catalog.json", "#/tileset", "must not contain",
+        "catalog references cannot lexically escape through a parent component");
+    ExpectRejected(
+        context,
+        MutateTileset(MakeValidBundle(), [](Json& json) {
+            json["atlas_path"] = "C:/outside/atlas.png";
+        }),
+        "data/tileset.json", "#/atlas_path", "safe",
+        "atlas references cannot use absolute drive paths");
 
-    const std::string tooShort = ReplaceOnce(levels, ",500,1.05,", ",440,1.05,");
-    ExpectRejected(context, ValidSources(tooShort), "minimum_slack_ratio",
-                   "total vessel budget covers the shortest completion path plus slack");
+    BundleStorage syntax = MakeValidBundle();
+    syntax.level = "{\"schema_version\":";
+    ExpectRejected(context, syntax, "data/levels/first.json", "#/",
+                   "invalid JSON syntax", "malformed JSON is rejected transactionally");
 
-    const std::string branchAndMerge = std::string{kValidConnections} +
-        "first_puzzle,start_node,end_node,10,1,0,0\n";
+    BundleStorage duplicateKey = MakeValidBundle();
+    duplicateKey.catalog.insert(1, "\"schema_version\":1,");
+    ExpectRejected(context, duplicateKey, "data/catalog.json", "#/",
+                   "duplicate object key",
+                   "strict JSON objects reject duplicate member names");
+
+    BundleStorage wrongBundleName = MakeValidBundle();
+    PuzzleJsonSources sources = wrongBundleName.Sources();
+    sources.tileset.filename = "data/wrong.json";
     PuzzleCatalog catalog;
     std::string error;
-    context.Expect(
-        PuzzleCatalogLoader::Parse(
-            {levels, kValidNodes, branchAndMerge, kValidObstacles}, catalog, error),
-        "unused candidate edges do not consume the route length budget");
+    context.Expect(!PuzzleCatalogLoader::Parse(sources, catalog, error) &&
+                       error.find("data/catalog.json#/tileset") != std::string::npos,
+                   "catalog-relative document references are enforced");
 }
 
-void TestBundledFourTableCatalog(TestContext& context) {
+void TestTilesetAndStampValidation(TestContext& context) {
+    ExpectRejected(
+        context,
+        MutateTileset(MakeValidBundle(), [](Json& json) {
+            json["atlas_path"] = "atlas.jpg";
+        }),
+        "data/tileset.json", "#/atlas_path", ".png",
+        "tileset atlas paths are safe PNG references");
+    ExpectRejected(
+        context,
+        MutateTileset(MakeValidBundle(), [](Json& json) {
+            json["tiles"][0]["id"] = 0;
+        }),
+        "data/tileset.json", "#/tiles/0/id", "reserved",
+        "tile ID zero remains reserved for empty cells");
+    ExpectRejected(
+        context,
+        MutateTileset(MakeValidBundle(), [](Json& json) {
+            json["tiles"][0]["id"] = 65536;
+        }),
+        "data/tileset.json", "#/tiles/0/id", "supported range",
+        "runtime tile IDs are bounded to 16 bits");
+    ExpectRejected(
+        context,
+        MutateTileset(MakeValidBundle(), [](Json& json) {
+            json["tiles"][1]["atlas_column"] = 0;
+        }),
+        "data/tileset.json", "#/tiles/1/atlas_column", "same atlas cell",
+        "atlas cells cannot be assigned to two tile definitions");
+    ExpectRejected(
+        context,
+        MutateNodeTypes(MakeValidBundle(), [](Json& json) {
+            json["node_types"][0]["stamp"] = Json::array(
+                {Json::array({1, 0}), Json::array({1})});
+        }),
+        "data/node_types.json", "#/node_types/0/stamp/1", "rectangle",
+        "node stamps must be rectangular");
+    ExpectRejected(
+        context,
+        MutateNodeTypes(MakeValidBundle(), [](Json& json) {
+            json["node_types"][0]["stamp"] =
+                Json::array({Json::array({0})});
+        }),
+        "data/node_types.json", "#/node_types/0/stamp", "occupied",
+        "node stamps cannot be entirely transparent");
+    ExpectRejected(
+        context,
+        MutateNodeTypes(MakeValidBundle(), [](Json& json) {
+            json["node_types"][0]["stamp"] =
+                Json::array({Json::array({1, 0})});
+            json["node_types"][0]["anchor"]["column"] = 1;
+        }),
+        "data/node_types.json", "#/node_types/0/anchor", "occupied",
+        "node type anchors must select occupied stamp cells");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["layers"]["background"][0][0] = 99;
+        }),
+        "data/levels/first.json", "#/layers/background/0/0", "not declared",
+        "all layer and stamp tile references resolve through the tileset");
+}
+
+void TestMatricesPlacementAndOverlap(TestContext& context) {
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["layers"]["background"].erase(44);
+        }),
+        "data/levels/first.json", "#/layers/background", "45 rows",
+        "level layers require exactly 45 rows");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["layers"]["obstacles"][0].erase(79);
+        }),
+        "data/levels/first.json", "#/layers/obstacles/0", "80 cells",
+        "level layer rows require exactly 80 cells");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["nodes"][1]["column"] = 5;
+            json["nodes"][1]["row"] = 5;
+        }),
+        "data/levels/first.json", "#/nodes/1", "overlaps node",
+        "occupied cells from separate node stamps cannot overlap");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["layers"]["obstacles"][5][20] = 2;
+        }),
+        "data/levels/first.json", "#/nodes/1", "solid obstacle",
+        "occupied node cells cannot overlap the solid obstacle layer");
+    ExpectRejected(
+        context,
+        MutateNodeTypes(
+            MutateLevel(MakeValidBundle(), [](Json& json) {
+                json["nodes"][2]["column"] = 79;
+            }),
+            [](Json& json) {
+                json["node_types"][2]["stamp"] =
+                    Json::array({Json::array({3, 3})});
+            }),
+        "data/levels/first.json", "#/nodes/2/column", "fit inside",
+        "every occupied stamp cell must remain inside the canvas");
+}
+
+void TestRolesDagReferencesAndBlocking(TestContext& context) {
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            for (Json& node : json["nodes"]) {
+                node["is_root"] = false;
+            }
+        }),
+        "data/levels/first.json", "#/nodes", "root node",
+        "a level requires at least one root role");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["nodes"][1]["max_incoming"] = 0;
+        }),
+        "data/levels/first.json", "#/connections/0/to", "zero incoming",
+        "an authored edge cannot enter a zero-capacity target");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["connections"][0]["to"] = "missing";
+        }),
+        "data/levels/first.json", "#/connections/0/to", "does not exist",
+        "connection endpoint references are strict");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["connections"][0]["to"] = "root";
+        }),
+        "data/levels/first.json", "#/connections/0/to", "self-connections",
+        "connection endpoints cannot refer to the same node");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            Json duplicate = json["connections"][0];
+            duplicate["to"] = "goal";
+            json["connections"].push_back(std::move(duplicate));
+        }),
+        "data/levels/first.json", "#/connections/2/id", "duplicate connection ID",
+        "connection IDs remain unique independently of their endpoints");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            Json duplicate = json["connections"][0];
+            duplicate["id"] = "same_pair_again";
+            json["connections"].push_back(std::move(duplicate));
+        }),
+        "data/levels/first.json", "#/connections/2/to", "duplicate directed",
+        "directed endpoint pairs remain unique even when edge IDs differ");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["nodes"][0]["is_goal"] = true;
+            json["nodes"][0]["max_outgoing"] = 0;
+        }),
+        "data/levels/first.json", "#/connections/0/from", "zero outgoing",
+        "an authored edge cannot leave a zero-capacity source");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["nodes"][1]["max_incoming"] = 33;
+        }),
+        "data/levels/first.json", "#/nodes/1/max_incoming", "supported range",
+        "node capacities are bounded to the approved 0-32 range");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            Json reverse = json["connections"][0];
+            reverse["id"] = "relay_to_root";
+            reverse["from"] = "relay";
+            reverse["to"] = "root";
+            json["nodes"][0]["max_incoming"] = 1;
+            json["connections"].push_back(std::move(reverse));
+        }),
+        "data/levels/first.json", "#/connections", "acyclic",
+        "candidate graph cycles are rejected");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["nodes"].push_back(
+                {{"id", "isolated_goal"}, {"type_id", "goal_type"},
+                 {"column", 50}, {"row", 20}, {"is_root", false},
+                 {"is_goal", true}, {"max_incoming", 1},
+                 {"max_outgoing", 0}});
+        }),
+        "data/levels/first.json", "#/nodes/3", "not reachable",
+        "every gameplay node and goal must be reachable from a root");
+    ExpectRejected(
+        context,
+        MutateLevel(MakeValidBundle(), [](Json& json) {
+            json["layers"]["obstacles"][5][12] = 2;
+        }),
+        "data/levels/first.json", "#/connections/0", "blocked",
+        "authored edges blocked by solid tiles plus vessel clearance are rejected");
+
+    const BundleStorage multiRole = MutateLevel(
+        MakeValidBundle(), [](Json& json) {
+            json["nodes"].push_back(
+                {{"id", "second_root"}, {"type_id", "root_type"},
+                 {"column", 5}, {"row", 12}, {"is_root", true},
+                 {"is_goal", false}, {"max_incoming", 0},
+                 {"max_outgoing", 1}});
+            json["nodes"].push_back(
+                {{"id", "second_goal"}, {"type_id", "goal_type"},
+                 {"column", 35}, {"row", 12}, {"is_root", false},
+                 {"is_goal", true}, {"max_incoming", 1},
+                 {"max_outgoing", 0}});
+            json["connections"].push_back(
+                {{"id", "second_root_to_relay"}, {"from", "second_root"},
+                 {"to", "relay"}, {"point_count", 10},
+                 {"thickness_scale", 0.5}, {"follow_delay_seconds", 0.0},
+                 {"initial_direction_degrees", 0.0}});
+            json["connections"].push_back(
+                {{"id", "relay_to_second_goal"}, {"from", "relay"},
+                 {"to", "second_goal"}, {"point_count", 10},
+                 {"thickness_scale", 0.5}, {"follow_delay_seconds", 0.0},
+                 {"initial_direction_degrees", 0.0}});
+        });
+    PuzzleCatalog catalog;
+    std::string error;
+    context.Expect(PuzzleCatalogLoader::Parse(multiRole.Sources(), catalog, error),
+                   "multiple roots/goals and branch/merge remain valid in a DAG");
+    const PuzzleDefinition* const puzzle = catalog.Find("first_level");
+    context.Expect(puzzle != nullptr && puzzle->rootNodeIndices.size() == 2 &&
+                       puzzle->goalNodeIndices.size() == 2,
+                   "all resolved root and goal indices are retained");
+
+    const BundleStorage decoupledRoles = MutateLevel(
+        MakeValidBundle(), [](Json& json) {
+            json["nodes"][2]["max_outgoing"] = 1;
+            json["nodes"].push_back(
+                {{"id", "optional_dead_end"}, {"type_id", "relay_type"},
+                 {"column", 50}, {"row", 5}, {"is_root", false},
+                 {"is_goal", false}, {"max_incoming", 1},
+                 {"max_outgoing", 0}});
+            json["connections"].push_back(
+                {{"id", "goal_to_optional"}, {"from", "goal"},
+                 {"to", "optional_dead_end"}, {"point_count", 10},
+                 {"thickness_scale", 0.5}, {"follow_delay_seconds", 0.0},
+                 {"initial_direction_degrees", 0.0}});
+        });
+    PuzzleCatalog decoupledCatalog;
+    error.clear();
+    context.Expect(PuzzleCatalogLoader::Parse(
+                       decoupledRoles.Sources(), decoupledCatalog, error),
+                   "roles do not imply source/sink capacity or forbid reachable dead ends");
+    const PuzzleDefinition* const decoupledPuzzle =
+        decoupledCatalog.Find("first_level");
+    context.Expect(
+        decoupledPuzzle != nullptr && decoupledPuzzle->nodes.size() == 4 &&
+            decoupledPuzzle->nodes[0].isRoot &&
+            decoupledPuzzle->nodes[0].maxIncoming == 0 &&
+            decoupledPuzzle->nodes[2].isGoal &&
+            decoupledPuzzle->nodes[2].maxOutgoing == 1 &&
+            !decoupledPuzzle->nodes[3].isGoal &&
+            decoupledPuzzle->nodes[3].maxOutgoing == 0 &&
+            decoupledPuzzle->connections.back().fromNodeIndex == 2 &&
+            decoupledPuzzle->connections.back().toNodeIndex == 3,
+        "root zero-incoming, goal outgoing, and optional non-goal dead-end data survive normalization");
+}
+
+void WriteTextFile(const std::filesystem::path& path, const std::string_view text) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+void WriteBundleFiles(const std::filesystem::path& root,
+                      const BundleStorage& bundle) {
+    std::filesystem::create_directories(root / "data" / "levels");
+    WriteTextFile(root / "data" / "catalog.json", bundle.catalog);
+    WriteTextFile(root / "data" / "tileset.json", bundle.tileset);
+    WriteTextFile(root / "data" / "node_types.json", bundle.nodeTypes);
+    WriteTextFile(root / "data" / "levels" / "first.json", bundle.level);
+    WriteTextFile(root / "data" / "atlas.png", "atlas placeholder");
+}
+
+void TestDiskLoadingAndAtlasReference(TestContext& context) {
+    const BundleStorage bundle = MakeValidBundle();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "ObjectConnectJsonLoaderTests";
+    std::error_code cleanupError;
+    std::filesystem::remove_all(root, cleanupError);
+    WriteBundleFiles(root, bundle);
+
+    PuzzleCatalog catalog;
+    std::string error;
+    context.Expect(PuzzleCatalogLoader::Load(
+                       "data/catalog.json", root.string(), catalog, error),
+                   "disk loader resolves every document relative to catalog/resource root");
+    context.Expect(catalog.GetTileset().atlasPath == "data/atlas.png",
+                   "atlas path is normalized relative to the resource root");
+
+    std::filesystem::remove(root / "data" / "atlas.png", cleanupError);
+    PuzzleDefinition sentinelDefinition;
+    sentinelDefinition.id = "sentinel";
+    PuzzleCatalog sentinel{{std::move(sentinelDefinition)}};
+    context.Expect(!PuzzleCatalogLoader::Load(
+                       "data/catalog.json", root.string(), sentinel, error) &&
+                       error.find("data/tileset.json#/atlas_path") !=
+                           std::string::npos &&
+                       sentinel.Find("sentinel") != nullptr,
+                    "missing atlas fails the whole disk transaction with file and pointer");
+
+    constexpr std::array<std::string_view, 4> jsonResources{
+        "data/catalog.json",
+        "data/tileset.json",
+        "data/node_types.json",
+        "data/levels/first.json",
+    };
+    for (const std::string_view resourceName : jsonResources) {
+        std::filesystem::remove_all(root, cleanupError);
+        WriteBundleFiles(root, bundle);
+        const std::filesystem::path resourcePath =
+            root / std::filesystem::path{resourceName};
+        std::filesystem::remove(resourcePath, cleanupError);
+        std::filesystem::create_directory(resourcePath, cleanupError);
+
+        PuzzleDefinition directorySentinelDefinition;
+        directorySentinelDefinition.id = "sentinel";
+        PuzzleCatalog directorySentinel{{std::move(directorySentinelDefinition)}};
+        error.clear();
+        context.Expect(
+            !PuzzleCatalogLoader::Load("data/catalog.json", root.string(),
+                                       directorySentinel, error) &&
+                error.find(std::string{resourceName} + "#/") != std::string::npos &&
+                error.find("not a regular file") != std::string::npos &&
+                directorySentinel.Find("sentinel") != nullptr,
+            "every JSON document is validated as a regular file before reading");
+    }
+
+    std::filesystem::remove_all(root, cleanupError);
+    WriteBundleFiles(root, bundle);
+    const std::filesystem::path outsideRoot =
+        std::filesystem::temp_directory_path() /
+        "ObjectConnectJsonLoaderOutsideRoot";
+    std::filesystem::remove_all(outsideRoot, cleanupError);
+    std::filesystem::create_directories(outsideRoot);
+    const std::filesystem::path outsideLevel = outsideRoot / "escaped_level.json";
+    WriteTextFile(outsideLevel, bundle.level);
+    const std::filesystem::path linkedLevel =
+        root / "data" / "levels" / "first.json";
+    std::filesystem::remove(linkedLevel, cleanupError);
+    std::error_code linkError;
+    std::filesystem::create_symlink(outsideLevel, linkedLevel, linkError);
+    if (!linkError) {
+        PuzzleDefinition linkSentinelDefinition;
+        linkSentinelDefinition.id = "sentinel";
+        PuzzleCatalog linkSentinel{{std::move(linkSentinelDefinition)}};
+        error.clear();
+        context.Expect(
+            !PuzzleCatalogLoader::Load("data/catalog.json", root.string(),
+                                       linkSentinel, error) &&
+                error.find("data/levels/first.json#/") != std::string::npos &&
+                error.find("outside the resource root") != std::string::npos &&
+                linkSentinel.Find("sentinel") != nullptr,
+            "a JSON symlink cannot escape the canonical resource root");
+    }
+
+    std::filesystem::remove_all(root, cleanupError);
+    std::filesystem::remove_all(outsideRoot, cleanupError);
+}
+
+void TestBundledJsonCatalog(TestContext& context) {
     PuzzleCatalog catalog;
     std::string error;
     context.Expect(
-        PuzzleCatalogLoader::Load(PuzzleDataPaths{},
+        PuzzleCatalogLoader::Load("data/catalog.json",
                                   std::string{OBJECT_CONNECT_TEST_RESOURCE_ROOT},
                                   catalog, error),
-        "the deployed four-table puzzle catalog loads as one transaction");
+        "the checked-in JSON catalog and every referenced resource load transactionally");
     if (!error.empty() || catalog.GetPuzzles().size() != 3) {
-        context.Expect(false, "bundled catalog contains exactly three valid puzzles");
+        context.Expect(false, "bundled JSON catalog contains exactly three valid levels");
         return;
     }
-
+    context.Expect(catalog.GetTileset().tiles.size() == 8 &&
+                       catalog.GetNodeTypes().size() == 6,
+                   "bundled catalog owns its atlas tile and organ stamp definitions");
     context.Expect(catalog.GetPuzzles()[0].id == "first_link" &&
-                       catalog.GetPuzzles()[0].totalLength == 700.0f,
-                   "first_link uses its one global 700-pixel length budget");
-    context.Expect(catalog.GetPuzzles()[1].id == "around_block" &&
-                       catalog.GetPuzzles()[1].connections.size() == 3 &&
-                       catalog.GetPuzzles()[1].obstacles.size() == 1,
-                   "around_block loads its ordered route and central obstacle");
-    context.Expect(catalog.GetPuzzles()[2].id == "clot_path" &&
-                       catalog.GetPuzzles()[2].connections.size() == 8 &&
-                       catalog.GetPuzzles()[2].obstacles.size() == 2 &&
-                       !catalog.GetPuzzles()[2].showTargetConnections,
-                   "clot_path loads a route-choice graph without answer hints");
-
-    bool allConnectionsUseOneThickness = true;
-    bool allPuzzlesUsePixelCrimson = true;
-    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
-        allPuzzlesUsePixelCrimson =
-            allPuzzlesUsePixelCrimson && NearlyEqual(puzzle.baseWidth, 16.0f) &&
-            NearlyEqual(puzzle.tipWidth, 16.0f) &&
-            NearlyEqual(puzzle.widthVariation, 0.16f) &&
-            NearlyEqual(puzzle.vesselColor.r, 134.0f / 255.0f) &&
-            NearlyEqual(puzzle.vesselColor.g, 27.0f / 255.0f) &&
-            NearlyEqual(puzzle.vesselColor.b, 43.0f / 255.0f);
-        for (const ConnectionDefinition& connection : puzzle.connections) {
-            allConnectionsUseOneThickness =
-                allConnectionsUseOneThickness &&
-                NearlyEqual(connection.thicknessScale, 1.0f);
-        }
+                       catalog.GetPuzzles()[1].id == "around_block" &&
+                       catalog.GetPuzzles()[2].id == "clot_path",
+                   "catalog level order follows catalog.json rather than directory order");
+    const PuzzleDefinition& network = catalog.GetPuzzles()[2];
+    const std::size_t repeatedLungs = static_cast<std::size_t>(std::count_if(
+        network.nodes.begin(), network.nodes.end(),
+        [](const NodeDefinition& node) { return node.typeId == "lung"; }));
+    std::vector<std::size_t> candidateIncoming(network.nodes.size(), 0);
+    std::vector<std::size_t> candidateOutgoing(network.nodes.size(), 0);
+    for (const ConnectionDefinition& connection : network.connections) {
+        ++candidateOutgoing[connection.fromNodeIndex];
+        ++candidateIncoming[connection.toNodeIndex];
     }
-    context.Expect(allPuzzlesUsePixelCrimson,
-                   "bundled puzzles use an equal-ended rough crimson vessel style");
-    context.Expect(allConnectionsUseOneThickness,
-                   "bundled route segments keep the same thickness across nodes");
+    context.Expect(network.rootNodeIndices.size() == 2 &&
+                       network.goalNodeIndices.size() == 2 && repeatedLungs >= 2 &&
+                       std::ranges::any_of(candidateOutgoing,
+                                           [](const std::size_t count) {
+                                               return count > 1;
+                                           }) &&
+                       std::ranges::any_of(candidateIncoming,
+                                           [](const std::size_t count) {
+                                               return count > 1;
+                                           }),
+                   "the network sample covers multiple roots, repeated organs, "
+                   "branching, merging, and multiple goals");
+    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
+        context.Expect(!puzzle.rootNodeIndices.empty() &&
+                           !puzzle.goalNodeIndices.empty() &&
+                           puzzle.backgroundTiles.cells.size() ==
+                               kPuzzleGridColumns * kPuzzleGridRows &&
+                           puzzle.obstacleTiles.cells.size() ==
+                               kPuzzleGridColumns * kPuzzleGridRows,
+                       "every bundled level exposes normalized roles and complete tile layers");
+    }
 }
 
 } // namespace
 
 void RunPuzzleCatalogTests(TestContext& context) {
-    TestCsvReader(context);
-    TestValidCatalogAndTopology(context);
-    TestHeadersScalarsColorsAndAscii(context);
-    TestReferencesAndDag(context);
-    TestCanvasObstaclesAndLength(context);
-    TestBundledFourTableCatalog(context);
+    TestValidNormalizedCatalog(context);
+    TestStrictSchemaAndDiagnostics(context);
+    TestTilesetAndStampValidation(context);
+    TestMatricesPlacementAndOverlap(context);
+    TestRolesDagReferencesAndBlocking(context);
+    TestDiskLoadingAndAtlasReference(context);
+    TestBundledJsonCatalog(context);
 }
 
 } // namespace object_connect::tests

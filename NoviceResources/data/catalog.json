@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "canvas": {
+    "width": 1280,
+    "height": 720,
+    "tile_size": 16
+  },
+  "tileset": "tileset.json",
+  "node_types": "node_types.json",
+  "levels": [
+    "levels/first_link.json",
+    "levels/around_block.json",
+    "levels/clot_path.json"
+  ]
+}

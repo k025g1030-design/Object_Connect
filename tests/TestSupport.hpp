@@ -49,6 +49,7 @@ void RunPuzzleCatalogTests(TestContext& context);
 void RunGameFlowTests(TestContext& context);
 void RunGeometry2DTests(TestContext& context);
 void RunPuzzleBoardTests(TestContext& context);
+void RunTileMeshTests(TestContext& context);
 void RunBloodTentacleTests(TestContext& context);
 void RunRibbonStripTests(TestContext& context);
 

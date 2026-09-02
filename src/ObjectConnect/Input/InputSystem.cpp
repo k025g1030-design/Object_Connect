@@ -36,6 +36,7 @@ InputState InputSystem::Sample() noexcept {
     previousWindowFocused_ = state.windowFocused;
     if (!state.windowFocused) {
         previousLeftHeld_ = false;
+        hasPreviousMousePosition_ = false;
         return state;
     }
 
@@ -55,6 +56,12 @@ InputState InputSystem::Sample() noexcept {
     const KamataEngine::Vector2& mouse = input->GetMousePosition();
     state.mouse.positionX = mouse.x;
     state.mouse.positionY = mouse.y;
+    state.mouse.moved = !hasPreviousMousePosition_ ||
+                        state.mouse.positionX != previousMouseX_ ||
+                        state.mouse.positionY != previousMouseY_;
+    previousMouseX_ = state.mouse.positionX;
+    previousMouseY_ = state.mouse.positionY;
+    hasPreviousMousePosition_ = true;
     state.mouse.leftHeld = input->IsPressMouse(0);
     state.mouse.leftPressed = input->IsTriggerMouse(0) ||
                               (state.mouse.leftHeld && !previousLeftHeld_);
@@ -67,6 +74,9 @@ void InputSystem::Finalize() noexcept {
     initialized_ = false;
     previousLeftHeld_ = false;
     previousWindowFocused_ = false;
+    hasPreviousMousePosition_ = false;
+    previousMouseX_ = 0.0f;
+    previousMouseY_ = 0.0f;
 }
 
 } // namespace object_connect

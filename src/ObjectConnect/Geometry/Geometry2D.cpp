@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 
 namespace object_connect {
@@ -19,6 +20,18 @@ namespace {
                                      const float height) noexcept {
     return IsFinite(center) && IsFiniteScalar(width) && IsFiniteScalar(height) &&
            width >= 0.0f && height >= 0.0f;
+}
+
+[[nodiscard]] bool HasExpectedCellCount(const std::size_t columns,
+                                        const std::size_t rows,
+                                        const std::size_t actualCount) noexcept {
+    if (columns == 0 || rows == 0) {
+        return columns == 0 && rows == 0 && actualCount == 0;
+    }
+    if (columns > (std::numeric_limits<std::size_t>::max)() / rows) {
+        return false;
+    }
+    return columns * rows == actualCount;
 }
 
 } // namespace
@@ -116,35 +129,94 @@ bool SegmentIntersectsRectangle(const Vec2 start, const Vec2 end, const Vec2 cen
            clipAxis(start.y, deltaY, minimumY, maximumY);
 }
 
-bool IsConnectionBlocked(const Vec2 start, const Vec2 end,
-                         const std::span<const ObstacleDefinition> obstacles,
-                         const float clearance) noexcept {
-    if (!IsFinite(start) || !IsFinite(end) || !IsFiniteScalar(clearance) || clearance < 0.0f) {
+std::optional<TileCoordinate> WorldPointToTileCell(
+    const Vec2 point, const Vec2 gridOrigin, const float tileSize,
+    const std::size_t columns, const std::size_t rows) noexcept {
+    if (!IsFinite(point) || !IsFinite(gridOrigin) || !IsFiniteScalar(tileSize) ||
+        tileSize <= 0.0f || columns == 0 || rows == 0) {
+        return std::nullopt;
+    }
+
+    const double localX = static_cast<double>(point.x) - gridOrigin.x;
+    const double localY = static_cast<double>(point.y) - gridOrigin.y;
+    const double gridWidth = static_cast<double>(columns) * tileSize;
+    const double gridHeight = static_cast<double>(rows) * tileSize;
+    if (!std::isfinite(gridWidth) || !std::isfinite(gridHeight) ||
+        localX < 0.0 || localY < 0.0 || localX >= gridWidth ||
+        localY >= gridHeight) {
+        return std::nullopt;
+    }
+
+    const auto column = static_cast<std::size_t>(
+        std::floor(localX / static_cast<double>(tileSize)));
+    const auto row = static_cast<std::size_t>(
+        std::floor(localY / static_cast<double>(tileSize)));
+    if (column >= columns || row >= rows) {
+        return std::nullopt;
+    }
+    return TileCoordinate{column, row};
+}
+
+bool PointHitsOccupiedTileStamp(const Vec2 point, const Vec2 stampOrigin,
+                                const float tileSize,
+                                const TileStamp& stamp) noexcept {
+    if (!HasExpectedCellCount(stamp.columns, stamp.rows,
+                              stamp.occupiedMask.size())) {
+        return false;
+    }
+    const std::optional<TileCoordinate> cell = WorldPointToTileCell(
+        point, stampOrigin, tileSize, stamp.columns, stamp.rows);
+    return cell.has_value() && stamp.IsOccupied(cell->column, cell->row);
+}
+
+bool SegmentIntersectsSolidTileGrid(
+    const Vec2 start, const Vec2 end, const Vec2 gridOrigin,
+    const float tileSize, const TileGrid& grid, const float clearance,
+    const float pixelPadding) noexcept {
+    if (!IsFinite(start) || !IsFinite(end) || !IsFinite(gridOrigin) ||
+        !IsFiniteScalar(tileSize) || tileSize <= 0.0f ||
+        !IsFiniteScalar(clearance) || clearance < 0.0f ||
+        !IsFiniteScalar(pixelPadding) || pixelPadding < 0.0f) {
+        return true;
+    }
+    if (grid.columns == 0 && grid.rows == 0 && grid.cells.empty()) {
+        return false;
+    }
+    if (!HasExpectedCellCount(grid.columns, grid.rows, grid.cells.size())) {
         return true;
     }
 
-    for (const ObstacleDefinition& obstacle : obstacles) {
-        switch (obstacle.shape) {
-        case ObstacleShape::Rectangle: {
-            const float expandedWidth = obstacle.width + clearance * 2.0f;
-            const float expandedHeight = obstacle.height + clearance * 2.0f;
-            if (!HasValidRectangle(obstacle.center, expandedWidth, expandedHeight) ||
-                SegmentIntersectsRectangle(start, end, obstacle.center, expandedWidth,
-                                           expandedHeight)) {
+    const double expansion = static_cast<double>(clearance) + pixelPadding;
+    const double expandedSize = static_cast<double>(tileSize) + expansion * 2.0;
+    if (!std::isfinite(expansion) || !std::isfinite(expandedSize) ||
+        expandedSize > (std::numeric_limits<float>::max)()) {
+        return true;
+    }
+
+    for (std::size_t row = 0; row < grid.rows; ++row) {
+        for (std::size_t column = 0; column < grid.columns; ++column) {
+            const std::size_t index = row * grid.columns + column;
+            if (grid.cells[index] == 0) {
+                continue;
+            }
+
+            const double centerX = static_cast<double>(gridOrigin.x) +
+                (static_cast<double>(column) + 0.5) * tileSize;
+            const double centerY = static_cast<double>(gridOrigin.y) +
+                (static_cast<double>(row) + 0.5) * tileSize;
+            if (!std::isfinite(centerX) || !std::isfinite(centerY) ||
+                std::abs(centerX) > (std::numeric_limits<float>::max)() ||
+                std::abs(centerY) > (std::numeric_limits<float>::max)()) {
                 return true;
             }
-            break;
-        }
-        case ObstacleShape::Circle: {
-            const float expandedRadius = obstacle.radius + clearance;
-            if (!HasValidCircle(obstacle.center, expandedRadius) ||
-                SegmentIntersectsCircle(start, end, obstacle.center, expandedRadius)) {
+
+            if (SegmentIntersectsRectangle(
+                    start, end,
+                    {static_cast<float>(centerX), static_cast<float>(centerY)},
+                    static_cast<float>(expandedSize),
+                    static_cast<float>(expandedSize))) {
                 return true;
             }
-            break;
-        }
-        default:
-            return true;
         }
     }
     return false;

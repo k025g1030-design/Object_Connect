@@ -1,4 +1,0 @@
-puzzle_id,title,start_node_id,total_length,minimum_slack_ratio,background_color,show_target_connections,vessel_color,base_width,tip_width,width_variation
-first_link,FIRST LINK,a,700,1.05,#160D12,true,#861B2B,16,16,0.16
-around_block,AROUND BLOCK,a,1250,1.05,#140D12,true,#861B2B,16,16,0.16
-clot_path,CLOT PATH,a,2450,1.05,#120B10,false,#861B2B,16,16,0.16

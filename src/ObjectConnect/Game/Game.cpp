@@ -21,6 +21,7 @@ namespace {
 
 constexpr float kSolvedMenuDelaySeconds = 0.6f;
 constexpr std::size_t kRendererVertexCapacity = 65536;
+constexpr char kRuntimeResourceRoot[] = "Resources";
 
 [[nodiscard]] float NormalizeDelta(const float deltaSeconds) noexcept {
     return std::isfinite(deltaSeconds) && deltaSeconds > 0.0f ? deltaSeconds : 0.0f;
@@ -146,10 +147,12 @@ struct Game::Impl final {
         flowInput.confirmPressed = state.keyboard.enterPressed;
         flowInput.escapePressed = state.keyboard.escapePressed;
         flowInput.focusLost = state.focusLost;
+        flowInput.mouseMoved = state.mouse.moved;
         flowInput.mousePrimaryPressed = state.mouse.leftPressed;
         flowInput.hoveredItem = ui.HitTest(
             screenBeforeInput, {state.mouse.positionX, state.mouse.positionY},
-            catalog.GetPuzzles().size(), IsCurrentPuzzleLast(), solvedMenuReady);
+            catalog.GetPuzzles().size(), IsCurrentPuzzleLast(), solvedMenuReady,
+            flow.GetSelectedItem());
 
         if (screenBeforeInput == GameScreen::Solved && !solvedMenuReady) {
             flowInput = {};
@@ -202,7 +205,7 @@ bool Game::Initialize(const GameConfig& config, std::string& error) {
     Finalize();
     error.clear();
     auto next = std::make_unique<Impl>();
-    if (!PuzzleCatalogLoader::Load(config.data, config.resourceRoot,
+    if (!PuzzleCatalogLoader::Load(config.catalogPath, kRuntimeResourceRoot,
                                    next->catalog, error)) {
         return false;
     }
@@ -213,7 +216,8 @@ bool Game::Initialize(const GameConfig& config, std::string& error) {
     if (!next->input.Initialize(error)) {
         return false;
     }
-    if (!next->puzzleRenderer.Initialize(kRendererVertexCapacity, error)) {
+    if (!next->puzzleRenderer.Initialize(kRendererVertexCapacity,
+                                         next->catalog.GetTileset(), error)) {
         return false;
     }
     if (!next->ui.Initialize(error)) {

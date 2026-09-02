@@ -173,6 +173,28 @@ void TestSelectionTracksDynamicMenus(TestContext& context) {
     static_cast<void>(flow.Update(both, 1, false));
     context.Expect(flow.GetSelectedItem() == 0,
                    "opposing navigation inputs cancel each other");
+
+    flow.ReturnToMainMenu();
+    GameFlowInput movedOverPlay{};
+    movedOverPlay.mouseMoved = true;
+    movedOverPlay.hoveredItem = 0;
+    static_cast<void>(flow.Update(movedOverPlay, kPuzzleCount, false));
+
+    GameFlowInput keyboardNextWithStationaryPointer{};
+    keyboardNextWithStationaryPointer.nextPressed = true;
+    keyboardNextWithStationaryPointer.hoveredItem = 0;
+    static_cast<void>(flow.Update(keyboardNextWithStationaryPointer,
+                                  kPuzzleCount, false));
+    context.Expect(flow.GetSelectedItem() == 1,
+                   "a stationary mouse does not steal keyboard selection");
+
+    GameFlowInput confirmWithStationaryPointer{};
+    confirmWithStationaryPointer.confirmPressed = true;
+    confirmWithStationaryPointer.hoveredItem = 0;
+    const GameFlowResult keyboardChoice =
+        flow.Update(confirmWithStationaryPointer, kPuzzleCount, false);
+    context.Expect(keyboardChoice.command == GameCommand::QuitGame,
+                   "keyboard confirmation keeps the selection despite persistent hover");
 }
 
 } // namespace

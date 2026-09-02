@@ -17,6 +17,9 @@ private:
     bool initialized_ = false;
     bool previousLeftHeld_ = false;
     bool previousWindowFocused_ = false;
+    bool hasPreviousMousePosition_ = false;
+    float previousMouseX_ = 0.0f;
+    float previousMouseY_ = 0.0f;
 };
 
 } // namespace object_connect

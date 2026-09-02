@@ -32,7 +32,8 @@ public:
               bool solvedMenuReady);
     [[nodiscard]] std::optional<std::size_t> HitTest(
         GameScreen screen, UiPoint point, std::size_t puzzleCount,
-        bool currentPuzzleIsLast, bool solvedMenuReady) const noexcept;
+        bool currentPuzzleIsLast, bool solvedMenuReady,
+        std::size_t selectedItem) const noexcept;
     void Finalize() noexcept;
     [[nodiscard]] bool IsInitialized() const noexcept;
 

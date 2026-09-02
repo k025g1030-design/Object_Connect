@@ -13,6 +13,7 @@ struct KeyboardState final {
 struct MouseState final {
     float positionX = 0.0f;
     float positionY = 0.0f;
+    bool moved = false;
     bool leftHeld = false;
     bool leftPressed = false;
     bool leftReleased = false;

@@ -93,7 +93,8 @@ void GameFlow::ApplyNavigation(const GameFlowInput& input,
     if (selectedItem_ >= itemCount) {
         selectedItem_ = 0;
     }
-    if (input.hoveredItem.has_value() && *input.hoveredItem < itemCount) {
+    if (input.mouseMoved && input.hoveredItem.has_value() &&
+        *input.hoveredItem < itemCount) {
         selectedItem_ = *input.hoveredItem;
     }
 

@@ -6,10 +6,8 @@
 /out/
 /Docs/*
 !/Docs/Architecture.md
-!/Docs/EnemyAtlasShaderABI.zh-TW.md
-!/Docs/EnemyAtlasShaderABI.ja.md
-!/Docs/ObjectFPS_MVP_TechnicalReport.zh-TW.md
-!/Docs/ObjectFPS_MVP_TechnicalReport.ja.md
+!/Docs/Schemas/
+!/Docs/Schemas/**
 /target/
 /*.obj
 CMakeUserPresets.json

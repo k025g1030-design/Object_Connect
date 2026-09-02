@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <numbers>
 #include <utility>
 
@@ -24,19 +25,30 @@ constexpr std::size_t kMaximumPointCount = 12;
     return (std::min)(deltaSeconds, kMaximumDeltaSeconds);
 }
 
-[[nodiscard]] float ConnectionMinimumLength(const PuzzleDefinition& definition,
-                                            const ConnectionDefinition& connection) noexcept {
+[[nodiscard]] float ConnectionMinimumLength(
+    const PuzzleDefinition& definition,
+    const ConnectionDefinition& connection) noexcept {
     if (connection.fromNodeIndex >= definition.nodes.size() ||
         connection.toNodeIndex >= definition.nodes.size()) {
         return 0.0f;
     }
-    const Vec2 from = definition.nodes[connection.fromNodeIndex].position;
-    const Vec2 to = definition.nodes[connection.toNodeIndex].position;
+    const Vec2 from = definition.nodes[connection.fromNodeIndex].anchorPosition;
+    const Vec2 to = definition.nodes[connection.toNodeIndex].anchorPosition;
     return Length(to - from) * definition.minimumSlackRatio;
 }
 
 [[nodiscard]] bool IsPositiveFinite(const float value) noexcept {
     return std::isfinite(value) && value > 0.0f;
+}
+
+[[nodiscard]] bool HasCellCount(const std::size_t columns,
+                                const std::size_t rows,
+                                const std::size_t count) noexcept {
+    if (columns == 0 || rows == 0 ||
+        columns > (std::numeric_limits<std::size_t>::max)() / rows) {
+        return false;
+    }
+    return columns * rows == count;
 }
 
 } // namespace
@@ -46,8 +58,11 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition, std::string& er
     segments_.clear();
     preview_.reset();
     committedConnectionIndices_.clear();
-    visitedNodeIndices_.clear();
-    currentNodeIndex_ = 0;
+    activatedNodeIndices_.clear();
+    incomingConnectionCounts_.clear();
+    outgoingConnectionCounts_.clear();
+    activatedNodes_.clear();
+    committedConnections_.clear();
     committedLength_ = 0.0f;
     solved_ = false;
     initialized_ = false;
@@ -57,12 +72,12 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition, std::string& er
         error = "PuzzleBoard requires at least one node.";
         return false;
     }
-    if (definition.connections.empty()) {
-        error = "PuzzleBoard requires at least one connection.";
+    if (definition.rootNodeIndices.empty()) {
+        error = "PuzzleBoard requires at least one root node.";
         return false;
     }
-    if (definition.startNodeIndex >= definition.nodes.size()) {
-        error = "PuzzleBoard start node index is out of range.";
+    if (definition.goalNodeIndices.empty()) {
+        error = "PuzzleBoard requires at least one goal node.";
         return false;
     }
     if (!IsPositiveFinite(definition.totalLength)) {
@@ -74,16 +89,109 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition, std::string& er
         error = "PuzzleBoard minimum slack ratio must be finite and at least one.";
         return false;
     }
-    if (!IsPositiveFinite(definition.baseWidth) || !IsPositiveFinite(definition.tipWidth) ||
-        !std::isfinite(definition.widthVariation) || definition.widthVariation < 0.0f ||
-        definition.widthVariation >= 1.0f) {
+    if (!IsPositiveFinite(definition.baseWidth) ||
+        !IsPositiveFinite(definition.tipWidth) ||
+        !std::isfinite(definition.widthVariation) ||
+        definition.widthVariation < 0.0f || definition.widthVariation >= 1.0f) {
         error = "PuzzleBoard vessel widths and width variation are invalid.";
+        return false;
+    }
+    if (definition.obstacleTiles.columns != kPuzzleGridColumns ||
+        definition.obstacleTiles.rows != kPuzzleGridRows ||
+        !HasCellCount(definition.obstacleTiles.columns,
+                      definition.obstacleTiles.rows,
+                      definition.obstacleTiles.cells.size())) {
+        error = "PuzzleBoard obstacle tile grid must match the logical puzzle grid.";
         return false;
     }
 
     for (const NodeDefinition& node : definition.nodes) {
-        if (!IsFinite(node.position) || !IsPositiveFinite(node.radius)) {
-            error = "PuzzleBoard nodes require finite positions and positive radii.";
+        if (!IsFinite(node.anchorPosition)) {
+            error = "PuzzleBoard nodes require finite anchor positions.";
+            return false;
+        }
+        if (!HasCellCount(node.stamp.columns, node.stamp.rows,
+                          node.stamp.cells.size()) ||
+            !HasCellCount(node.stamp.columns, node.stamp.rows,
+                          node.stamp.occupiedMask.size())) {
+            error = "PuzzleBoard node stamps require complete tile and occupancy data.";
+            return false;
+        }
+        if (node.stamp.anchor.column >= node.stamp.columns ||
+            node.stamp.anchor.row >= node.stamp.rows ||
+            !node.stamp.IsOccupied(node.stamp.anchor.column,
+                                   node.stamp.anchor.row)) {
+            error = "PuzzleBoard node anchors must select an occupied stamp tile.";
+            return false;
+        }
+        bool hasOccupiedTile = false;
+        bool occupiedTileOutsideGrid = false;
+        for (std::size_t row = 0; row < node.stamp.rows; ++row) {
+            for (std::size_t column = 0; column < node.stamp.columns; ++column) {
+                if (!node.stamp.IsOccupied(column, row)) {
+                    continue;
+                }
+                hasOccupiedTile = true;
+                if (node.origin.column >
+                        (std::numeric_limits<std::size_t>::max)() - column ||
+                    node.origin.row >
+                        (std::numeric_limits<std::size_t>::max)() - row ||
+                    node.origin.column + column >= kPuzzleGridColumns ||
+                    node.origin.row + row >= kPuzzleGridRows) {
+                    occupiedTileOutsideGrid = true;
+                }
+            }
+        }
+        if (!hasOccupiedTile) {
+            error = "PuzzleBoard node stamps require at least one occupied tile.";
+            return false;
+        }
+        if (occupiedTileOutsideGrid) {
+            error = "PuzzleBoard occupied node tiles must fit inside the logical puzzle grid.";
+            return false;
+        }
+        const Vec2 expectedAnchor{
+            (static_cast<float>(node.origin.column + node.stamp.anchor.column) +
+             0.5f) * static_cast<float>(kPuzzleTileSize),
+            (static_cast<float>(node.origin.row + node.stamp.anchor.row) + 0.5f) *
+                static_cast<float>(kPuzzleTileSize),
+        };
+        if (LengthSquared(node.anchorPosition - expectedAnchor) >
+            kLengthEpsilon * kLengthEpsilon) {
+            error = "PuzzleBoard node anchor positions must match their resolved tile anchors.";
+            return false;
+        }
+    }
+
+    std::vector<bool> listedRoots(definition.nodes.size(), false);
+    for (const std::size_t nodeIndex : definition.rootNodeIndices) {
+        if (nodeIndex >= definition.nodes.size()) {
+            error = "PuzzleBoard root node index is out of range.";
+            return false;
+        }
+        if (listedRoots[nodeIndex]) {
+            error = "PuzzleBoard root node indices must be unique.";
+            return false;
+        }
+        listedRoots[nodeIndex] = true;
+    }
+
+    std::vector<bool> listedGoals(definition.nodes.size(), false);
+    for (const std::size_t nodeIndex : definition.goalNodeIndices) {
+        if (nodeIndex >= definition.nodes.size()) {
+            error = "PuzzleBoard goal node index is out of range.";
+            return false;
+        }
+        if (listedGoals[nodeIndex]) {
+            error = "PuzzleBoard goal node indices must be unique.";
+            return false;
+        }
+        listedGoals[nodeIndex] = true;
+    }
+    for (std::size_t nodeIndex = 0; nodeIndex < definition.nodes.size(); ++nodeIndex) {
+        if (definition.nodes[nodeIndex].isRoot != listedRoots[nodeIndex] ||
+            definition.nodes[nodeIndex].isGoal != listedGoals[nodeIndex]) {
+            error = "PuzzleBoard node root and goal flags must match the resolved index lists.";
             return false;
         }
     }
@@ -110,43 +218,15 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition, std::string& er
             error = "PuzzleBoard connection style contains an invalid value.";
             return false;
         }
-        if (LengthSquared(definition.nodes[connection.toNodeIndex].position -
-                          definition.nodes[connection.fromNodeIndex].position) <=
+        if (definition.nodes[connection.fromNodeIndex].maxOutgoing == 0 ||
+            definition.nodes[connection.toNodeIndex].maxIncoming == 0) {
+            error = "PuzzleBoard connections require source outgoing and target incoming capacity.";
+            return false;
+        }
+        if (LengthSquared(definition.nodes[connection.toNodeIndex].anchorPosition -
+                          definition.nodes[connection.fromNodeIndex].anchorPosition) <=
             kLengthEpsilon * kLengthEpsilon) {
-            error = "PuzzleBoard connection endpoints must have different positions.";
-            return false;
-        }
-    }
-    const bool startHasConnection = std::any_of(
-        definition.connections.begin(), definition.connections.end(),
-        [&definition](const ConnectionDefinition& connection) {
-            return connection.fromNodeIndex == definition.startNodeIndex;
-        });
-    if (!startHasConnection) {
-        error = "PuzzleBoard start node must have at least one outgoing connection.";
-        return false;
-    }
-
-    for (const ObstacleDefinition& obstacle : definition.obstacles) {
-        if (!IsFinite(obstacle.center)) {
-            error = "PuzzleBoard obstacle position must be finite.";
-            return false;
-        }
-        switch (obstacle.shape) {
-        case ObstacleShape::Rectangle:
-            if (!IsPositiveFinite(obstacle.width) || !IsPositiveFinite(obstacle.height)) {
-                error = "PuzzleBoard rectangle obstacles require positive dimensions.";
-                return false;
-            }
-            break;
-        case ObstacleShape::Circle:
-            if (!IsPositiveFinite(obstacle.radius)) {
-                error = "PuzzleBoard circle obstacles require a positive radius.";
-                return false;
-            }
-            break;
-        default:
-            error = "PuzzleBoard obstacle has an unknown shape.";
+            error = "PuzzleBoard connection anchors must have different positions.";
             return false;
         }
     }
@@ -157,15 +237,27 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition, std::string& er
         nextSegments.reserve(definition.connections.size());
         std::vector<std::size_t> nextCommittedConnections;
         nextCommittedConnections.reserve(definition.connections.size());
-        std::vector<std::size_t> nextVisitedNodes;
-        nextVisitedNodes.reserve(definition.connections.size() + 1);
-        nextVisitedNodes.push_back(definition.startNodeIndex);
+        std::vector<std::size_t> nextActivatedNodes;
+        nextActivatedNodes.reserve(definition.nodes.size());
+        std::vector<std::size_t> nextIncomingCounts(definition.nodes.size(), 0);
+        std::vector<std::size_t> nextOutgoingCounts(definition.nodes.size(), 0);
+        std::vector<bool> nextActivatedFlags(definition.nodes.size(), false);
+        std::vector<bool> nextCommittedFlags(definition.connections.size(), false);
+        for (const std::size_t rootNodeIndex : definition.rootNodeIndices) {
+            nextActivatedFlags[rootNodeIndex] = true;
+            nextActivatedNodes.push_back(rootNodeIndex);
+        }
+
         definition_ = std::move(nextDefinition);
         segments_ = std::move(nextSegments);
         committedConnectionIndices_ = std::move(nextCommittedConnections);
-        visitedNodeIndices_ = std::move(nextVisitedNodes);
-        currentNodeIndex_ = definition_.startNodeIndex;
+        activatedNodeIndices_ = std::move(nextActivatedNodes);
+        incomingConnectionCounts_ = std::move(nextIncomingCounts);
+        outgoingConnectionCounts_ = std::move(nextOutgoingCounts);
+        activatedNodes_ = std::move(nextActivatedFlags);
+        committedConnections_ = std::move(nextCommittedFlags);
         initialized_ = true;
+        solved_ = AreAllGoalsActivated();
         return true;
     } catch (const std::exception& exception) {
         error = "Failed to initialize PuzzleBoard: ";
@@ -173,14 +265,24 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition, std::string& er
     } catch (...) {
         error = "Failed to initialize PuzzleBoard because of an unknown error.";
     }
+
     definition_ = {};
     segments_.clear();
+    preview_.reset();
     committedConnectionIndices_.clear();
-    visitedNodeIndices_.clear();
+    activatedNodeIndices_.clear();
+    incomingConnectionCounts_.clear();
+    outgoingConnectionCounts_.clear();
+    activatedNodes_.clear();
+    committedConnections_.clear();
+    committedLength_ = 0.0f;
+    solved_ = false;
+    initialized_ = false;
     return false;
 }
 
-void PuzzleBoard::Update(const BoardPointerInput& input, const float deltaSeconds) noexcept {
+void PuzzleBoard::Update(const BoardPointerInput& input,
+                         const float deltaSeconds) noexcept {
     if (!initialized_) {
         return;
     }
@@ -192,8 +294,10 @@ void PuzzleBoard::Update(const BoardPointerInput& input, const float deltaSecond
         }
         const ConnectionDefinition& connection =
             definition_.connections[segment.connectionIndex];
-        segment.tentacle.SetRootAnchor(definition_.nodes[connection.fromNodeIndex].position);
-        segment.tentacle.AttachTip(definition_.nodes[connection.toNodeIndex].position);
+        segment.tentacle.SetRootAnchor(
+            definition_.nodes[connection.fromNodeIndex].anchorPosition);
+        segment.tentacle.AttachTip(
+            definition_.nodes[connection.toNodeIndex].anchorPosition);
         segment.tentacle.Update(normalizedDeltaSeconds);
     }
 
@@ -211,16 +315,16 @@ void PuzzleBoard::Update(const BoardPointerInput& input, const float deltaSecond
     }
 
     const std::optional<std::size_t> hitNode = HitTestNode(input.position);
-    // A target is not known until the player drags over one. The first outgoing
-    // edge supplies the initial preview settings; SelectPreviewConnection swaps
-    // them to the chosen edge before commit.
-    const std::optional<std::size_t> firstConnection = GetFirstOutgoingConnection();
-    if (!firstConnection.has_value() || !hitNode.has_value() ||
-        *hitNode != currentNodeIndex_) {
+    if (!hitNode.has_value() || !CanStartFromNode(*hitNode)) {
+        return;
+    }
+    const std::optional<std::size_t> firstConnection =
+        GetFirstAvailableOutgoingConnection(*hitNode);
+    if (!firstConnection.has_value()) {
         return;
     }
 
-    StartDrag(*firstConnection);
+    StartDrag(*hitNode, *firstConnection);
     if (preview_.has_value()) {
         UpdateDrag(input, normalizedDeltaSeconds);
     }
@@ -239,7 +343,8 @@ void PuzzleBoard::CancelDrag(const bool immediate) noexcept {
 
 PuzzleBoardSnapshot PuzzleBoard::MakeSnapshot() const {
     PuzzleBoardSnapshot snapshot{};
-    snapshot.tentacles.reserve(segments_.size() + (preview_.has_value() ? 1u : 0u));
+    snapshot.tentacles.reserve(segments_.size() +
+                               (preview_.has_value() ? 1u : 0u));
 
     for (const Segment& segment : segments_) {
         TentacleRenderSnapshot tentacle{};
@@ -258,16 +363,27 @@ PuzzleBoardSnapshot PuzzleBoard::MakeSnapshot() const {
     }
 
     snapshot.totalLength = GetTotalLength();
+    snapshot.committedLength = GetCommittedLength();
     snapshot.remainingLength = GetRemainingLength();
     snapshot.reservedLength = GetReservedLength();
-    if (initialized_ && !solved_ && HasOutgoingConnection(currentNodeIndex_)) {
-        snapshot.activeNodeIndex = currentNodeIndex_;
+    snapshot.activatedNodeIndices = activatedNodeIndices_;
+    snapshot.availableSourceNodeIndices.reserve(activatedNodeIndices_.size());
+    if (!solved_ && GetRemainingLength() > kLengthEpsilon) {
+        for (const std::size_t nodeIndex : activatedNodeIndices_) {
+            if (CanStartFromNode(nodeIndex)) {
+                snapshot.availableSourceNodeIndices.push_back(nodeIndex);
+            }
+        }
     }
+    snapshot.selectedSourceNodeIndex = GetSelectedSourceNodeIndex();
+    snapshot.incomingConnectionCounts = incomingConnectionCounts_;
+    snapshot.outgoingConnectionCounts = outgoingConnectionCounts_;
     snapshot.dragging = IsDragging();
     snapshot.retracting = preview_.has_value() &&
                           preview_->state == PreviewState::Retracting;
     snapshot.solved = solved_;
     snapshot.lengthExhausted = IsLengthExhausted();
+    snapshot.routeBlocked = IsRouteBlocked();
     return snapshot;
 }
 
@@ -283,37 +399,66 @@ float PuzzleBoard::GetReservedLength() const noexcept {
     return preview_.has_value() ? preview_->reservedLength : 0.0f;
 }
 
+std::optional<std::size_t>
+PuzzleBoard::GetSelectedSourceNodeIndex() const noexcept {
+    if (!preview_.has_value()) {
+        return std::nullopt;
+    }
+    return preview_->sourceNodeIndex;
+}
+
 bool PuzzleBoard::IsDragging() const noexcept {
     return preview_.has_value() && preview_->state == PreviewState::Dragging;
 }
 
 bool PuzzleBoard::IsLengthExhausted() const noexcept {
-    if (!initialized_ || solved_) {
+    if (!initialized_ || solved_ || preview_.has_value()) {
         return false;
     }
-    if (GetRemainingLength() <= kLengthEpsilon) {
-        return true;
-    }
-    if (!HasOutgoingConnection(currentNodeIndex_)) {
-        return false;
-    }
+
     const float availableForConnection =
         (std::max)(0.0f, definition_.totalLength - committedLength_);
-    for (const ConnectionDefinition& connection : definition_.connections) {
-        if (connection.fromNodeIndex == currentNodeIndex_ &&
-            availableForConnection + kLengthEpsilon >=
-                ConnectionMinimumLength(definition_, connection)) {
+    bool hasUsableConnection = false;
+    for (std::size_t connectionIndex = 0;
+         connectionIndex < definition_.connections.size(); ++connectionIndex) {
+        if (!CanUseConnection(connectionIndex)) {
+            continue;
+        }
+        hasUsableConnection = true;
+        if (availableForConnection + kLengthEpsilon >=
+            ConnectionMinimumLength(definition_,
+                                    definition_.connections[connectionIndex])) {
+            return false;
+        }
+    }
+    return hasUsableConnection;
+}
+
+bool PuzzleBoard::IsRouteBlocked() const noexcept {
+    if (!initialized_ || solved_ || preview_.has_value()) {
+        return false;
+    }
+    for (std::size_t connectionIndex = 0;
+         connectionIndex < definition_.connections.size(); ++connectionIndex) {
+        if (CanUseConnection(connectionIndex)) {
             return false;
         }
     }
     return true;
 }
 
-void PuzzleBoard::StartDrag(const std::size_t connectionIndex) noexcept {
-    if (connectionIndex >= definition_.connections.size()) {
+void PuzzleBoard::StartDrag(const std::size_t sourceNodeIndex,
+                            const std::size_t connectionIndex) noexcept {
+    if (sourceNodeIndex >= definition_.nodes.size() ||
+        connectionIndex >= definition_.connections.size() ||
+        !CanUseConnection(connectionIndex)) {
         return;
     }
     const ConnectionDefinition& connection = definition_.connections[connectionIndex];
+    if (connection.fromNodeIndex != sourceNodeIndex) {
+        return;
+    }
+
     const float availableLength =
         (std::max)(0.0f, definition_.totalLength - committedLength_);
     if (availableLength <= kLengthEpsilon) {
@@ -327,20 +472,18 @@ void PuzzleBoard::StartDrag(const std::size_t connectionIndex) noexcept {
     const float radians = connection.initialDirectionDegrees *
                           std::numbers::pi_v<float> / 180.0f;
     const Vec2 initialDirection{std::cos(radians), std::sin(radians)};
-    const Vec2 root = definition_.nodes[connection.fromNodeIndex].position;
+    const Vec2 root = definition_.nodes[sourceNodeIndex].anchorPosition;
 
     Preview next{};
+    next.sourceNodeIndex = sourceNodeIndex;
     next.connectionIndex = connectionIndex;
     next.style = MakeStyle(connection, committedConnectionIndices_.size());
     std::string ignoredError;
-    if (!next.tentacle.Initialize(root, initialDirection, availableLength, settings,
-                                  ignoredError)) {
+    if (!next.tentacle.Initialize(root, initialDirection, availableLength,
+                                  settings, ignoredError)) {
         return;
     }
     next.tentacle.SetDeployedLength(0.0f);
-    // Initialize lays out the chain at its maximum reach. Collapse it once while
-    // both ends are at the source so a new drag visually grows out of the node
-    // instead of flashing a full-budget strand for one frame.
     next.tentacle.AttachTip(root);
     next.tentacle.Update(1.0f / 15.0f);
     next.tentacle.FollowTip(root);
@@ -349,7 +492,9 @@ void PuzzleBoard::StartDrag(const std::size_t connectionIndex) noexcept {
 
 bool PuzzleBoard::SelectPreviewConnection(const std::size_t connectionIndex,
                                           const Vec2 pointerTarget) noexcept {
-    if (!preview_.has_value() || connectionIndex >= definition_.connections.size()) {
+    if (!preview_.has_value() ||
+        connectionIndex >= definition_.connections.size() ||
+        !CanUseConnection(connectionIndex)) {
         return false;
     }
     if (preview_->connectionIndex == connectionIndex) {
@@ -357,7 +502,7 @@ bool PuzzleBoard::SelectPreviewConnection(const std::size_t connectionIndex,
     }
 
     const ConnectionDefinition& connection = definition_.connections[connectionIndex];
-    if (connection.fromNodeIndex != currentNodeIndex_) {
+    if (connection.fromNodeIndex != preview_->sourceNodeIndex) {
         return false;
     }
 
@@ -370,14 +515,13 @@ bool PuzzleBoard::SelectPreviewConnection(const std::size_t connectionIndex,
     const float radians = connection.initialDirectionDegrees *
                           std::numbers::pi_v<float> / 180.0f;
     const Vec2 initialDirection{std::cos(radians), std::sin(radians)};
-    const Vec2 root = definition_.nodes[currentNodeIndex_].position;
+    const Vec2 root =
+        definition_.nodes[preview_->sourceNodeIndex].anchorPosition;
 
-    // pointCount and follow delay belong to an edge, so selecting another target
-    // rebuilds only the temporary preview while preserving its length reservation.
     BloodTentacle replacement;
     std::string ignoredError;
-    if (!replacement.Initialize(root, initialDirection, availableLength, settings,
-                                ignoredError)) {
+    if (!replacement.Initialize(root, initialDirection, availableLength,
+                                settings, ignoredError)) {
         return false;
     }
 
@@ -396,29 +540,32 @@ void PuzzleBoard::UpdateDrag(const BoardPointerInput& input,
     if (!preview_.has_value() || preview_->state != PreviewState::Dragging) {
         return;
     }
-    if (preview_->connectionIndex >= definition_.connections.size()) {
+    if (preview_->sourceNodeIndex >= definition_.nodes.size() ||
+        preview_->connectionIndex >= definition_.connections.size()) {
         preview_.reset();
         return;
     }
 
-    const Vec2 root = definition_.nodes[currentNodeIndex_].position;
+    const std::size_t sourceNodeIndex = preview_->sourceNodeIndex;
+    const Vec2 root = definition_.nodes[sourceNodeIndex].anchorPosition;
     preview_->tentacle.SetRootAnchor(root);
 
     Vec2 pointerTarget = root;
     if (IsFinite(input.position)) {
         pointerTarget = input.position;
         const std::optional<std::size_t> hoveredConnection =
-            FindOutgoingConnectionAt(pointerTarget);
+            FindOutgoingConnectionAt(sourceNodeIndex, pointerTarget);
         if (hoveredConnection.has_value()) {
             (void)SelectPreviewConnection(*hoveredConnection, pointerTarget);
         }
 
-        float desiredLength = Length(pointerTarget - root) * definition_.minimumSlackRatio;
+        float desiredLength =
+            Length(pointerTarget - root) * definition_.minimumSlackRatio;
         if (hoveredConnection.has_value()) {
             const ConnectionDefinition& hovered =
                 definition_.connections[*hoveredConnection];
-            desiredLength = (std::max)(desiredLength,
-                                       ConnectionMinimumLength(definition_, hovered));
+            desiredLength = (std::max)(
+                desiredLength, ConnectionMinimumLength(definition_, hovered));
         }
         desiredLength = std::clamp(desiredLength, 0.0f,
                                    preview_->tentacle.GetMaxLength());
@@ -434,7 +581,7 @@ void PuzzleBoard::UpdateDrag(const BoardPointerInput& input,
         return;
     }
     const std::optional<std::size_t> selectedConnection =
-        FindOutgoingConnectionAt(input.position);
+        FindOutgoingConnectionAt(sourceNodeIndex, input.position);
     if (selectedConnection.has_value() &&
         SelectPreviewConnection(*selectedConnection, input.position) &&
         CanCommitConnection(*selectedConnection, input.position)) {
@@ -448,22 +595,25 @@ void PuzzleBoard::UpdateRetraction(const float deltaSeconds) noexcept {
     if (!preview_.has_value() || preview_->state != PreviewState::Retracting) {
         return;
     }
-    if (currentNodeIndex_ >= definition_.nodes.size()) {
+    if (preview_->sourceNodeIndex >= definition_.nodes.size()) {
         preview_.reset();
         return;
     }
 
-    const Vec2 root = definition_.nodes[currentNodeIndex_].position;
+    const Vec2 root =
+        definition_.nodes[preview_->sourceNodeIndex].anchorPosition;
     preview_->tentacle.SetRootAnchor(root);
     preview_->tentacle.FollowTip(root);
 
     const float oldTimeRemaining =
-        (std::max)(0.0f, kRetractionSeconds - preview_->retractElapsedSeconds);
+        (std::max)(0.0f,
+                   kRetractionSeconds - preview_->retractElapsedSeconds);
     preview_->retractElapsedSeconds =
         (std::min)(kRetractionSeconds,
                    preview_->retractElapsedSeconds + deltaSeconds);
     const float newTimeRemaining =
-        (std::max)(0.0f, kRetractionSeconds - preview_->retractElapsedSeconds);
+        (std::max)(0.0f,
+                   kRetractionSeconds - preview_->retractElapsedSeconds);
     if (oldTimeRemaining > 0.0f) {
         preview_->reservedLength *= newTimeRemaining / oldTimeRemaining;
     } else {
@@ -479,33 +629,42 @@ void PuzzleBoard::UpdateRetraction(const float deltaSeconds) noexcept {
 }
 
 void PuzzleBoard::CommitConnection(const std::size_t connectionIndex) noexcept {
-    if (!preview_.has_value() || connectionIndex >= definition_.connections.size() ||
-        preview_->connectionIndex != connectionIndex) {
+    if (!preview_.has_value() ||
+        connectionIndex >= definition_.connections.size() ||
+        preview_->connectionIndex != connectionIndex ||
+        !CanUseConnection(connectionIndex)) {
         return;
     }
     const ConnectionDefinition& connection = definition_.connections[connectionIndex];
-    if (connection.fromNodeIndex != currentNodeIndex_) {
+    if (connection.fromNodeIndex != preview_->sourceNodeIndex) {
         return;
     }
 
     preview_->tentacle.SetRootAnchor(
-        definition_.nodes[connection.fromNodeIndex].position);
-    preview_->tentacle.AttachTip(definition_.nodes[connection.toNodeIndex].position);
+        definition_.nodes[connection.fromNodeIndex].anchorPosition);
+    preview_->tentacle.AttachTip(
+        definition_.nodes[connection.toNodeIndex].anchorPosition);
 
     Segment segment{};
     segment.tentacle = std::move(preview_->tentacle);
     segment.style = preview_->style;
     segment.connectionIndex = connectionIndex;
     segment.committedLength = preview_->reservedLength;
-    committedLength_ = (std::min)(definition_.totalLength,
-                                  committedLength_ + segment.committedLength);
+    committedLength_ =
+        (std::min)(definition_.totalLength,
+                   committedLength_ + segment.committedLength);
     segments_.push_back(std::move(segment));
     preview_.reset();
 
+    committedConnections_[connectionIndex] = true;
     committedConnectionIndices_.push_back(connectionIndex);
-    currentNodeIndex_ = connection.toNodeIndex;
-    visitedNodeIndices_.push_back(currentNodeIndex_);
-    solved_ = !HasOutgoingConnection(currentNodeIndex_);
+    ++outgoingConnectionCounts_[connection.fromNodeIndex];
+    ++incomingConnectionCounts_[connection.toNodeIndex];
+    if (!activatedNodes_[connection.toNodeIndex]) {
+        activatedNodes_[connection.toNodeIndex] = true;
+        activatedNodeIndices_.push_back(connection.toNodeIndex);
+    }
+    solved_ = AreAllGoalsActivated();
 }
 
 void PuzzleBoard::BeginRetraction() noexcept {
@@ -518,25 +677,23 @@ void PuzzleBoard::BeginRetraction() noexcept {
     }
     preview_->state = PreviewState::Retracting;
     preview_->retractElapsedSeconds = 0.0f;
-    if (currentNodeIndex_ < definition_.nodes.size()) {
-        preview_->tentacle.FollowTip(definition_.nodes[currentNodeIndex_].position);
+    if (preview_->sourceNodeIndex < definition_.nodes.size()) {
+        preview_->tentacle.FollowTip(
+            definition_.nodes[preview_->sourceNodeIndex].anchorPosition);
     }
 }
 
 bool PuzzleBoard::CanCommitConnection(const std::size_t connectionIndex,
                                       const Vec2 pointerPosition) const noexcept {
     if (!preview_.has_value() || preview_->state != PreviewState::Dragging ||
-        !IsFinite(pointerPosition) || connectionIndex >= definition_.connections.size()) {
+        !IsFinite(pointerPosition) ||
+        connectionIndex >= definition_.connections.size() ||
+        !CanUseConnection(connectionIndex)) {
         return false;
     }
     const ConnectionDefinition& connection = definition_.connections[connectionIndex];
-    if (connection.fromNodeIndex != currentNodeIndex_) {
-        return false;
-    }
-
-    const NodeDefinition& fromNode = definition_.nodes[connection.fromNodeIndex];
-    const NodeDefinition& toNode = definition_.nodes[connection.toNodeIndex];
-    if (!PointInCircle(pointerPosition, toNode.position, toNode.radius)) {
+    if (connection.fromNodeIndex != preview_->sourceNodeIndex ||
+        !PointHitsNodeMask(pointerPosition, connection.toNodeIndex)) {
         return false;
     }
 
@@ -552,79 +709,169 @@ bool PuzzleBoard::CanCommitConnection(const std::size_t connectionIndex,
             ? (std::max)(0.0f, style.pixelGridSize)
             : kDefaultTentaclePixelGridSize;
     const float clearance =
-        (std::max)(style.baseWidth, style.tipWidth) * 0.5f + pixelGridPadding;
-    return !IsConnectionBlocked(fromNode.position, toNode.position,
-                                definition_.obstacles, clearance);
-}
-
-std::optional<std::size_t> PuzzleBoard::HitTestNode(const Vec2 point) const noexcept {
-    if (!IsFinite(point)) {
-        return std::nullopt;
-    }
-    for (std::size_t index = 0; index < definition_.nodes.size(); ++index) {
-        const NodeDefinition& node = definition_.nodes[index];
-        if (PointInCircle(point, node.position, node.radius)) {
-            return index;
-        }
-    }
-    return std::nullopt;
+        (std::max)(style.baseWidth, style.tipWidth) * 0.5f +
+        pixelGridPadding;
+    return !IsConnectionBlockedBySolidTiles(
+        definition_.nodes[connection.fromNodeIndex].anchorPosition,
+        definition_.nodes[connection.toNodeIndex].anchorPosition, clearance);
 }
 
 std::optional<std::size_t>
-PuzzleBoard::FindOutgoingConnectionAt(const Vec2 point) const noexcept {
-    if (!initialized_ || !IsFinite(point)) {
+PuzzleBoard::HitTestNode(const Vec2 point) const noexcept {
+    if (!IsFinite(point)) {
         return std::nullopt;
     }
-
-    std::optional<std::size_t> bestConnection;
-    float bestDistanceSquared = 0.0f;
-    for (std::size_t index = 0; index < definition_.connections.size(); ++index) {
-        const ConnectionDefinition& connection = definition_.connections[index];
-        if (connection.fromNodeIndex != currentNodeIndex_ ||
-            connection.toNodeIndex >= definition_.nodes.size()) {
-            continue;
-        }
-        const NodeDefinition& target = definition_.nodes[connection.toNodeIndex];
-        if (!PointInCircle(point, target.position, target.radius)) {
-            continue;
-        }
-        const float distanceSquared = LengthSquared(point - target.position);
-        if (!bestConnection.has_value() || distanceSquared < bestDistanceSquared) {
-            bestConnection = index;
-            bestDistanceSquared = distanceSquared;
-        }
-    }
-    return bestConnection;
-}
-
-std::optional<std::size_t> PuzzleBoard::GetFirstOutgoingConnection() const noexcept {
-    if (!initialized_) {
-        return std::nullopt;
-    }
-    for (std::size_t index = 0; index < definition_.connections.size(); ++index) {
-        if (definition_.connections[index].fromNodeIndex == currentNodeIndex_) {
-            return index;
+    for (std::size_t nodeIndex = 0; nodeIndex < definition_.nodes.size();
+         ++nodeIndex) {
+        if (PointHitsNodeMask(point, nodeIndex)) {
+            return nodeIndex;
         }
     }
     return std::nullopt;
 }
 
-bool PuzzleBoard::HasOutgoingConnection(const std::size_t nodeIndex) const noexcept {
-    return std::any_of(
-        definition_.connections.begin(), definition_.connections.end(),
-        [nodeIndex](const ConnectionDefinition& connection) {
-            return connection.fromNodeIndex == nodeIndex;
+std::optional<std::size_t> PuzzleBoard::FindOutgoingConnectionAt(
+    const std::size_t sourceNodeIndex, const Vec2 point) const noexcept {
+    if (!initialized_ || sourceNodeIndex >= definition_.nodes.size() ||
+        !IsFinite(point)) {
+        return std::nullopt;
+    }
+
+    for (std::size_t connectionIndex = 0;
+         connectionIndex < definition_.connections.size(); ++connectionIndex) {
+        const ConnectionDefinition& connection =
+            definition_.connections[connectionIndex];
+        if (connection.fromNodeIndex == sourceNodeIndex &&
+            CanUseConnection(connectionIndex) &&
+            PointHitsNodeMask(point, connection.toNodeIndex)) {
+            return connectionIndex;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::size_t> PuzzleBoard::GetFirstAvailableOutgoingConnection(
+    const std::size_t sourceNodeIndex) const noexcept {
+    if (!initialized_ || sourceNodeIndex >= definition_.nodes.size()) {
+        return std::nullopt;
+    }
+    for (std::size_t connectionIndex = 0;
+         connectionIndex < definition_.connections.size(); ++connectionIndex) {
+        if (definition_.connections[connectionIndex].fromNodeIndex ==
+                sourceNodeIndex &&
+            CanUseConnection(connectionIndex)) {
+            return connectionIndex;
+        }
+    }
+    return std::nullopt;
+}
+
+bool PuzzleBoard::CanUseConnection(const std::size_t connectionIndex) const noexcept {
+    if (!initialized_ || connectionIndex >= definition_.connections.size() ||
+        connectionIndex >= committedConnections_.size() ||
+        committedConnections_[connectionIndex]) {
+        return false;
+    }
+
+    const ConnectionDefinition& connection = definition_.connections[connectionIndex];
+    if (connection.fromNodeIndex >= definition_.nodes.size() ||
+        connection.toNodeIndex >= definition_.nodes.size() ||
+        !IsNodeActivated(connection.fromNodeIndex)) {
+        return false;
+    }
+    return outgoingConnectionCounts_[connection.fromNodeIndex] <
+               definition_.nodes[connection.fromNodeIndex].maxOutgoing &&
+           incomingConnectionCounts_[connection.toNodeIndex] <
+               definition_.nodes[connection.toNodeIndex].maxIncoming;
+}
+
+bool PuzzleBoard::CanStartFromNode(const std::size_t nodeIndex) const noexcept {
+    return IsNodeActivated(nodeIndex) &&
+           GetFirstAvailableOutgoingConnection(nodeIndex).has_value();
+}
+
+bool PuzzleBoard::IsNodeActivated(const std::size_t nodeIndex) const noexcept {
+    return initialized_ && nodeIndex < activatedNodes_.size() &&
+           activatedNodes_[nodeIndex];
+}
+
+bool PuzzleBoard::AreAllGoalsActivated() const noexcept {
+    if (!initialized_ || definition_.goalNodeIndices.empty()) {
+        return false;
+    }
+    return std::all_of(
+        definition_.goalNodeIndices.begin(), definition_.goalNodeIndices.end(),
+        [this](const std::size_t nodeIndex) {
+            return nodeIndex < activatedNodes_.size() &&
+                   activatedNodes_[nodeIndex];
         });
 }
 
-TentacleStyle PuzzleBoard::MakeStyle(const ConnectionDefinition& connection,
-                                     const std::size_t connectionIndex) const noexcept {
+bool PuzzleBoard::PointHitsNodeMask(const Vec2 point,
+                                    const std::size_t nodeIndex) const noexcept {
+    if (!IsFinite(point) || nodeIndex >= definition_.nodes.size() ||
+        point.x < 0.0f || point.y < 0.0f ||
+        point.x >= static_cast<float>(kPuzzleCanvasWidth) ||
+        point.y >= static_cast<float>(kPuzzleCanvasHeight)) {
+        return false;
+    }
+
+    const std::size_t column =
+        static_cast<std::size_t>(point.x / static_cast<float>(kPuzzleTileSize));
+    const std::size_t row =
+        static_cast<std::size_t>(point.y / static_cast<float>(kPuzzleTileSize));
+    const NodeDefinition& node = definition_.nodes[nodeIndex];
+    if (column < node.origin.column || row < node.origin.row) {
+        return false;
+    }
+    const std::size_t localColumn = column - node.origin.column;
+    const std::size_t localRow = row - node.origin.row;
+    return node.stamp.IsOccupied(localColumn, localRow);
+}
+
+bool PuzzleBoard::IsConnectionBlockedBySolidTiles(
+    const Vec2 start, const Vec2 end, const float clearance) const noexcept {
+    if (!IsFinite(start) || !IsFinite(end) || !std::isfinite(clearance) ||
+        clearance < 0.0f ||
+        definition_.obstacleTiles.columns != kPuzzleGridColumns ||
+        definition_.obstacleTiles.rows != kPuzzleGridRows ||
+        !HasCellCount(definition_.obstacleTiles.columns,
+                      definition_.obstacleTiles.rows,
+                      definition_.obstacleTiles.cells.size())) {
+        return true;
+    }
+
+    const float tileSize = static_cast<float>(kPuzzleTileSize);
+    const float expandedSize = tileSize + clearance * 2.0f;
+    for (std::size_t row = 0; row < definition_.obstacleTiles.rows; ++row) {
+        for (std::size_t column = 0;
+             column < definition_.obstacleTiles.columns; ++column) {
+            if (definition_.obstacleTiles.cells[
+                    row * definition_.obstacleTiles.columns + column] == 0) {
+                continue;
+            }
+            const Vec2 center{
+                (static_cast<float>(column) + 0.5f) * tileSize,
+                (static_cast<float>(row) + 0.5f) * tileSize,
+            };
+            if (SegmentIntersectsRectangle(start, end, center, expandedSize,
+                                           expandedSize)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+TentacleStyle PuzzleBoard::MakeStyle(
+    const ConnectionDefinition& connection,
+    const std::size_t connectionIndex) const noexcept {
     TentacleStyle style{};
     style.baseWidth = definition_.baseWidth * connection.thicknessScale;
     style.tipWidth = definition_.tipWidth * connection.thicknessScale;
     style.widthVariation = definition_.widthVariation;
     style.widthPhase = std::fmod(static_cast<float>(connectionIndex) * 1.6180339f,
-                                2.0f * std::numbers::pi_v<float>);
+                                 2.0f * std::numbers::pi_v<float>);
     style.color = definition_.vesselColor;
     return style;
 }

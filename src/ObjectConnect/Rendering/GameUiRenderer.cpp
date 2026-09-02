@@ -36,6 +36,9 @@ struct UiRect final {
 struct MenuLayout final {
     std::vector<std::string> labels;
     std::vector<UiRect> bounds;
+    std::vector<std::size_t> itemIndices;
+    std::size_t pageIndex = 0;
+    std::size_t pageCount = 1;
 };
 
 constexpr float kMenuLeft = 390.0f;
@@ -43,10 +46,12 @@ constexpr float kMenuWidth = 500.0f;
 constexpr float kItemHeight = 54.0f;
 constexpr float kItemGap = 16.0f;
 constexpr float kTextScale = 1.55f;
+constexpr std::size_t kLevelItemsPerPage = 7;
 
 [[nodiscard]] MenuLayout MakeMenuLayout(const GameScreen screen,
                                         const PuzzleCatalog& catalog,
-                                        const bool currentPuzzleIsLast) {
+                                        const bool currentPuzzleIsLast,
+                                        const std::size_t selectedItem) {
     MenuLayout layout;
     float top = 280.0f;
     switch (screen) {
@@ -55,10 +60,25 @@ constexpr float kTextScale = 1.55f;
         break;
     case GameScreen::LevelSelect:
         top = 170.0f;
-        for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
-            layout.labels.push_back(puzzle.title);
+        {
+            const std::size_t itemCount = catalog.GetPuzzles().size() + 1;
+            const std::size_t safeSelection =
+                itemCount == 0 ? 0 : (std::min)(selectedItem, itemCount - 1);
+            layout.pageCount =
+                (itemCount + kLevelItemsPerPage - 1) / kLevelItemsPerPage;
+            layout.pageIndex = safeSelection / kLevelItemsPerPage;
+            const std::size_t first = layout.pageIndex * kLevelItemsPerPage;
+            const std::size_t last =
+                (std::min)(itemCount, first + kLevelItemsPerPage);
+            for (std::size_t item = first; item < last; ++item) {
+                layout.itemIndices.push_back(item);
+                if (item < catalog.GetPuzzles().size()) {
+                    layout.labels.push_back(catalog.GetPuzzles()[item].title);
+                } else {
+                    layout.labels.push_back("BACK");
+                }
+            }
         }
-        layout.labels.push_back("BACK");
         break;
     case GameScreen::Paused:
         top = 220.0f;
@@ -74,6 +94,13 @@ constexpr float kTextScale = 1.55f;
         break;
     case GameScreen::Playing:
         break;
+    }
+
+    if (layout.itemIndices.empty()) {
+        layout.itemIndices.resize(layout.labels.size());
+        for (std::size_t index = 0; index < layout.itemIndices.size(); ++index) {
+            layout.itemIndices[index] = index;
+        }
     }
 
     layout.bounds.reserve(layout.labels.size());
@@ -158,7 +185,8 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
 
     const bool currentIsLast = currentPuzzleIndex.has_value() &&
                                *currentPuzzleIndex + 1 >= catalog.GetPuzzles().size();
-    const MenuLayout layout = MakeMenuLayout(screen, catalog, currentIsLast);
+    const MenuLayout layout =
+        MakeMenuLayout(screen, catalog, currentIsLast, selectedItem);
     const bool showFullBackground = screen == GameScreen::MainMenu ||
                                     screen == GameScreen::LevelSelect;
     const bool showOverlay = screen == GameScreen::Paused ||
@@ -171,11 +199,17 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
 
     const bool menuVisible = screen != GameScreen::Playing &&
                              (screen != GameScreen::Solved || solvedMenuReady);
-    const bool showLengthWarning = board != nullptr && board->lengthExhausted &&
-                                   !board->solved;
-    const bool hasSelection = menuVisible && selectedItem < layout.bounds.size();
+    const bool showBoardWarning = board != nullptr &&
+                                  (board->lengthExhausted || board->routeBlocked) &&
+                                  !board->solved;
+    const auto selectedVisible = std::find(
+        layout.itemIndices.begin(), layout.itemIndices.end(), selectedItem);
+    const bool hasSelection = menuVisible &&
+                              selectedVisible != layout.itemIndices.end();
     if (hasSelection) {
-        const UiRect& bounds = layout.bounds[selectedItem];
+        const std::size_t visibleIndex = static_cast<std::size_t>(
+            selectedVisible - layout.itemIndices.begin());
+        const UiRect& bounds = layout.bounds[visibleIndex];
         impl_->selection->SetPosition({bounds.left, bounds.top});
         impl_->selection->SetSize({bounds.width, bounds.height});
     }
@@ -184,11 +218,19 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         *currentPuzzleIndex < catalog.GetPuzzles().size()) {
         const PuzzleDefinition& puzzle = catalog.GetPuzzles()[*currentPuzzleIndex];
         for (const NodeDefinition& node : puzzle.nodes) {
-            const float labelWidth = static_cast<float>(node.label.size()) *
+            const float labelWidth = static_cast<float>(node.displayName.size()) *
                                      KamataEngine::DebugText::kFontWidth;
-            Print(*impl_->debugText, node.label,
-                  node.position.x - labelWidth * 0.5f,
-                  node.position.y - KamataEngine::DebugText::kFontHeight * 0.5f,
+            const float centerX =
+                (static_cast<float>(node.bounds.column) +
+                 static_cast<float>(node.bounds.columns) * 0.5f) *
+                static_cast<float>(kPuzzleTileSize);
+            const float centerY =
+                (static_cast<float>(node.bounds.row) +
+                 static_cast<float>(node.bounds.rows) * 0.5f) *
+                static_cast<float>(kPuzzleTileSize);
+            Print(*impl_->debugText, node.displayName,
+                  centerX - labelWidth * 0.5f,
+                  centerY - KamataEngine::DebugText::kFontHeight * 0.5f,
                   1.0f);
         }
         Print(*impl_->debugText,
@@ -198,6 +240,8 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         Print(*impl_->debugText, "R - RETRY", 1060.0f, 28.0f, 1.0f);
         if (board->lengthExhausted && !board->solved) {
             Print(*impl_->debugText, "NOT ENOUGH LENGTH", 500.0f, 74.0f, 1.4f);
+        } else if (board->routeBlocked && !board->solved) {
+            Print(*impl_->debugText, "NO VALID CONNECTIONS", 488.0f, 74.0f, 1.4f);
         }
     }
 
@@ -208,6 +252,12 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         break;
     case GameScreen::LevelSelect:
         Print(*impl_->debugText, "SELECT PUZZLE", 460.0f, 72.0f, 2.25f);
+        if (layout.pageCount > 1) {
+            Print(*impl_->debugText,
+                  "PAGE " + std::to_string(layout.pageIndex + 1) + " / " +
+                      std::to_string(layout.pageCount),
+                  558.0f, 126.0f, 0.9f);
+        }
         break;
     case GameScreen::Paused:
         Print(*impl_->debugText, "PAUSED", 535.0f, 100.0f, 2.5f);
@@ -224,7 +274,7 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
     if (menuVisible) {
         for (std::size_t index = 0; index < layout.labels.size(); ++index) {
             const UiRect& bounds = layout.bounds[index];
-            if (index == selectedItem) {
+            if (layout.itemIndices[index] == selectedItem) {
                 Print(*impl_->debugText, ">", bounds.left + 18.0f,
                       bounds.top + 10.0f, kTextScale);
             }
@@ -245,7 +295,7 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
     if (hasSelection) {
         impl_->selection->Draw();
     }
-    if (showLengthWarning) {
+    if (showBoardWarning) {
         impl_->hudWarning->Draw();
         impl_->messageWarning->Draw();
     }
@@ -255,7 +305,8 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
 
 std::optional<std::size_t> GameUiRenderer::HitTest(
     const GameScreen screen, const UiPoint point, const std::size_t puzzleCount,
-    const bool currentPuzzleIsLast, const bool solvedMenuReady) const noexcept {
+    const bool currentPuzzleIsLast, const bool solvedMenuReady,
+    const std::size_t selectedItem) const noexcept {
     if (!impl_ || screen == GameScreen::Playing ||
         (screen == GameScreen::Solved && !solvedMenuReady)) {
         return std::nullopt;
@@ -267,10 +318,11 @@ std::optional<std::size_t> GameUiRenderer::HitTest(
         puzzles[index].title = "PUZZLE " + std::to_string(index + 1);
     }
     placeholder = PuzzleCatalog(std::move(puzzles));
-    const MenuLayout layout = MakeMenuLayout(screen, placeholder, currentPuzzleIsLast);
+    const MenuLayout layout =
+        MakeMenuLayout(screen, placeholder, currentPuzzleIsLast, selectedItem);
     for (std::size_t index = 0; index < layout.bounds.size(); ++index) {
         if (layout.bounds[index].Contains(point)) {
-            return index;
+            return layout.itemIndices[index];
         }
     }
     return std::nullopt;

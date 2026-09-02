@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "atlas_path": "tiles/organ_atlas.png",
+  "atlas_columns": 4,
+  "atlas_rows": 2,
+  "tiles": [
+    {
+      "id": 1,
+      "name": "tissue",
+      "atlas_column": 0,
+      "atlas_row": 0
+    },
+    {
+      "id": 2,
+      "name": "bone",
+      "atlas_column": 1,
+      "atlas_row": 0
+    },
+    {
+      "id": 3,
+      "name": "heart",
+      "atlas_column": 2,
+      "atlas_row": 0
+    },
+    {
+      "id": 4,
+      "name": "lung",
+      "atlas_column": 3,
+      "atlas_row": 0
+    },
+    {
+      "id": 5,
+      "name": "kidney",
+      "atlas_column": 0,
+      "atlas_row": 1
+    },
+    {
+      "id": 6,
+      "name": "liver",
+      "atlas_column": 1,
+      "atlas_row": 1
+    },
+    {
+      "id": 7,
+      "name": "brain",
+      "atlas_column": 2,
+      "atlas_row": 1
+    },
+    {
+      "id": 8,
+      "name": "stomach",
+      "atlas_column": 3,
+      "atlas_row": 1
+    }
+  ]
+}
