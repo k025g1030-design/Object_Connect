@@ -5,6 +5,7 @@
 /cmake-build-*/
 /out/
 /Docs/*
+!/Docs/Object_Connect_Newcomer_Architecture_JA.pptx
 !/Docs/Architecture.md
 !/Docs/EnemyAtlasShaderABI.zh-TW.md
 !/Docs/EnemyAtlasShaderABI.ja.md
@@ -14,3 +15,4 @@
 /*.obj
 CMakeUserPresets.json
 *.user
+*.bak

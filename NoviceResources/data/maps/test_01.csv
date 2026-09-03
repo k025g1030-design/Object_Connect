@@ -1,0 +1,5 @@
+instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
+heart_root_1,heart_root,,,,,,0,13,,,
+organ_follow_1,organ_follow,,,,,,18,6,,,
+brain_end_1,brain_end,,,,,,40,17,,,
+organ_follow_2,organ_follow,,,,,,25,20,,,

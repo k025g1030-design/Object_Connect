@@ -2,3 +2,5 @@ level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,back
 first_link,FIRST LINK,data/maps/first_link.csv,around_block,700,,,,,,
 around_block,AROUND BLOCK,data/maps/around_block.csv,clot_path,1250,1.05,#140D12,#861B2B,16,16,0.16
 clot_path,CLOT PATH,data/maps/clot_path.csv,,2450,1.05,#120B10,#861B2B,16,16,0.16
+test_01,test_00,data/maps/test_01.csv,,2450,,,,,,
+test_02,test_02,data/maps/test_02.csv,,1500,,,,,,
