@@ -71,6 +71,57 @@ foreach(_required_path IN LISTS _required_engine_paths)
     endif()
 endforeach()
 
+# The DirectX debug layer loads DXC at runtime. An IDE toolchain may expose an
+# SDK copy through PATH, but every launch mode must use the redistributable pair
+# from the Windows SDK instead of relying on an IDE-specific environment.
+set(_windows_kits_hints)
+if(DEFINED ENV{CMAKE_WINDOWS_KITS_10_DIR}
+   AND NOT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
+    list(APPEND _windows_kits_hints "$ENV{CMAKE_WINDOWS_KITS_10_DIR}")
+endif()
+if(DEFINED ENV{WindowsSdkDir} AND NOT "$ENV{WindowsSdkDir}" STREQUAL "")
+    list(APPEND _windows_kits_hints "$ENV{WindowsSdkDir}")
+endif()
+cmake_host_system_information(
+    RESULT _windows_kits_registry
+    QUERY WINDOWS_REGISTRY
+          "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots"
+          VALUE "KitsRoot10"
+          VIEW 64_32
+          ERROR_VARIABLE _windows_kits_registry_error
+)
+if(_windows_kits_registry)
+    list(APPEND _windows_kits_hints "${_windows_kits_registry}")
+endif()
+
+find_path(OBJECT_CONNECT_DXC_REDIST_DIR
+    NAMES dxcompiler.dll
+    HINTS ${_windows_kits_hints}
+    PATH_SUFFIXES "Redist/D3D/x64"
+    NO_DEFAULT_PATH
+    DOC "Windows SDK x64 DirectX Shader Compiler redistributable directory"
+)
+if(NOT OBJECT_CONNECT_DXC_REDIST_DIR)
+    message(FATAL_ERROR
+        "The Windows SDK x64 DirectX Shader Compiler redistributable directory "
+        "was not found. Install a Windows 10/11 SDK with the D3D/DXC "
+        "redistributable files, or configure with "
+        "-DOBJECT_CONNECT_DXC_REDIST_DIR=<path>."
+    )
+endif()
+set(OBJECT_CONNECT_DXC_RUNTIME_FILES
+    "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxcompiler.dll"
+    "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxil.dll"
+)
+foreach(_required_path IN LISTS OBJECT_CONNECT_DXC_RUNTIME_FILES)
+    if(NOT EXISTS "${_required_path}")
+        message(FATAL_ERROR
+            "The DirectX Shader Compiler runtime directory is incomplete. "
+            "Expected file:\n  ${_required_path}"
+        )
+    endif()
+endforeach()
+
 set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/white1x1.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/debugfont.png"
@@ -232,8 +283,11 @@ add_custom_target(Object_Connect_Resources ALL
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${OBJECT_CONNECT_RESOURCE_DIR}"
             "${OBJECT_CONNECT_OUTPUT_DIR}/Resources"
-    DEPENDS ${OBJECT_CONNECT_RESOURCE_FILES}
-    COMMENT "Deploying Object_Connect resources"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            ${OBJECT_CONNECT_DXC_RUNTIME_FILES}
+            "${OBJECT_CONNECT_OUTPUT_DIR}"
+    DEPENDS ${OBJECT_CONNECT_RESOURCE_FILES} ${OBJECT_CONNECT_DXC_RUNTIME_FILES}
+    COMMENT "Deploying Object_Connect resources and runtime dependencies"
     VERBATIM
 )
 add_dependencies(Object_Connect Object_Connect_Resources)

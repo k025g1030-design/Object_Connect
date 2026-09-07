@@ -239,6 +239,8 @@ $env:KAMATA_ENGINE = "D:\path\to\KamataEngine"
 
 実行ファイルは `target/<Configuration>/Object_Connect.exe` に作られます。ビルド時に `NoviceResources/` を、実行ファイルと同じ場所にある `Resources/` へコピーします。プログラムの開始時に、作業フォルダーを実行ファイルのある場所へ設定します。
 
+Debug の DirectX debug layer が必要とする `dxcompiler.dll` と `dxil.dll` も、CMake が Windows SDK の x64 Redist から実行ファイルと同じ場所へコピーします。出力を構成に依存せず自己完結させるため、2 つの DLL は Debug／Release の両方へ配置します。この処理は Visual Studio と CLion／Ninja で共通です。SDK を標準外の場所に置く場合は、CMake の `OBJECT_CONNECT_DXC_REDIST_DIR` に 2 つの DLL があるディレクトリを指定してください。
+
 プロジェクトは C++20 を使い、MSVC には `/W4 /WX /sdl /permissive- /utf-8` を設定しています。
 
 ## テスト
