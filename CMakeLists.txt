@@ -75,12 +75,32 @@ endforeach()
 # SDK copy through PATH, but every launch mode must use the redistributable pair
 # from the Windows SDK instead of relying on an IDE-specific environment.
 set(_windows_kits_hints)
+if(DEFINED CMAKE_WINDOWS_KITS_10_DIR
+   AND NOT "${CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
+    cmake_path(CONVERT "${CMAKE_WINDOWS_KITS_10_DIR}" TO_CMAKE_PATH_LIST
+        _windows_kits_cmake_hints NORMALIZE
+    )
+    list(APPEND _windows_kits_hints ${_windows_kits_cmake_hints})
+endif()
+if(DEFINED CMAKE_RC_COMPILER AND IS_ABSOLUTE "${CMAKE_RC_COMPILER}")
+    cmake_path(GET CMAKE_RC_COMPILER PARENT_PATH _windows_sdk_arch_bin)
+    cmake_path(GET _windows_sdk_arch_bin PARENT_PATH _windows_sdk_version_bin)
+    cmake_path(GET _windows_sdk_version_bin PARENT_PATH _windows_sdk_bin)
+    cmake_path(GET _windows_sdk_bin PARENT_PATH _windows_sdk_from_rc)
+    list(APPEND _windows_kits_hints "${_windows_sdk_from_rc}")
+endif()
 if(DEFINED ENV{CMAKE_WINDOWS_KITS_10_DIR}
    AND NOT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
-    list(APPEND _windows_kits_hints "$ENV{CMAKE_WINDOWS_KITS_10_DIR}")
+    cmake_path(CONVERT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" TO_CMAKE_PATH_LIST
+        _windows_kits_environment_hints NORMALIZE
+    )
+    list(APPEND _windows_kits_hints ${_windows_kits_environment_hints})
 endif()
 if(DEFINED ENV{WindowsSdkDir} AND NOT "$ENV{WindowsSdkDir}" STREQUAL "")
-    list(APPEND _windows_kits_hints "$ENV{WindowsSdkDir}")
+    cmake_path(CONVERT "$ENV{WindowsSdkDir}" TO_CMAKE_PATH_LIST
+        _windows_sdk_environment_hints NORMALIZE
+    )
+    list(APPEND _windows_kits_hints ${_windows_sdk_environment_hints})
 endif()
 cmake_host_system_information(
     RESULT _windows_kits_registry
@@ -91,8 +111,14 @@ cmake_host_system_information(
           ERROR_VARIABLE _windows_kits_registry_error
 )
 if(_windows_kits_registry)
-    list(APPEND _windows_kits_hints "${_windows_kits_registry}")
+    foreach(_windows_kits_registry_path IN LISTS _windows_kits_registry)
+        cmake_path(CONVERT "${_windows_kits_registry_path}" TO_CMAKE_PATH_LIST
+            _windows_kits_registry_hints NORMALIZE
+        )
+        list(APPEND _windows_kits_hints ${_windows_kits_registry_hints})
+    endforeach()
 endif()
+list(REMOVE_DUPLICATES _windows_kits_hints)
 
 find_path(OBJECT_CONNECT_DXC_REDIST_DIR
     NAMES dxcompiler.dll
@@ -109,6 +135,7 @@ if(NOT OBJECT_CONNECT_DXC_REDIST_DIR)
         "-DOBJECT_CONNECT_DXC_REDIST_DIR=<path>."
     )
 endif()
+message(STATUS "Using Windows SDK DXC runtime: ${OBJECT_CONNECT_DXC_REDIST_DIR}")
 set(OBJECT_CONNECT_DXC_RUNTIME_FILES
     "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxcompiler.dll"
     "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxil.dll"
