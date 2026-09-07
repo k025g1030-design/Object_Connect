@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace object_connect {
 
@@ -24,10 +25,12 @@ public:
     [[nodiscard]] static bool Load(const PuzzleDataPaths& paths,
                                    const std::string& resourceRoot,
                                    PuzzleCatalog& catalog,
-                                   std::string& error);
+                                   std::string& error,
+                                   std::vector<std::string>* warnings = nullptr);
     [[nodiscard]] static bool Parse(const PuzzleCsvSources& sources,
                                     PuzzleCatalog& catalog,
-                                    std::string& error);
+                                    std::string& error,
+                                    std::vector<std::string>* warnings = nullptr);
 };
 
 class NodePresetCatalogLoader final {

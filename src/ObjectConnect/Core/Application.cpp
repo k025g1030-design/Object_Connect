@@ -17,7 +17,7 @@
 namespace object_connect {
 namespace {
 
-constexpr const wchar_t* kWindowTitle = L"Object_Connect";
+constexpr const wchar_t* kWindowTitle = L"6008_GC2Bラ_GC2Bヤマモト_GC2Cウエキ_BloodLine";
 
 #if defined(_DEBUG)
 constexpr bool kEnableDirectXDebugLayer = true;
@@ -49,6 +49,29 @@ constexpr bool kEnableDirectXDebugLayer = false;
 void ShowError(const char* const message) noexcept {
     ::MessageBoxA(nullptr, message, "Object_Connect error",
                   MB_OK | MB_ICONERROR | MB_TASKMODAL);
+}
+
+void ShowWarnings(const std::vector<std::string>& warnings) noexcept {
+    if (warnings.empty()) {
+        return;
+    }
+    try {
+        std::string message =
+            "Object_Connect started with the following warnings:\n\n";
+        for (const std::string& warning : warnings) {
+            message += "- ";
+            message += warning;
+            message += '\n';
+        }
+        ::MessageBoxA(nullptr, message.c_str(), "Object_Connect warning",
+                      MB_OK | MB_ICONWARNING | MB_TASKMODAL);
+    } catch (...) {
+        ::MessageBoxA(nullptr,
+                      "Object_Connect started with warnings, but the "
+                      "diagnostic text could not be prepared.",
+                      "Object_Connect warning",
+                      MB_OK | MB_ICONWARNING | MB_TASKMODAL);
+    }
 }
 
 class EngineLifetime final {
@@ -100,6 +123,7 @@ int Application::Run(Game& game) noexcept {
             ShowError(error.c_str());
             return EXIT_FAILURE;
         }
+        ShowWarnings(game.GetStartupWarnings());
 
         KamataEngine::DirectXCommon* const directX =
             KamataEngine::DirectXCommon::GetInstance();

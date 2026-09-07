@@ -159,9 +159,12 @@ void TestSolvedMenus(TestContext& context) {
 void TestSelectionTracksDynamicMenus(TestContext& context) {
     GameFlow flow;
     flow.EnterLevelSelect();
-    static_cast<void>(ClickItem(flow, 3));
-    context.Expect(flow.GetSelectedItem() == 3,
-                   "mouse hover updates the selected level-select item");
+    GameFlowInput hover{};
+    hover.hoveredItem = 2;
+    const GameFlowResult hovered = flow.Update(hover, kPuzzleCount, false);
+    context.Expect(hovered.command == GameCommand::None &&
+                       flow.GetSelectedItem() == 2,
+                   "mouse hover updates selection without activating an item");
 
     static_cast<void>(flow.Update({}, 1, false));
     context.Expect(flow.GetSelectedItem() == 0,
@@ -175,6 +178,43 @@ void TestSelectionTracksDynamicMenus(TestContext& context) {
                    "opposing navigation inputs cancel each other");
 }
 
+void TestLargeLevelSelectUsesLogicalPuzzleIndices(TestContext& context) {
+    constexpr std::size_t kLargePuzzleCount = 31;
+    GameFlow flow;
+    flow.EnterLevelSelect();
+
+    GameFlowInput puzzleClick{};
+    puzzleClick.hoveredItem = 28;
+    puzzleClick.mousePrimaryPressed = true;
+    const GameFlowResult puzzle =
+        flow.Update(puzzleClick, kLargePuzzleCount, false);
+    context.Expect(puzzle.command == GameCommand::StartPuzzle &&
+                       puzzle.puzzleIndex == 28,
+                   "large level-select menus preserve logical puzzle indices");
+
+    flow.EnterLevelSelect();
+    GameFlowInput lastPageSelection{};
+    lastPageSelection.hoveredItem = 30;
+    const GameFlowResult selectionOnly =
+        flow.Update(lastPageSelection, kLargePuzzleCount, false);
+    context.Expect(selectionOnly.command == GameCommand::None &&
+                       flow.GetSelectedItem() == 30,
+                   "page navigation can select the only puzzle on a partial fourth page");
+    const GameFlowResult confirmed = flow.Update(
+        {.confirmPressed = true}, kLargePuzzleCount, false);
+    context.Expect(confirmed.command == GameCommand::StartPuzzle &&
+                       confirmed.puzzleIndex == 30,
+                   "confirm activates the visible absolute puzzle index after paging");
+
+    GameFlowInput backClick{};
+    backClick.hoveredItem = kLargePuzzleCount;
+    backClick.mousePrimaryPressed = true;
+    const GameFlowResult back =
+        flow.Update(backClick, kLargePuzzleCount, false);
+    context.Expect(back.command == GameCommand::ReturnToMainMenu,
+                   "large level-select menus keep back after every puzzle");
+}
+
 } // namespace
 
 void RunGameFlowTests(TestContext& context) {
@@ -183,6 +223,7 @@ void RunGameFlowTests(TestContext& context) {
     TestPlayingAndPause(context);
     TestSolvedMenus(context);
     TestSelectionTracksDynamicMenus(context);
+    TestLargeLevelSelectUsesLogicalPuzzleIndices(context);
 }
 
 } // namespace object_connect::tests

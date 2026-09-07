@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <numbers>
 #include <utility>
 #include <vector>
@@ -40,20 +41,90 @@ constexpr float kDeadCollisionBackoff = 0.05f;
     return type == NodeType::Follow || type == NodeType::End;
 }
 
+[[nodiscard]] bool HasPositiveArea(const AxisAlignedBox& bounds) noexcept {
+    return IsValidAxisAlignedBox(bounds) &&
+           bounds.minimum.x < bounds.maximum.x &&
+           bounds.minimum.y < bounds.maximum.y;
+}
+
+[[nodiscard]] std::optional<Vec2> TranslateToWinding(
+    const Vec2 canonicalPoint, const WrapWinding winding,
+    const AxisAlignedBox& bounds) noexcept {
+    if (!IsFinite(canonicalPoint) || !HasPositiveArea(bounds)) {
+        return std::nullopt;
+    }
+    const double width =
+        static_cast<double>(bounds.maximum.x) - bounds.minimum.x;
+    const double height =
+        static_cast<double>(bounds.maximum.y) - bounds.minimum.y;
+    const double x = static_cast<double>(canonicalPoint.x) +
+                     static_cast<double>(winding.x) * width;
+    const double y = static_cast<double>(canonicalPoint.y) +
+                     static_cast<double>(winding.y) * height;
+    if (!std::isfinite(x) || !std::isfinite(y) ||
+        std::abs(x) > (std::numeric_limits<float>::max)() ||
+        std::abs(y) > (std::numeric_limits<float>::max)()) {
+        return std::nullopt;
+    }
+    const Vec2 translated{static_cast<float>(x), static_cast<float>(y)};
+    return IsFinite(translated) ? std::optional<Vec2>{translated}
+                                : std::nullopt;
+}
+
+[[nodiscard]] Vec2 LimitDistance(const Vec2 start, const Vec2 end,
+                                 const float maximumDistance) noexcept {
+    const Vec2 delta = end - start;
+    const float distance = Length(delta);
+    if (!IsFinite(start) || !IsFinite(end) ||
+        !std::isfinite(maximumDistance) || maximumDistance <= 0.0f ||
+        !std::isfinite(distance)) {
+        return start;
+    }
+    if (distance <= maximumDistance) {
+        return end;
+    }
+    return start + delta * (maximumDistance / distance);
+}
+
 } // namespace
 
 bool PuzzleBoard::Initialize(const PuzzleDefinition& definition,
                              std::string& error) {
+    return InitializeInternal(definition, std::nullopt, error);
+}
+
+bool PuzzleBoard::Initialize(const PuzzleDefinition& definition,
+                             const AxisAlignedBox& playfieldBounds,
+                             std::string& error) {
+    return InitializeInternal(definition, playfieldBounds, error);
+}
+
+bool PuzzleBoard::InitializeInternal(
+    const PuzzleDefinition& definition,
+    const std::optional<AxisAlignedBox> playfieldBounds,
+    std::string& error) {
     definition_ = {};
     nodeStates_.clear();
     segments_.clear();
     preview_.reset();
     activatedNodeIndices_.clear();
     committedLines_.clear();
+    playfieldBounds_.reset();
     committedLength_ = 0.0f;
+    wrapEdgesActive_ = false;
     solved_ = false;
     initialized_ = false;
     error.clear();
+
+    if (playfieldBounds.has_value() &&
+        !HasPositiveArea(*playfieldBounds)) {
+        error = "PuzzleBoard playfield bounds must have a positive finite area.";
+        return false;
+    }
+    if (definition.wrapEdges && !playfieldBounds.has_value()) {
+        error = "PuzzleBoard requires explicit playfield bounds when wrap_edges is enabled.";
+        return false;
+    }
 
     try {
         PuzzleDefinition nextDefinition = definition;
@@ -72,6 +143,8 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition,
         definition_ = std::move(nextDefinition);
         nodeStates_ = std::move(nextNodeStates);
         activatedNodeIndices_ = std::move(nextActivatedNodes);
+        playfieldBounds_ = playfieldBounds;
+        wrapEdgesActive_ = definition_.wrapEdges;
         initialized_ = true;
         EvaluateSolved();
         return true;
@@ -85,6 +158,8 @@ bool PuzzleBoard::Initialize(const PuzzleDefinition& definition,
     definition_ = {};
     nodeStates_.clear();
     activatedNodeIndices_.clear();
+    playfieldBounds_.reset();
+    wrapEdgesActive_ = false;
     return false;
 }
 
@@ -97,12 +172,11 @@ void PuzzleBoard::Update(const BoardPointerInput& input,
     const float normalizedDeltaSeconds = NormalizeDeltaSeconds(deltaSeconds);
     for (Segment& segment : segments_) {
         const std::optional<Vec2> root = GetNodeCenter(segment.line.fromNodeIndex);
-        const std::optional<Vec2> tip = GetNodeCenter(segment.line.toNodeIndex);
-        if (!root.has_value() || !tip.has_value()) {
+        if (!root.has_value() || !IsFinite(segment.path.unwrappedEnd)) {
             continue;
         }
         segment.tentacle.SetRootAnchor(*root);
-        segment.tentacle.AttachTip(*tip);
+        segment.tentacle.AttachTip(segment.path.unwrappedEnd);
         segment.tentacle.Update(normalizedDeltaSeconds);
     }
 
@@ -142,6 +216,7 @@ void PuzzleBoard::CancelDrag(const bool immediate) noexcept {
 
 PuzzleBoardSnapshot PuzzleBoard::MakeSnapshot() const {
     PuzzleBoardSnapshot snapshot{};
+    snapshot.playfieldBounds = playfieldBounds_;
     snapshot.tentacles.reserve(segments_.size() + (preview_.has_value() ? 1u : 0u));
     snapshot.nodeStates.resize(definition_.nodes.size());
 
@@ -149,6 +224,7 @@ PuzzleBoardSnapshot PuzzleBoard::MakeSnapshot() const {
         TentacleRenderSnapshot tentacle{};
         const std::span<const Vec2> points = segment.tentacle.GetPoints();
         tentacle.points.assign(points.begin(), points.end());
+        tentacle.drawTranslations = segment.path.drawTranslations;
         tentacle.style = segment.style;
         snapshot.tentacles.push_back(std::move(tentacle));
     }
@@ -156,6 +232,7 @@ PuzzleBoardSnapshot PuzzleBoard::MakeSnapshot() const {
         TentacleRenderSnapshot tentacle{};
         const std::span<const Vec2> points = preview_->tentacle.GetPoints();
         tentacle.points.assign(points.begin(), points.end());
+        tentacle.drawTranslations = preview_->effectivePath.drawTranslations;
         tentacle.style = preview_->style;
         tentacle.preview = true;
         snapshot.tentacles.push_back(std::move(tentacle));
@@ -267,16 +344,46 @@ bool PuzzleBoard::IsLengthExhausted() const noexcept {
             const TentacleStyle style = MakeStyle(committedLines_.size());
             const float clearance =
                 (std::max)(style.baseWidth, style.tipWidth) * 0.5f;
-            if (IsBlockedByDeadNode(*source, *target, clearance)) {
+            const auto canReachWithinBudget =
+                [&](const Vec2 targetImage, const bool allowWrap) {
+                    const std::optional<WrappedPath> path =
+                        BuildConnectionPath(*source, targetImage, allowWrap);
+                    if (!path.has_value() ||
+                        IsBlockedByDeadNode(*path, clearance)) {
+                        return false;
+                    }
+
+                    foundStructurallyAvailableConnection = true;
+                    const float required =
+                        path->length *
+                        EffectiveSlackRatio(definition_.minimumSlackRatio);
+                    return deployable + kLengthEpsilon >= required;
+                };
+
+            if (!wrapEdgesActive_) {
+                if (canReachWithinBudget(*target, false)) {
+                    return false;
+                }
                 continue;
             }
 
-            foundStructurallyAvailableConnection = true;
-            const float required =
-                Length(*target - *source) *
-                EffectiveSlackRatio(definition_.minimumSlackRatio);
-            if (deployable + kLengthEpsilon >= required) {
-                return false;
+            if (!playfieldBounds_.has_value()) {
+                continue;
+            }
+
+            // This is an availability probe only. Inspect the direct target
+            // plus every image reachable through one horizontal and/or
+            // vertical crossing, while the live pointer remains responsible
+            // for selecting the actual winding during a connection.
+            for (std::int64_t windingY = -1; windingY <= 1; ++windingY) {
+                for (std::int64_t windingX = -1; windingX <= 1; ++windingX) {
+                    const std::optional<Vec2> targetImage = TranslateToWinding(
+                        *target, {windingX, windingY}, *playfieldBounds_);
+                    if (targetImage.has_value() &&
+                        canReachWithinBudget(*targetImage, true)) {
+                        return false;
+                    }
+                }
             }
         }
     }
@@ -306,6 +413,15 @@ void PuzzleBoard::StartDrag(const std::size_t sourceNodeIndex) noexcept {
     Preview next{};
     next.sourceNodeIndex = sourceNodeIndex;
     next.style = MakeStyle(committedLines_.size());
+    std::optional<WrappedPath> requestedPath =
+        BuildConnectionPath(*root, *root);
+    std::optional<WrappedPath> effectivePath =
+        BuildConnectionPath(*root, *root);
+    if (!requestedPath.has_value() || !effectivePath.has_value()) {
+        return;
+    }
+    next.requestedPath = std::move(*requestedPath);
+    next.effectivePath = std::move(*effectivePath);
     std::string ignoredError;
     if (!next.tentacle.Initialize(*root, {1.0f, 0.0f}, availableLength,
                                   settings, ignoredError)) {
@@ -332,34 +448,71 @@ void PuzzleBoard::UpdateDrag(const BoardPointerInput& input,
     }
     preview_->tentacle.SetRootAnchor(*root);
 
-    Vec2 pointerTarget = *root;
-    if (IsFinite(input.position)) {
+    const bool hasUnwrappedPosition =
+        wrapEdgesActive_ && input.unwrappedPosition.has_value();
+    const Vec2 desiredEnd = hasUnwrappedPosition
+                                ? *input.unwrappedPosition
+                                : input.position;
+    if (IsFinite(input.position) && IsFinite(desiredEnd)) {
+        std::optional<WrappedPath> requestedPath =
+            BuildConnectionPath(*root, desiredEnd, hasUnwrappedPosition);
+        if (!requestedPath.has_value()) {
+            if (input.leftReleased) {
+                BeginRetraction();
+            }
+            return;
+        }
+
         const float clearance =
             (std::max)(preview_->style.baseWidth,
                        preview_->style.tipWidth) * 0.5f;
-        pointerTarget = ClampTipTargetToDeadNodes(
-            *root, input.position, clearance);
-        const float desiredLength =
-            Length(pointerTarget - *root) *
+        const Vec2 collisionLimitedTarget =
+            ClampTipTargetToDeadNodes(*requestedPath, clearance);
+        const float slack =
             EffectiveSlackRatio(definition_.minimumSlackRatio);
+        const float maximumPathLength =
+            preview_->tentacle.GetMaxLength() / slack;
+        // Legacy levels historically handed the collision-limited pointer
+        // directly to BloodTentacle; its deployed-length constraint performs
+        // the visual clamp. Keep that exact route when wrapping is disabled.
+        // Wrapped levels need an explicit unwrapped-plane clamp so the path
+        // used for reservation and projection remains authoritative.
+        const Vec2 pointerTarget = wrapEdgesActive_
+            ? LimitDistance(*root, collisionLimitedTarget, maximumPathLength)
+            : collisionLimitedTarget;
+        std::optional<WrappedPath> effectivePath =
+            BuildConnectionPath(*root, pointerTarget);
+        if (!effectivePath.has_value()) {
+            if (input.leftReleased) {
+                BeginRetraction();
+            }
+            return;
+        }
+        const float desiredLength =
+            effectivePath->length * slack;
         preview_->reservedLength = (std::max)(
             preview_->reservedLength,
             std::clamp(desiredLength, 0.0f,
                        preview_->tentacle.GetMaxLength()));
+        preview_->requestedPath = std::move(*requestedPath);
+        preview_->effectivePath = std::move(*effectivePath);
+    } else if (input.leftReleased) {
+        BeginRetraction();
+        return;
     }
 
     preview_->tentacle.SetDeployedLength(preview_->reservedLength);
-    preview_->tentacle.FollowTip(pointerTarget);
+    preview_->tentacle.FollowTip(preview_->effectivePath.unwrappedEnd);
     preview_->tentacle.Update(deltaSeconds);
 
     if (!input.leftReleased) {
         return;
     }
 
-    const std::optional<std::size_t> target =
-        FindCommitTargetAt(input.position);
+    std::optional<CommitCandidate> target =
+        FindCommitTargetAt(preview_->requestedPath);
     if (target.has_value()) {
-        CommitConnection(*target);
+        CommitConnection(std::move(*target));
         return;
     }
     BeginRetraction();
@@ -377,7 +530,6 @@ void PuzzleBoard::UpdateRetraction(const float deltaSeconds) noexcept {
         return;
     }
     preview_->tentacle.SetRootAnchor(*root);
-    preview_->tentacle.FollowTip(*root);
 
     const float oldTimeRemaining =
         (std::max)(0.0f, kRetractionSeconds - preview_->retractElapsedSeconds);
@@ -392,6 +544,25 @@ void PuzzleBoard::UpdateRetraction(const float deltaSeconds) noexcept {
         preview_->reservedLength = 0.0f;
     }
 
+    if (preview_->retractAlongWrappedPath) {
+        const float remainingRatio =
+            newTimeRemaining / kRetractionSeconds;
+        const Vec2 retractTarget =
+            *root + (preview_->wrappedRetractionStart - *root) *
+                        remainingRatio;
+        std::optional<WrappedPath> retractPath =
+            BuildConnectionPath(*root, retractTarget);
+        if (retractPath.has_value()) {
+            preview_->effectivePath = std::move(*retractPath);
+            preview_->tentacle.AttachTip(retractTarget);
+        } else {
+            preview_->retractAlongWrappedPath = false;
+            preview_->tentacle.FollowTip(*root);
+        }
+    } else {
+        preview_->tentacle.FollowTip(*root);
+    }
+
     preview_->tentacle.SetDeployedLength(preview_->reservedLength);
     preview_->tentacle.Update(deltaSeconds);
     if (preview_->retractElapsedSeconds >= kRetractionSeconds ||
@@ -400,17 +571,18 @@ void PuzzleBoard::UpdateRetraction(const float deltaSeconds) noexcept {
     }
 }
 
-void PuzzleBoard::CommitConnection(const std::size_t targetNodeIndex) noexcept {
+void PuzzleBoard::CommitConnection(CommitCandidate candidate) noexcept {
+    const std::size_t targetNodeIndex = candidate.targetNodeIndex;
     if (!preview_.has_value() ||
         preview_->state != PreviewState::Dragging ||
-        targetNodeIndex >= definition_.nodes.size()) {
+        targetNodeIndex >= definition_.nodes.size() ||
+        !IsFinite(candidate.path.unwrappedEnd)) {
         return;
     }
 
     const std::size_t sourceNodeIndex = preview_->sourceNodeIndex;
     const std::optional<Vec2> root = GetNodeCenter(sourceNodeIndex);
-    const std::optional<Vec2> tip = GetNodeCenter(targetNodeIndex);
-    if (!root.has_value() || !tip.has_value()) {
+    if (!root.has_value()) {
         BeginRetraction();
         return;
     }
@@ -425,11 +597,12 @@ void PuzzleBoard::CommitConnection(const std::size_t targetNodeIndex) noexcept {
 
     const float committedLength = preview_->reservedLength;
     preview_->tentacle.SetRootAnchor(*root);
-    preview_->tentacle.AttachTip(*tip);
+    preview_->tentacle.AttachTip(candidate.path.unwrappedEnd);
 
     CommittedLine line{sourceNodeIndex, targetNodeIndex, committedLength};
     Segment segment{};
     segment.tentacle = std::move(preview_->tentacle);
+    segment.path = std::move(candidate.path);
     segment.style = preview_->style;
     segment.line = line;
     segments_.push_back(std::move(segment));
@@ -459,9 +632,39 @@ void PuzzleBoard::BeginRetraction() noexcept {
     preview_->retractElapsedSeconds = 0.0f;
     const std::optional<Vec2> root =
         GetNodeCenter(preview_->sourceNodeIndex);
-    if (root.has_value()) {
-        preview_->tentacle.FollowTip(*root);
+    if (!root.has_value()) {
+        return;
     }
+
+    preview_->retractAlongWrappedPath = false;
+    if (wrapEdgesActive_ &&
+        preview_->effectivePath.endWinding != WrapWinding{}) {
+        const Vec2 pathDelta =
+            preview_->effectivePath.unwrappedEnd - *root;
+        const Vec2 currentTip = preview_->tentacle.GetTipPosition();
+        const float pathLengthSquared = LengthSquared(pathDelta);
+        if (IsFinite(currentTip) && std::isfinite(pathLengthSquared) &&
+            pathLengthSquared > kLengthEpsilon * kLengthEpsilon) {
+            const float progress = std::clamp(
+                Dot(currentTip - *root, pathDelta) / pathLengthSquared,
+                0.0f, 1.0f);
+            const Vec2 retractionStart = *root + pathDelta * progress;
+            std::optional<WrappedPath> retractionPath =
+                BuildConnectionPath(*root, retractionStart);
+            if (retractionPath.has_value() &&
+                retractionPath->endWinding != WrapWinding{}) {
+                preview_->wrappedRetractionStart = retractionStart;
+                preview_->effectivePath = std::move(*retractionPath);
+                preview_->retractAlongWrappedPath = true;
+                // Clear the delayed drag targets without moving the visible
+                // tip. Retraction frames now advance it over prefixes of the
+                // same unwrapped route, crossing each portal in reverse order.
+                preview_->tentacle.AttachTip(retractionStart);
+                return;
+            }
+        }
+    }
+    preview_->tentacle.FollowTip(*root);
 }
 
 void PuzzleBoard::ActivateNode(const std::size_t nodeIndex) noexcept {
@@ -516,12 +719,15 @@ bool PuzzleBoard::CanUseAsTarget(const std::size_t nodeIndex) const noexcept {
            nodeStates_[nodeIndex].incomingUsed < node.maxIncoming;
 }
 
-bool PuzzleBoard::CanCommitTo(const std::size_t targetNodeIndex,
-                              const Vec2 pointerPosition) const noexcept {
+std::optional<PuzzleBoard::CommitCandidate>
+PuzzleBoard::BuildCommitCandidate(
+    const std::size_t targetNodeIndex,
+    const WrappedPath& pointerPath) const noexcept {
     if (!preview_.has_value() ||
         preview_->state != PreviewState::Dragging ||
-        !CanUseAsTarget(targetNodeIndex) || !IsFinite(pointerPosition)) {
-        return false;
+        !CanUseAsTarget(targetNodeIndex) ||
+        !IsFinite(pointerPath.canonicalEnd)) {
+        return std::nullopt;
     }
 
     const std::size_t sourceNodeIndex = preview_->sourceNodeIndex;
@@ -530,14 +736,14 @@ bool PuzzleBoard::CanCommitTo(const std::size_t targetNodeIndex,
         sourceNodeIndex == targetNodeIndex ||
         IsDuplicateConnection(sourceNodeIndex, targetNodeIndex) ||
         WouldCreateCycle(sourceNodeIndex, targetNodeIndex)) {
-        return false;
+        return std::nullopt;
     }
 
     const NodeDefinition& sourceNode = definition_.nodes[sourceNodeIndex];
     const NodeState& sourceState = nodeStates_[sourceNodeIndex];
     if (!sourceState.active || !CanBeSourceType(sourceNode.type) ||
         sourceState.outgoingUsed >= sourceNode.maxOutgoing) {
-        return false;
+        return std::nullopt;
     }
 
     const std::optional<AxisAlignedBox> targetBounds =
@@ -545,20 +751,41 @@ bool PuzzleBoard::CanCommitTo(const std::size_t targetNodeIndex,
     const std::optional<Vec2> source = GetNodeCenter(sourceNodeIndex);
     const std::optional<Vec2> target = GetNodeCenter(targetNodeIndex);
     if (!targetBounds.has_value() || !source.has_value() || !target.has_value() ||
-        !PointInAxisAlignedBox(pointerPosition, *targetBounds)) {
-        return false;
+        !PointInAxisAlignedBox(pointerPath.canonicalEnd, *targetBounds)) {
+        return std::nullopt;
+    }
+
+    Vec2 unwrappedTarget = *target;
+    if (wrapEdgesActive_) {
+        if (!playfieldBounds_.has_value()) {
+            return std::nullopt;
+        }
+        const std::optional<Vec2> translated = TranslateToWinding(
+            *target, pointerPath.endWinding, *playfieldBounds_);
+        if (!translated.has_value()) {
+            return std::nullopt;
+        }
+        unwrappedTarget = *translated;
+    }
+    std::optional<WrappedPath> path =
+        BuildConnectionPath(*source, unwrappedTarget);
+    if (!path.has_value()) {
+        return std::nullopt;
     }
 
     const float requiredLength =
-        Length(*target - *source) *
+        path->length *
         EffectiveSlackRatio(definition_.minimumSlackRatio);
     if (preview_->reservedLength + kLengthEpsilon < requiredLength) {
-        return false;
+        return std::nullopt;
     }
 
     const float clearance =
         (std::max)(preview_->style.baseWidth, preview_->style.tipWidth) * 0.5f;
-    return !IsBlockedByDeadNode(*source, *target, clearance);
+    if (IsBlockedByDeadNode(*path, clearance)) {
+        return std::nullopt;
+    }
+    return CommitCandidate{targetNodeIndex, std::move(*path)};
 }
 
 bool PuzzleBoard::IsDuplicateConnection(
@@ -608,10 +835,38 @@ bool PuzzleBoard::WouldCreateCycle(const std::size_t sourceNodeIndex,
     }
 }
 
-bool PuzzleBoard::IsBlockedByDeadNode(const Vec2 start, const Vec2 end,
+std::optional<WrappedPath> PuzzleBoard::BuildConnectionPath(
+    const Vec2 start, const Vec2 end, const bool allowWrap) const noexcept {
+    const bool useWrap = allowWrap && wrapEdgesActive_;
+    if (!useWrap) {
+        if (!IsFinite(start) || !IsFinite(end)) {
+            return std::nullopt;
+        }
+        const float length = Length(end - start);
+        if (!std::isfinite(length)) {
+            return std::nullopt;
+        }
+        try {
+            WrappedPath path{};
+            path.visibleSegments.push_back({start, end, start, end});
+            path.drawTranslations.push_back({});
+            path.unwrappedEnd = end;
+            path.canonicalEnd = end;
+            path.length = length;
+            return path;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+    const AxisAlignedBox bounds =
+        playfieldBounds_.value_or(AxisAlignedBox{});
+    return BuildWrappedPath(start, end, bounds);
+}
+
+bool PuzzleBoard::IsBlockedByDeadNode(const WrappedPath& path,
                                       const float clearance) const noexcept {
-    if (!IsFinite(start) || !IsFinite(end) || !std::isfinite(clearance) ||
-        clearance < 0.0f) {
+    if (!std::isfinite(clearance) || clearance < 0.0f ||
+        path.visibleSegments.empty()) {
         return true;
     }
     for (std::size_t index = 0; index < definition_.nodes.size(); ++index) {
@@ -623,51 +878,75 @@ bool PuzzleBoard::IsBlockedByDeadNode(const Vec2 start, const Vec2 end,
             return true;
         }
         const AxisAlignedBox expanded = ExpandAxisAlignedBox(*bounds, clearance);
-        if (!IsValidAxisAlignedBox(expanded) ||
-            SegmentIntersectsAxisAlignedBox(start, end, expanded)) {
+        if (!IsValidAxisAlignedBox(expanded)) {
             return true;
+        }
+        for (const WrappedPathSegment& segment : path.visibleSegments) {
+            if (!IsFinite(segment.start) || !IsFinite(segment.end) ||
+                SegmentIntersectsAxisAlignedBox(segment.start, segment.end,
+                                                expanded)) {
+                return true;
+            }
         }
     }
     return false;
 }
 
 Vec2 PuzzleBoard::ClampTipTargetToDeadNodes(
-    const Vec2 start, const Vec2 desiredEnd, const float clearance) const noexcept {
-    if (!IsFinite(start) || !IsFinite(desiredEnd) || !std::isfinite(clearance) ||
-        clearance < 0.0f) {
-        return start;
+    const WrappedPath& path, const float clearance) const noexcept {
+    if (path.visibleSegments.empty()) {
+        return {};
+    }
+    const Vec2 fallback = path.visibleSegments.front().unwrappedStart;
+    if (!IsFinite(fallback) || !IsFinite(path.unwrappedEnd) ||
+        !std::isfinite(clearance) || clearance < 0.0f) {
+        return fallback;
     }
 
-    float earliestEntryTime = 1.0f;
-    bool blocked = false;
-    for (std::size_t index = 0; index < definition_.nodes.size(); ++index) {
-        if (definition_.nodes[index].type != NodeType::Dead || !IsDrawable(index)) {
+    for (const WrappedPathSegment& segment : path.visibleSegments) {
+        if (!IsFinite(segment.start) || !IsFinite(segment.end) ||
+            !IsFinite(segment.unwrappedStart) ||
+            !IsFinite(segment.unwrappedEnd)) {
+            return fallback;
+        }
+        float earliestEntryTime = 1.0f;
+        bool blocked = false;
+        for (std::size_t index = 0; index < definition_.nodes.size(); ++index) {
+            if (definition_.nodes[index].type != NodeType::Dead ||
+                !IsDrawable(index)) {
+                continue;
+            }
+            const std::optional<AxisAlignedBox> bounds = GetNodeBounds(index);
+            if (!bounds.has_value()) {
+                return fallback;
+            }
+            const AxisAlignedBox expanded =
+                ExpandAxisAlignedBox(*bounds, clearance);
+            if (!IsValidAxisAlignedBox(expanded)) {
+                return fallback;
+            }
+            const std::optional<float> entry =
+                SegmentAxisAlignedBoxEntryTime(segment.start, segment.end,
+                                               expanded);
+            if (entry.has_value() && *entry <= earliestEntryTime) {
+                earliestEntryTime = *entry;
+                blocked = true;
+            }
+        }
+        if (!blocked) {
             continue;
         }
-        const std::optional<AxisAlignedBox> bounds = GetNodeBounds(index);
-        if (!bounds.has_value()) {
-            return start;
-        }
-        const AxisAlignedBox expanded = ExpandAxisAlignedBox(*bounds, clearance);
-        const std::optional<float> entry =
-            SegmentAxisAlignedBoxEntryTime(start, desiredEnd, expanded);
-        if (entry.has_value() && *entry <= earliestEntryTime) {
-            earliestEntryTime = *entry;
-            blocked = true;
-        }
-    }
-    if (!blocked) {
-        return desiredEnd;
-    }
 
-    const Vec2 delta = desiredEnd - start;
-    const float distance = Length(delta);
-    if (!std::isfinite(distance) || distance <= kLengthEpsilon) {
-        return start;
+        const Vec2 delta = segment.unwrappedEnd - segment.unwrappedStart;
+        const float distance = Length(delta);
+        if (!std::isfinite(distance) || distance <= kLengthEpsilon) {
+            return segment.unwrappedStart;
+        }
+        const float safeDistance = (std::max)(
+            0.0f, distance * earliestEntryTime - kDeadCollisionBackoff);
+        return segment.unwrappedStart + delta * (safeDistance / distance);
     }
-    const float safeDistance =
-        (std::max)(0.0f, distance * earliestEntryTime - kDeadCollisionBackoff);
-    return start + delta * (safeDistance / distance);
+    return path.unwrappedEnd;
 }
 
 std::optional<std::size_t> PuzzleBoard::FindSourceAt(
@@ -686,25 +965,29 @@ std::optional<std::size_t> PuzzleBoard::FindSourceAt(
     return std::nullopt;
 }
 
-std::optional<std::size_t> PuzzleBoard::FindCommitTargetAt(
-    const Vec2 point) const noexcept {
-    if (!preview_.has_value() || !IsFinite(point)) {
+std::optional<PuzzleBoard::CommitCandidate>
+PuzzleBoard::FindCommitTargetAt(
+    const WrappedPath& pointerPath) const noexcept {
+    if (!preview_.has_value() || !IsFinite(pointerPath.canonicalEnd)) {
         return std::nullopt;
     }
 
-    std::optional<std::size_t> bestTarget;
+    std::optional<CommitCandidate> bestTarget;
     float bestDistanceSquared = 0.0f;
     for (std::size_t index = 0; index < definition_.nodes.size(); ++index) {
-        if (!CanCommitTo(index, point)) {
+        std::optional<CommitCandidate> candidate =
+            BuildCommitCandidate(index, pointerPath);
+        if (!candidate.has_value()) {
             continue;
         }
         const std::optional<Vec2> center = GetNodeCenter(index);
         if (!center.has_value()) {
             continue;
         }
-        const float distanceSquared = LengthSquared(point - *center);
+        const float distanceSquared =
+            LengthSquared(pointerPath.canonicalEnd - *center);
         if (!bestTarget.has_value() || distanceSquared < bestDistanceSquared) {
-            bestTarget = index;
+            bestTarget = std::move(*candidate);
             bestDistanceSquared = distanceSquared;
         }
     }

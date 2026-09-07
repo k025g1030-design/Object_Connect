@@ -17,7 +17,7 @@
 ```text
 Object_Connect executable
   -> object_connect_runtime
-       -> Application / Input / Game / UI / PuzzleRenderer
+       -> Application / Audio / Input / Game / UI / PuzzleRenderer
        -> KamataEngine / DirectX 12
        -> object_connect_core
             -> Math / CSV + Data / Geometry
@@ -35,6 +35,7 @@ Object_Connect_CoreTests
 | 模組 | 擁有／負責 | 不負責 |
 | --- | --- | --- |
 | Core | KamataEngine lifetime、工作目錄、主迴圈、frame timing | 解謎規則或 draw data |
+| Audio | optional WAV 載入、BGM voice、關卡／節點選擇音效 | 引擎全域生命週期或遊戲事件判定 |
 | Math | `Vec2`、`Color` 與小型數學 helper | engine adapter |
 | Data | CSV 語法、三層 schema、路徑／欄位驗證、catalog 暫存後提交 | Runtime connection 或渲染 |
 | Geometry | point／segment 對 AABB 的純函式 query | Verlet collision response 或 pathfinding |
@@ -61,10 +62,12 @@ maps/<level>.csv
 `levels.csv` 的完整 header：
 
 ```text
-level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation
+level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation,wrap_edges
 ```
 
 每列建立一個 `PuzzleDefinition`。列順序保留並直接成為 Level Select 順序。`map_path` 指向該關的 instance map；`next_level_id` 是 optional ID，不表示下一列。
+
+`wrap_edges` 使用 `0`／`1`，空值或缺少欄位時預設為關閉；非法值會產生一次性啟動警告並以關閉處理。為相容既有資料，Loader 同時接受末尾沒有 `wrap_edges` 的舊 11 欄 header；其他欄位名稱或順序仍採嚴格驗證。
 
 Loader 不要求 `next_level_id` 一定存在。`Game` 顯示 Solved 選單時會呼叫 `PuzzleCatalog::Find`；只有非空且確實存在的 ID 才產生 `NEXT PUZZLE`，並依該 ID 啟動關卡。未知 ID 和空值都視為沒有下一關。
 
@@ -195,7 +198,7 @@ reserved = max(previousReserved, clamp(desired, 0, previewMaxLength))
 
 因此拖遠後再回來不會自動釋放長度。Commit 時 reserved 成為固定線段的 rest length；取消或失敗時進入約 0.22 秒 Retracting，reserved 隨收回退還。失焦／暫停前的立即取消則直接移除 preview。
 
-`lengthExhausted` 只在沒有 preview 的穩定狀態計算。它表示仍存在結構上可用的 source-target 配對，但 global/local 可部署長度不足以到達任何一個合法 target。
+`lengthExhausted` 只在沒有 preview 的穩定狀態計算。它表示仍存在結構上可用的 source-target 配對，但 global/local 可部署長度不足以到達任何一個合法 target。關閉 `wrap_edges` 時維持既有直接路徑判定；開啟時會以相同的 wrapped-path 與 dead-node 規則檢查目標的 3×3 相鄰 image。這只是可達性提示，不會替實際拖曳選擇 winding 或自動提交穿越連線。
 
 ## 8. Dead tip clamp、LOS 與 Geometry
 
@@ -272,7 +275,9 @@ Inactive node 使用灰暗 tint，active node 使用原貼圖／正常 fallback 
 
 Dead 的 sprite／fallback 畫在血管之後，只能視覺遮住部分穿越，不能取代 particle collision。
 
-UI 使用 KamataEngine sprite 和 debug text。`displayName` 空白或 node 沒有 placement 時不畫名稱；HUD 顯示 global remaining，不顯示每個 source 的 local remaining。
+UI 使用 KamataEngine sprite 和 debug text。`displayName` 空白或 node 沒有 placement 時不畫名稱；HUD 顯示 global remaining，不顯示每個 source 的 local remaining。Level Select 只使用既有 `white1x1.png` 染色疊出棕色框板、暖白關卡牌、左右箭頭與 BACK，不新增美術素材或鎖關狀態；每頁固定顯示 5 欄×2 列，Draw 與 HitTest 共用同一份半開矩形 layout。箭頭／滾輪換頁後會把選取同步至新頁第一個 catalog index，箭頭本身不偽裝成關卡索引。
+
+`GameAudio` 是 runtime-only 的 KamataEngine Audio adapter。它只從引擎實際使用的 `Resources/audio/` 預檢並載入三個 optional WAV：一個跨畫面持續的 loop BGM，以及關卡確認和來源節點成功開始拖曳的 one-shot。缺檔只停用該 cue；`GameFlow` 與 `PuzzleBoard` 不持有音訊資源，也不複製任何音訊專用判定。
 
 ## 12. GameFlow 與 session
 
@@ -286,7 +291,7 @@ UI 使用 KamataEngine sprite 和 debug text。`displayName` 空白或 node 沒�
 | Paused | `RESUME`、`LEVEL SELECT`、`MAIN MENU`、`EXIT GAME` |
 | Solved | 有有效 next：`NEXT PUZZLE`、`LEVEL SELECT`、`RETRY`；否則只有後兩項 |
 
-`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input 和兩個 renderer。Start／Retry 建立新 Board；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
+`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、optional audio adapter 和兩個 renderer。Start／Retry 建立新 Board；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
 
 ## 13. 初始化與每幀資料流
 
@@ -300,6 +305,7 @@ WinMain
        InputSystem::Initialize
        PuzzleRenderer::Initialize
        GameUiRenderer::Initialize
+       GameAudio::Initialize (optional cues; BGM loop starts once)
   -> frame loop
 ```
 
@@ -333,7 +339,7 @@ InputSystem::Sample
 - Ribbon vertex contract 與 degenerate safety。
 - MainMenu／LevelSelect／Pause／Solved，以及 `hasNextPuzzle` 選單差異。
 
-Headless tests 不能驗證 GPU 畫面、拖曳手感、dead 遮擋和 HUD 排版，這些仍需人工回歸。
+Headless tests 不能驗證 GPU 畫面、實際音訊輸出、拖曳手感、dead 遮擋和 HUD 排版，這些仍需人工回歸。
 
 ## 15. 擴充界線
 
@@ -344,6 +350,6 @@ Headless tests 不能驗證 GPU 畫面、拖曳手感、dead 遮擋和 HUD 排�
 - Dead 對 Verlet particles 的 collision、繞障礙或 pathfinding。
 - 器官分數與直接路線彩蛋計分。
 - 出血／血壓倒數。
-- 存檔、解鎖、音訊、hot reload、localization 或完整物理。
+- 存檔、解鎖、音訊設定／動態混音、hot reload、localization 或完整物理。
 
 新增真正的 obstacle collision 不只是 renderer 改圖層：必須先定義 collision shape、preview 行為、constraint solver 穩定性和長度語意。Texture 載入與 sprite lifecycle 應繼續留在 Rendering；不要讓 `PuzzleBoard` 持有 GPU asset。

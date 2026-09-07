@@ -28,7 +28,7 @@ constexpr std::string_view kNodePresetsCatalogName{"nodes.csv"};
 constexpr std::size_t kMaximumIdentifierLength = 64;
 constexpr std::size_t kMaximumDisplayTextLength = 128;
 
-constexpr std::array<std::string_view, 11> kLevelsHeader{
+constexpr std::array<std::string_view, 11> kLegacyLevelsHeader{
     "level_id",
     "level_name",
     "map_path",
@@ -40,6 +40,21 @@ constexpr std::array<std::string_view, 11> kLevelsHeader{
     "base_width",
     "tip_width",
     "width_variation",
+};
+
+constexpr std::array<std::string_view, 12> kLevelsHeader{
+    "level_id",
+    "level_name",
+    "map_path",
+    "next_level_id",
+    "total_length",
+    "minimum_slack_ratio",
+    "background_color",
+    "vessel_color",
+    "base_width",
+    "tip_width",
+    "width_variation",
+    "wrap_edges",
 };
 
 constexpr std::array<std::string_view, 9> kNodePresetsHeader{
@@ -110,6 +125,34 @@ void ValidateHeader(const data::CsvDocument& document,
         std::string{catalogName} + " line 1, column " +
         std::to_string(mismatch + 1) + ": header must be exactly: " +
         JoinHeader(expected));
+}
+
+enum class LevelsSchema : std::uint8_t {
+    Legacy,
+    Current,
+};
+
+template <std::size_t Size>
+[[nodiscard]] bool HeaderMatches(
+    const data::CsvDocument& document,
+    const std::array<std::string_view, Size>& expected) {
+    return document.header.size() == expected.size() &&
+           std::equal(document.header.begin(), document.header.end(),
+                      expected.begin(), expected.end());
+}
+
+[[nodiscard]] LevelsSchema ValidateLevelsHeader(
+    const data::CsvDocument& document) {
+    if (HeaderMatches(document, kLevelsHeader)) {
+        return LevelsSchema::Current;
+    }
+    if (HeaderMatches(document, kLegacyLevelsHeader)) {
+        return LevelsSchema::Legacy;
+    }
+    throw PuzzleDataError(
+        std::string{kLevelsCatalogName} +
+        " line 1: header must be exactly either: " +
+        JoinHeader(kLegacyLevelsHeader) + " or: " + JoinHeader(kLevelsHeader));
 }
 
 template <std::size_t Size>
@@ -436,9 +479,30 @@ struct ParsedLevel final {
     std::size_t lineNumber = 0;
 };
 
+[[nodiscard]] bool ParseWrapEdges(
+    const std::string_view text,
+    const std::size_t lineNumber,
+    std::vector<std::string>* const warnings) {
+    if (text.empty() || text == "0") {
+        return false;
+    }
+    if (text == "1") {
+        return true;
+    }
+    if (warnings != nullptr) {
+        warnings->push_back(
+            std::string{kLevelsCatalogName} + " line " +
+            std::to_string(lineNumber) +
+            ", column 12, field 'wrap_edges': expected '0', '1', or blank; "
+            "treating the value as disabled");
+    }
+    return false;
+}
+
 [[nodiscard]] std::vector<ParsedLevel> ParseLevels(
-    const data::CsvDocument& document) {
-    ValidateHeader(document, kLevelsHeader, kLevelsCatalogName);
+    const data::CsvDocument& document,
+    std::vector<std::string>* const warnings) {
+    const LevelsSchema schema = ValidateLevelsHeader(document);
     if (document.records.empty()) {
         throw PuzzleDataError("levels.csv must contain at least one level");
     }
@@ -490,6 +554,10 @@ struct ParsedLevel final {
         definition.widthVariation = ParseNonNegativeFloat(
             record.fields[10], 0.16f, kLevelsCatalogName, record.lineNumber,
             kLevelsHeader[10], kLevelsHeader);
+        if (schema == LevelsSchema::Current) {
+            definition.wrapEdges =
+                ParseWrapEdges(record.fields[11], record.lineNumber, warnings);
+        }
         parsed.push_back(std::move(level));
     }
     return parsed;
@@ -658,8 +726,9 @@ struct ParsedLevel final {
 [[nodiscard]] PuzzleCatalog BuildParsedCatalog(
     const data::CsvDocument& levelsDocument,
     const data::CsvDocument& nodePresetsDocument,
-    const std::span<const PuzzleMapCsvSource> mapSources) {
-    std::vector<ParsedLevel> levels = ParseLevels(levelsDocument);
+    const std::span<const PuzzleMapCsvSource> mapSources,
+    std::vector<std::string>* const warnings) {
+    std::vector<ParsedLevel> levels = ParseLevels(levelsDocument, warnings);
     const std::vector<NodePresetDefinition> presets =
         ParseNodePresets(nodePresetsDocument, nullptr);
 
@@ -696,13 +765,14 @@ struct ParsedLevel final {
 
 [[nodiscard]] PuzzleCatalog LoadPuzzleCatalog(
     const PuzzleDataPaths& paths,
-    const std::filesystem::path& resourceRoot) {
+    const std::filesystem::path& resourceRoot,
+    std::vector<std::string>* const warnings) {
     const std::filesystem::path levelsPath =
         ResolveCatalogPath(paths.levels, resourceRoot, "levels catalog");
     const data::CsvParseResult levelsResult = data::Csv::Load(levelsPath);
     const data::CsvDocument& levelsDocument =
         RequireDocument(levelsResult, kLevelsCatalogName);
-    std::vector<ParsedLevel> levels = ParseLevels(levelsDocument);
+    std::vector<ParsedLevel> levels = ParseLevels(levelsDocument, warnings);
 
     const std::filesystem::path nodesPath =
         ResolveCatalogPath(paths.nodes, resourceRoot, "node preset catalog");
@@ -740,12 +810,16 @@ struct ParsedLevel final {
 bool PuzzleCatalogLoader::Load(const PuzzleDataPaths& paths,
                                const std::string& resourceRoot,
                                PuzzleCatalog& catalog,
-                               std::string& error) {
+                               std::string& error,
+                               std::vector<std::string>* const warnings) {
     error.clear();
+    if (warnings != nullptr) {
+        warnings->clear();
+    }
     try {
         const std::filesystem::path root{resourceRoot};
         ValidateResourceRoot(root);
-        PuzzleCatalog parsed = LoadPuzzleCatalog(paths, root);
+        PuzzleCatalog parsed = LoadPuzzleCatalog(paths, root, warnings);
         catalog = std::move(parsed);
         return true;
     } catch (const std::exception& exception) {
@@ -756,14 +830,19 @@ bool PuzzleCatalogLoader::Load(const PuzzleDataPaths& paths,
 
 bool PuzzleCatalogLoader::Parse(const PuzzleCsvSources& sources,
                                 PuzzleCatalog& catalog,
-                                std::string& error) {
+                                std::string& error,
+                                std::vector<std::string>* const warnings) {
     error.clear();
+    if (warnings != nullptr) {
+        warnings->clear();
+    }
     try {
         const data::CsvParseResult levelsResult = data::Csv::Parse(sources.levels);
         const data::CsvParseResult nodesResult = data::Csv::Parse(sources.nodes);
         PuzzleCatalog parsed = BuildParsedCatalog(
             RequireDocument(levelsResult, kLevelsCatalogName),
-            RequireDocument(nodesResult, kNodePresetsCatalogName), sources.maps);
+            RequireDocument(nodesResult, kNodePresetsCatalogName), sources.maps,
+            warnings);
         catalog = std::move(parsed);
         return true;
     } catch (const std::exception& exception) {

@@ -1,5 +1,6 @@
 #include "ObjectConnect/Game/Game.hpp"
 
+#include "ObjectConnect/Audio/GameAudio.hpp"
 #include "ObjectConnect/Data/PuzzleCatalogLoader.hpp"
 #include "ObjectConnect/Game/GameFlow.hpp"
 #include "ObjectConnect/Input/InputState.hpp"
@@ -7,6 +8,8 @@
 #include "ObjectConnect/Puzzle/PuzzleBoard.hpp"
 #include "ObjectConnect/Rendering/GameUiRenderer.hpp"
 #include "ObjectConnect/Rendering/PuzzleRenderer.hpp"
+
+#include <base/DirectXCommon.h>
 
 #include <cmath>
 #include <cstddef>
@@ -32,11 +35,14 @@ constexpr std::size_t kRendererVertexCapacity = 65536;
 struct Game::Impl final {
     PuzzleCatalog catalog;
     InputSystem input;
+    GameAudio audio;
     PuzzleRenderer puzzleRenderer;
     GameUiRenderer ui;
     GameFlow flow;
     std::unique_ptr<PuzzleBoard> board;
     std::optional<std::size_t> currentPuzzleIndex;
+    AxisAlignedBox playfieldBounds{};
+    std::vector<std::string> startupWarnings;
     bool shouldQuit = false;
     float elapsedSeconds = 0.0f;
     float solvedElapsedSeconds = 0.0f;
@@ -74,13 +80,14 @@ struct Game::Impl final {
         }
         const PuzzleDefinition& definition = catalog.GetPuzzles()[index];
         auto nextBoard = std::make_unique<PuzzleBoard>();
-        if (!nextBoard->Initialize(definition, error)) {
+        if (!nextBoard->Initialize(definition, playfieldBounds, error)) {
             return false;
         }
         if (!puzzleRenderer.PreparePuzzle(definition, error)) {
             return false;
         }
         board = std::move(nextBoard);
+        input.ResetPointerWrap();
         currentPuzzleIndex = index;
         solvedElapsedSeconds = 0.0f;
         flow.EnterPlaying();
@@ -95,6 +102,7 @@ struct Game::Impl final {
     }
 
     void LeavePuzzleForLevelSelect() noexcept {
+        input.ResetPointerWrap();
         board.reset();
         currentPuzzleIndex.reset();
         solvedElapsedSeconds = 0.0f;
@@ -102,6 +110,7 @@ struct Game::Impl final {
     }
 
     void LeavePuzzleForMainMenu() noexcept {
+        input.ResetPointerWrap();
         board.reset();
         currentPuzzleIndex.reset();
         solvedElapsedSeconds = 0.0f;
@@ -120,6 +129,7 @@ struct Game::Impl final {
                 throw std::runtime_error("GameFlow omitted the selected puzzle index.");
             }
             RequireStartPuzzle(*result.puzzleIndex);
+            audio.PlayLevelSelected();
             break;
         case GameCommand::RetryPuzzle:
             if (!currentPuzzleIndex.has_value()) {
@@ -149,8 +159,11 @@ struct Game::Impl final {
     void Update(const float unnormalizedDeltaSeconds) {
         const float deltaSeconds = NormalizeDelta(unnormalizedDeltaSeconds);
         elapsedSeconds += deltaSeconds;
-        const InputState state = input.Sample();
         const GameScreen screenBeforeInput = flow.GetScreen();
+        const bool wrapPointer =
+            board && screenBeforeInput == GameScreen::Playing &&
+            board->GetDefinition().wrapEdges && board->IsDragging();
+        const InputState state = input.Sample(playfieldBounds, wrapPointer);
 
         if (board && (screenBeforeInput == GameScreen::Playing ||
                       screenBeforeInput == GameScreen::Paused) &&
@@ -165,16 +178,38 @@ struct Game::Impl final {
         }
 
         const bool solvedMenuReady = solvedElapsedSeconds >= kSolvedMenuDelaySeconds;
+        const UiPoint pointerPosition{state.mouse.positionX,
+                                      state.mouse.positionY};
+        const std::optional<std::size_t> hoveredItem = ui.HitTest(
+            screenBeforeInput, pointerPosition, catalog.GetPuzzles().size(),
+            HasNextPuzzle(), solvedMenuReady);
+        const bool keyboardNavigated = state.keyboard.previousPressed ||
+                                       state.keyboard.nextPressed;
+        const bool activationRequested = state.keyboard.enterPressed ||
+                                         state.keyboard.escapePressed ||
+                                         state.focusLost ||
+                                         (state.mouse.leftPressed &&
+                                          hoveredItem.has_value());
+        const std::optional<std::size_t> pageSelection =
+            ui.ApplyLevelSelectNavigation(
+                pointerPosition, state.mouse.leftPressed,
+                state.mouse.wheelDelta, keyboardNavigated,
+                activationRequested, screenBeforeInput);
+
         GameFlowInput flowInput{};
-        flowInput.previousPressed = state.keyboard.previousPressed;
-        flowInput.nextPressed = state.keyboard.nextPressed;
-        flowInput.confirmPressed = state.keyboard.enterPressed;
+        flowInput.previousPressed =
+            state.keyboard.previousPressed && !pageSelection.has_value();
+        flowInput.nextPressed =
+            state.keyboard.nextPressed && !pageSelection.has_value();
+        flowInput.confirmPressed =
+            state.keyboard.enterPressed && !pageSelection.has_value();
         flowInput.escapePressed = state.keyboard.escapePressed;
         flowInput.focusLost = state.focusLost;
-        flowInput.mousePrimaryPressed = state.mouse.leftPressed;
-        flowInput.hoveredItem = ui.HitTest(
-            screenBeforeInput, {state.mouse.positionX, state.mouse.positionY},
-            catalog.GetPuzzles().size(), HasNextPuzzle(), solvedMenuReady);
+        flowInput.mousePrimaryPressed =
+            state.mouse.leftPressed && !pageSelection.has_value();
+        flowInput.hoveredItem = pageSelection.has_value()
+                                    ? pageSelection
+                                    : hoveredItem;
 
         if (screenBeforeInput == GameScreen::Solved && !solvedMenuReady) {
             flowInput = {};
@@ -187,10 +222,15 @@ struct Game::Impl final {
         if (flowResult.simulatePuzzle && board && flow.GetScreen() == GameScreen::Playing) {
             BoardPointerInput boardInput{};
             boardInput.position = {state.mouse.positionX, state.mouse.positionY};
+            boardInput.unwrappedPosition = state.mouse.unwrappedPosition;
             boardInput.leftPressed = state.mouse.leftPressed;
             boardInput.leftHeld = state.mouse.leftHeld;
             boardInput.leftReleased = state.mouse.leftReleased;
+            const bool wasDragging = board->IsDragging();
             board->Update(boardInput, deltaSeconds);
+            if (!wasDragging && board->IsDragging()) {
+                audio.PlayNodeSelected();
+            }
             if (board->IsSolved()) {
                 flow.EnterSolved();
                 solvedElapsedSeconds = 0.0f;
@@ -203,6 +243,10 @@ struct Game::Impl final {
             solvedElapsedSeconds += deltaSeconds;
         } else if (screenBeforeInput != GameScreen::Solved) {
             solvedElapsedSeconds = 0.0f;
+        }
+        if (!board || flow.GetScreen() != GameScreen::Playing ||
+            !board->IsDragging()) {
+            input.ResetPointerWrap();
         }
     }
 
@@ -228,8 +272,21 @@ bool Game::Initialize(const GameConfig& config, std::string& error) {
     Finalize();
     error.clear();
     auto next = std::make_unique<Impl>();
+    KamataEngine::DirectXCommon* const directX =
+        KamataEngine::DirectXCommon::GetInstance();
+    if (directX == nullptr || directX->GetBackBufferWidth() <= 0 ||
+        directX->GetBackBufferHeight() <= 0) {
+        error = "The rendering back buffer must have a positive size.";
+        return false;
+    }
+    next->playfieldBounds = {
+        {0.0f, 0.0f},
+        {static_cast<float>(directX->GetBackBufferWidth()),
+         static_cast<float>(directX->GetBackBufferHeight())},
+    };
     if (!PuzzleCatalogLoader::Load(config.data, config.resourceRoot,
-                                   next->catalog, error)) {
+                                   next->catalog, error,
+                                   &next->startupWarnings)) {
         return false;
     }
     if (next->catalog.Empty()) {
@@ -245,6 +302,7 @@ bool Game::Initialize(const GameConfig& config, std::string& error) {
     if (!next->ui.Initialize(error)) {
         return false;
     }
+    next->audio.Initialize(&next->startupWarnings);
     impl_ = std::move(next);
     return true;
 }
@@ -263,6 +321,7 @@ void Game::Draw() {
 
 void Game::Finalize() noexcept {
     if (impl_) {
+        impl_->audio.Finalize();
         impl_->ui.Finalize();
         impl_->puzzleRenderer.Finalize();
         impl_->input.Finalize();
@@ -272,5 +331,10 @@ void Game::Finalize() noexcept {
 
 bool Game::ShouldQuit() const noexcept { return impl_ && impl_->shouldQuit; }
 bool Game::IsInitialized() const noexcept { return impl_ != nullptr; }
+
+const std::vector<std::string>& Game::GetStartupWarnings() const noexcept {
+    static const std::vector<std::string> kNoWarnings;
+    return impl_ ? impl_->startupWarnings : kNoWarnings;
+}
 
 } // namespace object_connect

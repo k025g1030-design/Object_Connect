@@ -34,6 +34,14 @@ public:
     [[nodiscard]] std::optional<std::size_t> HitTest(
         GameScreen screen, UiPoint point, std::size_t puzzleCount,
         bool hasNextPuzzle, bool solvedMenuReady) const noexcept;
+    // Call after hit-testing the currently drawn page and before flow
+    // handling. Page controls never masquerade as menu item indices; when the
+    // page changes, the first absolute puzzle index on that page is returned
+    // so GameFlow can update its selection through its normal input path.
+    [[nodiscard]] std::optional<std::size_t> ApplyLevelSelectNavigation(
+        UiPoint point, bool mousePrimaryPressed, int wheelDelta,
+        bool keyboardNavigated, bool activationRequested,
+        GameScreen screen) noexcept;
     void Finalize() noexcept;
     [[nodiscard]] bool IsInitialized() const noexcept;
 

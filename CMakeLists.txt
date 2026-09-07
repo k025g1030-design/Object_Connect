@@ -31,11 +31,23 @@ endif()
 string(REPLACE "/O2" "/O1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 string(REPLACE "/Ob2" "/Ob1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 
-set(_default_kamata_engine_root "D:/code/Runtime/KamataEngine")
-if(DEFINED ENV{KAMATA_ENGINE_ROOT} AND NOT "$ENV{KAMATA_ENGINE_ROOT}" STREQUAL "")
-    set(_default_kamata_engine_root "$ENV{KAMATA_ENGINE_ROOT}")
+set(KAMATA_ENGINE_ROOT "" CACHE PATH
+    "KamataEngine runtime root (defaults to the KAMATA_ENGINE environment variable)"
+)
+if(KAMATA_ENGINE_ROOT STREQUAL "")
+    if(DEFINED ENV{KAMATA_ENGINE} AND NOT "$ENV{KAMATA_ENGINE}" STREQUAL "")
+        set(KAMATA_ENGINE_ROOT "$ENV{KAMATA_ENGINE}")
+    else()
+        message(FATAL_ERROR
+            "KamataEngine could not be located. Set the KAMATA_ENGINE environment "
+            "variable, or configure with -DKAMATA_ENGINE_ROOT=<path>."
+        )
+    endif()
 endif()
-set(KAMATA_ENGINE_ROOT "${_default_kamata_engine_root}" CACHE PATH "KamataEngine runtime root")
+cmake_path(ABSOLUTE_PATH KAMATA_ENGINE_ROOT NORMALIZE
+    BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE KAMATA_ENGINE_ROOT
+)
 
 set(KAMATA_INCLUDE_DIR "${KAMATA_ENGINE_ROOT}/External/KamataEngine/include")
 set(DIRECTXTEX_INCLUDE_DIR "${KAMATA_ENGINE_ROOT}/External/DirectXTex/include")
@@ -147,6 +159,7 @@ set(OBJECT_CONNECT_CORE_SOURCES
 )
 
 set(OBJECT_CONNECT_RUNTIME_SOURCES
+    src/ObjectConnect/Audio/GameAudio.cpp
     src/ObjectConnect/Core/Application.cpp
     src/ObjectConnect/Core/FrameTimer.cpp
     src/ObjectConnect/Game/Game.cpp

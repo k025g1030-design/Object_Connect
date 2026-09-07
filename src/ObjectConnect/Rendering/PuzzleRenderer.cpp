@@ -34,8 +34,11 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-constexpr float kCanvasWidth = 1280.0f;
-constexpr float kCanvasHeight = 720.0f;
+// Snapshots produced through the legacy, non-wrapping board initializer do
+// not carry session bounds. Keep its historical render size as a local
+// fallback only; wrapped paths always use PuzzleBoardSnapshot::playfieldBounds.
+constexpr float kLegacyCanvasWidth = 1280.0f;
+constexpr float kLegacyCanvasHeight = 720.0f;
 constexpr int kCircleSegments = 32;
 constexpr float kFleshCoreInset = 4.0f;
 constexpr float kFleshPixelSpacing = 12.0f;
@@ -50,9 +53,11 @@ constexpr std::size_t kMaximumFleshSamplesPerSegment = 256;
 constexpr std::size_t kMaximumTexturePathsPerPuzzle = 255;
 
 struct CanvasConstants final {
-    float width = kCanvasWidth;
-    float height = kCanvasHeight;
-    float padding[62]{};
+    float left = 0.0f;
+    float top = 0.0f;
+    float width = kLegacyCanvasWidth;
+    float height = kLegacyCanvasHeight;
+    float padding[60]{};
 };
 
 static_assert(sizeof(CanvasConstants) == 256);
@@ -61,6 +66,12 @@ struct DrawBatch final {
     D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     UINT startVertex = 0;
     UINT vertexCount = 0;
+};
+
+struct TentacleProjection final {
+    std::vector<RibbonVertex> outline;
+    std::vector<RibbonVertex> core;
+    std::vector<RibbonVertex> flesh;
 };
 
 [[noreturn]] void ThrowFailure(const HRESULT result, const char* operation) {
@@ -232,8 +243,8 @@ void AddOutlinedRectangle(std::vector<RibbonVertex>& vertices,
 void AddFleshPixels(std::vector<RibbonVertex>& vertices,
                     const std::vector<Vec2>& centerline,
                     const TentacleStyle& outerStyle,
-                    const std::size_t vertexLimit) {
-    if (centerline.size() < 2) {
+                    const Vec2 translation) {
+    if (centerline.size() < 2 || !IsFinite(translation)) {
         return;
     }
 
@@ -283,9 +294,6 @@ void AddFleshPixels(std::vector<RibbonVertex>& vertices,
             : static_cast<std::size_t>(requestedSamples);
         for (std::size_t sampleIndex = 1; sampleIndex <= sampleCount;
              ++sampleIndex) {
-            if (!HasVertexRoom(vertices, vertexLimit, kVerticesPerRectangle)) {
-                return;
-            }
             const float distance = samplesWereCapped
                 ? segmentLength *
                       (static_cast<float>(sampleIndex) /
@@ -317,10 +325,46 @@ void AddFleshPixels(std::vector<RibbonVertex>& vertices,
                 {pixelCenter.x - pixelWidth * 0.5f,
                  pixelCenter.y - gridSize * 0.5f},
                 gridSize);
-            AddRectangle(vertices, pixelCorner.x, pixelCorner.y,
+            AddRectangle(vertices, pixelCorner.x + translation.x,
+                         pixelCorner.y + translation.y,
                          pixelWidth, gridSize, pixelColor);
         }
     }
+}
+
+[[nodiscard]] std::vector<RibbonVertex> TranslateRibbon(
+    const std::vector<RibbonVertex>& ribbon, const Vec2 translation) {
+    std::vector<RibbonVertex> translated;
+    translated.reserve(ribbon.size());
+    for (const RibbonVertex& vertex : ribbon) {
+        translated.push_back({vertex.position + translation, vertex.color});
+    }
+    return translated;
+}
+
+[[nodiscard]] bool ReserveProjectionVertices(
+    const TentacleProjection& projection, const std::size_t vertexLimit,
+    std::size_t& reservedVertexCount) noexcept {
+    if (reservedVertexCount > vertexLimit) {
+        return false;
+    }
+
+    std::size_t remaining = vertexLimit - reservedVertexCount;
+    if (projection.outline.size() > remaining) {
+        return false;
+    }
+    remaining -= projection.outline.size();
+    if (projection.core.size() > remaining) {
+        return false;
+    }
+    remaining -= projection.core.size();
+    if (projection.flesh.size() > remaining) {
+        return false;
+    }
+
+    reservedVertexCount = vertexLimit -
+        (remaining - projection.flesh.size());
+    return true;
 }
 
 class SpriteDrawScope final {
@@ -592,6 +636,24 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
         snapshot.tentacles.size(), maximumTentacleBatchReserve / 2);
     batches.reserve(tentaclesToReserve * 2 + 5);
 
+    AxisAlignedBox canvasBounds{
+        {0.0f, 0.0f}, {kLegacyCanvasWidth, kLegacyCanvasHeight}};
+    if (snapshot.playfieldBounds.has_value() &&
+        IsValidAxisAlignedBox(*snapshot.playfieldBounds) &&
+        snapshot.playfieldBounds->minimum.x <
+            snapshot.playfieldBounds->maximum.x &&
+        snapshot.playfieldBounds->minimum.y <
+            snapshot.playfieldBounds->maximum.y) {
+        canvasBounds = *snapshot.playfieldBounds;
+    }
+    const Vec2 canvasExtent =
+        canvasBounds.maximum - canvasBounds.minimum;
+    *impl_->mappedConstants = {};
+    impl_->mappedConstants->left = canvasBounds.minimum.x;
+    impl_->mappedConstants->top = canvasBounds.minimum.y;
+    impl_->mappedConstants->width = canvasExtent.x;
+    impl_->mappedConstants->height = canvasExtent.y;
+
     const auto beginList = [&vertices]() { return vertices.size(); };
     const auto endList = [&vertices, &batches](const std::size_t start) {
         const std::size_t count = vertices.size() - start;
@@ -602,58 +664,75 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
     };
 
     std::size_t listStart = beginList();
-    AddRectangle(vertices, 0.0f, 0.0f, kCanvasWidth, kCanvasHeight,
+    AddRectangle(vertices, canvasBounds.minimum.x, canvasBounds.minimum.y,
+                 canvasExtent.x, canvasExtent.y,
                  definition.backgroundColor);
     endList(listStart);
 
-    const auto appendRibbon = [this, &vertices, &batches](
-                                  const std::vector<Vec2>& points,
-                                  const TentacleStyle& style) {
-        if (!HasVertexRoom(vertices, impl_->maxVertices, 4)) {
-            return false;
-        }
-        std::vector<RibbonVertex> strip = BuildRibbonStrip(points, style);
-        if (strip.size() < 4) {
-            return true;
-        }
-        if (!HasVertexRoom(vertices, impl_->maxVertices, strip.size())) {
-            return false;
-        }
-        const std::size_t start = vertices.size();
-        vertices.insert(vertices.end(), strip.begin(), strip.end());
-        batches.push_back({D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
-                           static_cast<UINT>(start), static_cast<UINT>(strip.size())});
-        return true;
-    };
-
     // A dark outer silhouette gives the procedural strip the chunky edge used by
     // pixel-art flesh. The inner crimson pass stays inside the gameplay width, so
-    // obstacle clearance still matches the visible outer ribbon.
+    // obstacle clearance still matches the visible outer ribbon. Build every
+    // projected copy transactionally: if its outline, core, and flesh pixels do
+    // not all fit, none of that projection reaches the frame vertex list.
+    std::vector<TentacleProjection> projections;
+    std::size_t reservedVertexCount = vertices.size();
     for (const TentacleRenderSnapshot& tentacle : snapshot.tentacles) {
         TentacleStyle outline = tentacle.style;
         outline.color = ScaleRgb(outline.color, 0.32f);
-        if (!appendRibbon(tentacle.points, outline)) {
-            break;
+        const std::vector<RibbonVertex> outlineStrip =
+            BuildRibbonStrip(tentacle.points, outline);
+        const std::vector<RibbonVertex> coreStrip = BuildRibbonStrip(
+            tentacle.points, MakeFleshCoreStyle(tentacle.style));
+        if (outlineStrip.size() < 4 || coreStrip.size() < 4) {
+            continue;
         }
-    }
-    for (const TentacleRenderSnapshot& tentacle : snapshot.tentacles) {
-        if (!appendRibbon(tentacle.points,
-                          MakeFleshCoreStyle(tentacle.style))) {
-            break;
+
+        for (const Vec2 translation : tentacle.drawTranslations) {
+            if (!IsFinite(translation)) {
+                continue;
+            }
+
+            TentacleProjection projection{};
+            projection.outline = TranslateRibbon(outlineStrip, translation);
+            projection.core = TranslateRibbon(coreStrip, translation);
+            AddFleshPixels(projection.flesh, tentacle.points,
+                           tentacle.style, translation);
+            if (!ReserveProjectionVertices(projection, impl_->maxVertices,
+                                           reservedVertexCount)) {
+                continue;
+            }
+            projections.push_back(std::move(projection));
         }
     }
 
+    const auto appendRibbon = [&vertices, &batches](
+                                  const std::vector<RibbonVertex>& ribbon) {
+        const std::size_t start = vertices.size();
+        vertices.insert(vertices.end(), ribbon.begin(), ribbon.end());
+        batches.push_back({
+            D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+            static_cast<UINT>(start), static_cast<UINT>(ribbon.size())});
+    };
+    for (const TentacleProjection& projection : projections) {
+        appendRibbon(projection.outline);
+    }
+    for (const TentacleProjection& projection : projections) {
+        appendRibbon(projection.core);
+    }
+
     listStart = beginList();
-    for (const TentacleRenderSnapshot& tentacle : snapshot.tentacles) {
-        if (!HasVertexRoom(vertices, impl_->maxVertices,
-                           kVerticesPerRectangle)) {
-            break;
-        }
-        AddFleshPixels(vertices, tentacle.points, tentacle.style,
-                       impl_->maxVertices);
+    for (const TentacleProjection& projection : projections) {
+        vertices.insert(vertices.end(), projection.flesh.begin(),
+                        projection.flesh.end());
     }
     endList(listStart);
     const std::size_t vesselBatchEnd = batches.size();
+
+    // Keep the preflight calculation tied to the actual frame construction if
+    // any projection layer changes in the future.
+    if (vertices.size() != reservedVertexCount) {
+        return;
+    }
 
     // Dead nodes are the current map's solid blockers and deliberately cover
     // the vessel layer before interactive nodes are drawn above them.

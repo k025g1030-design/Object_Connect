@@ -18,10 +18,12 @@ struct BoardPointerInput final {
     bool leftPressed = false;
     bool leftHeld = false;
     bool leftReleased = false;
+    std::optional<Vec2> unwrappedPosition;
 };
 
 struct TentacleRenderSnapshot final {
     std::vector<Vec2> points;
+    std::vector<Vec2> drawTranslations;
     TentacleStyle style{};
     bool preview = false;
 };
@@ -44,6 +46,7 @@ struct CommittedLine final {
 struct PuzzleBoardSnapshot final {
     std::vector<TentacleRenderSnapshot> tentacles;
     std::vector<NodeRuntimeSnapshot> nodeStates;
+    std::optional<AxisAlignedBox> playfieldBounds;
     float totalLength = 0.0f;
     float remainingLength = 0.0f;
     float reservedLength = 0.0f;
@@ -57,6 +60,9 @@ struct PuzzleBoardSnapshot final {
 class PuzzleBoard final {
 public:
     [[nodiscard]] bool Initialize(const PuzzleDefinition& definition,
+                                  std::string& error);
+    [[nodiscard]] bool Initialize(const PuzzleDefinition& definition,
+                                  const AxisAlignedBox& playfieldBounds,
                                   std::string& error);
     void Update(const BoardPointerInput& input, float deltaSeconds) noexcept;
     void CancelDrag(bool immediate) noexcept;
@@ -100,23 +106,37 @@ private:
 
     struct Segment final {
         BloodTentacle tentacle;
+        WrappedPath path;
         TentacleStyle style{};
         CommittedLine line{};
     };
 
     struct Preview final {
         BloodTentacle tentacle;
+        WrappedPath requestedPath;
+        WrappedPath effectivePath;
         TentacleStyle style{};
         std::size_t sourceNodeIndex = 0;
         PreviewState state = PreviewState::Dragging;
         float reservedLength = 0.0f;
         float retractElapsedSeconds = 0.0f;
+        Vec2 wrappedRetractionStart{};
+        bool retractAlongWrappedPath = false;
     };
 
+    struct CommitCandidate final {
+        std::size_t targetNodeIndex = 0;
+        WrappedPath path;
+    };
+
+    [[nodiscard]] bool InitializeInternal(
+        const PuzzleDefinition& definition,
+        std::optional<AxisAlignedBox> playfieldBounds,
+        std::string& error);
     void StartDrag(std::size_t sourceNodeIndex) noexcept;
     void UpdateDrag(const BoardPointerInput& input, float deltaSeconds) noexcept;
     void UpdateRetraction(float deltaSeconds) noexcept;
-    void CommitConnection(std::size_t targetNodeIndex) noexcept;
+    void CommitConnection(CommitCandidate candidate) noexcept;
     void BeginRetraction() noexcept;
     void ActivateNode(std::size_t nodeIndex) noexcept;
     void EvaluateSolved() noexcept;
@@ -124,19 +144,22 @@ private:
     [[nodiscard]] bool IsDrawable(std::size_t nodeIndex) const noexcept;
     [[nodiscard]] bool CanUseAsSource(std::size_t nodeIndex) const noexcept;
     [[nodiscard]] bool CanUseAsTarget(std::size_t nodeIndex) const noexcept;
-    [[nodiscard]] bool CanCommitTo(std::size_t targetNodeIndex,
-                                   Vec2 pointerPosition) const noexcept;
+    [[nodiscard]] std::optional<CommitCandidate> BuildCommitCandidate(
+        std::size_t targetNodeIndex,
+        const WrappedPath& pointerPath) const noexcept;
     [[nodiscard]] bool IsDuplicateConnection(std::size_t sourceNodeIndex,
                                              std::size_t targetNodeIndex) const noexcept;
     [[nodiscard]] bool WouldCreateCycle(std::size_t sourceNodeIndex,
                                         std::size_t targetNodeIndex) const noexcept;
-    [[nodiscard]] bool IsBlockedByDeadNode(Vec2 start, Vec2 end,
+    [[nodiscard]] bool IsBlockedByDeadNode(const WrappedPath& path,
                                            float clearance) const noexcept;
     [[nodiscard]] Vec2 ClampTipTargetToDeadNodes(
-        Vec2 start, Vec2 desiredEnd, float clearance) const noexcept;
+        const WrappedPath& path, float clearance) const noexcept;
+    [[nodiscard]] std::optional<WrappedPath> BuildConnectionPath(
+        Vec2 start, Vec2 end, bool allowWrap = true) const noexcept;
     [[nodiscard]] std::optional<std::size_t> FindSourceAt(Vec2 point) const noexcept;
-    [[nodiscard]] std::optional<std::size_t>
-    FindCommitTargetAt(Vec2 point) const noexcept;
+    [[nodiscard]] std::optional<CommitCandidate>
+    FindCommitTargetAt(const WrappedPath& pointerPath) const noexcept;
     [[nodiscard]] std::optional<AxisAlignedBox>
     GetNodeBounds(std::size_t nodeIndex) const noexcept;
     [[nodiscard]] std::optional<Vec2>
@@ -149,7 +172,9 @@ private:
     std::optional<Preview> preview_;
     std::vector<std::size_t> activatedNodeIndices_;
     std::vector<CommittedLine> committedLines_;
+    std::optional<AxisAlignedBox> playfieldBounds_;
     float committedLength_ = 0.0f;
+    bool wrapEdgesActive_ = false;
     bool solved_ = false;
     bool initialized_ = false;
 };

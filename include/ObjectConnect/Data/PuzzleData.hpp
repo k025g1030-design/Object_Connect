@@ -95,6 +95,7 @@ struct PuzzleDefinition final {
     float baseWidth = 16.0f;
     float tipWidth = 16.0f;
     float widthVariation = 0.16f;
+    bool wrapEdges = false;
     std::vector<NodeDefinition> nodes;
 };
 

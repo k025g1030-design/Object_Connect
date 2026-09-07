@@ -35,7 +35,7 @@ MAIN MENU
                                                                RETRY
 ```
 
-レベル選択の並び順は、`levels.csv` の行の順番と同じです。`NEXT PUZZLE` は行の順番には依存しません。現在のレベルにある `next_level_id` を読み、catalog の中から同じ ID を探します。この項目が空、または ID が見つからない場合は、Next を表示しません。
+レベル選択の並び順は、`levels.csv` の行の順番と同じです。画面は 5 列×2 行の 10 レベル単位で表示し、左右の矢印またはマウスホイールでページを切り替えます。`NEXT PUZZLE` は行の順番には依存しません。現在のレベルにある `next_level_id` を読み、catalog の中から同じ ID を探します。この項目が空、または ID が見つからない場合は、Next を表示しません。
 
 レベルを切り替える、レベルから出る、またはリトライすると、`PuzzleBoard` を作り直します。そのため、ノードの状態、接続、残りの長さはすべて初期状態に戻ります。クリア後は、約 0.6 秒たってからクリアメニューを操作できます。
 
@@ -43,6 +43,7 @@ MAIN MENU
 
 - `W`／`↑`、`S`／`↓`：メニューの項目を上／下に移動します。
 - `Enter` またはマウス左ボタン：選んだメニュー項目を決定します。
+- レベル選択中の左右の矢印またはマウスホイール：10 レベル単位でページを切り替えます。
 - 光っている接続元ノードの上でマウス左ボタンを押し、そのまま接続できるノードまでドラッグして、ボタンを離します。
 - `Esc`：プレイ中は一時停止します。一時停止中はゲームに戻ります。レベル選択画面ではメインメニューへ、クリア画面ではレベル選択へ戻ります。
 - `R`：プレイ中または一時停止中に、現在のレベルを最初からやり直します。
@@ -101,7 +102,7 @@ min(レベル全体の残りの長さ, 接続元の outgoing の残りの長さ)
 
 ドラッグに必要な長さは `distance(source, cursor) * minimum_slack_ratio` です。一度確保した長さは増えるだけで、カーソルを戻しても自動では短くなりません。そのため、線にたるみを持たせられます。ただし、その分だけ後で使える長さは減ります。ノードのない場所、接続できないノード、または `dead` に妨げられた場所でボタンを離すと、仮の線は約 0.22 秒かけて戻り、確保した長さも少しずつ返されます。
 
-HUD には `REMAINING n / total` を表示します。通常の操作状態で、接続数に空きのある接続先が残っているのに、どの接続にもレベル全体または接続元の長さが足りない場合は、`NOT ENOUGH LENGTH` を表示します。
+HUD には `REMAINING n / total` を表示します。通常の操作状態で、接続数に空きのある接続先が残っているのに、どの接続にもレベル全体または接続元の長さが足りない場合は、`NOT ENOUGH LENGTH` を表示します。`wrap_edges=1` のレベルでは、直接経路だけでなく上下左右および角を越える隣接 image の実経路長と障害物も同じ判定に含めます。
 
 ## `dead` 障害物で現在できること
 
@@ -134,7 +135,7 @@ data/
 ### `levels.csv`
 
 ```text
-level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation
+level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation,wrap_edges
 ```
 
 - CSV の行の順番が、Level Select の並び順になります。
@@ -144,6 +145,9 @@ level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,back
 - `minimum_slack_ratio` が空の場合は、初期値 1.05 を使います。
 - 色は `#RRGGBB` または `#RRGGBBAA` で指定します。
 - 背景、血管、幅に関する項目が空の場合は、読み込み処理の初期値を使います。
+- `wrap_edges` は `1` で上下左右の境界接続を有効にし、`0` または空欄で無効にします。旧形式のように列自体がない場合も無効です。
+- その他の値は起動時に警告を一度表示し、安全側として無効にします。
+- 読み込みは上記の現行 12 列形式と、末尾の `wrap_edges` がない従来の 11 列形式に対応します。
 
 ### `nodes.csv` のひな形一覧
 
@@ -203,17 +207,31 @@ UI とレベルの描画処理は、同じ参照カウント付きの一覧を�
 
 これらのマップに接続はあらかじめ設定されていません。実際の経路は、すべてプレイヤーがゲーム中に決めます。
 
+## 任意の音声素材
+
+runtime の `GameAudio` は KamataEngine の Audio を薄く包み、`Resources/audio/`
+にある `bgm.wav`（ループ）、`level_select.wav`、`node_select.wav` を個別に
+読み込みます。これらはすべて任意で、ファイルがない場合は該当する音だけを
+無効にして起動を続けます。存在する WAV の読み込みで例外が発生した場合は、
+呼び出し側が渡した起動警告一覧へ追記できます。素材と仮音量の TODO は
+`NoviceResources/audio/README.md` にまとめています。
+
+`level_select.wav` はレベルが正常に開始したときだけ、`node_select.wav` は操作可能な
+接続元ノードからドラッグを開始できたときだけ 1 回再生します。hover、ページ切替、
+押し続け、無効なノードでは再生しません。
+
 ## ビルドと実行
 
-Windows x64、Visual Studio 2026 C++ Desktop workload、`Visual Studio 18 2026` generator に対応した CMake、KamataEngine が必要です。engine の初期パスは `D:\code\Runtime\KamataEngine` です。
+Windows x64、Visual Studio 2026 C++ Desktop workload、`Visual Studio 18 2026` generator に対応した CMake、KamataEngine が必要です。KamataEngine のルートは、環境変数 `KAMATA_ENGINE` で指定します。プロジェクト内にマシン固有の初期パスはありません。
 
 ```powershell
+$env:KAMATA_ENGINE = "D:\path\to\KamataEngine"
 .\Build.ps1 -Configuration Debug
 .\Build.ps1 -Configuration Release
 .\Run.ps1 -Configuration Debug
 ```
 
-KamataEngine が別の場所にある場合は、次のように指定します。
+一時的に環境変数を上書きせず、ビルド単位で別の場所を使う場合は、次のように指定します。
 
 ```powershell
 .\Build.ps1 -Configuration Debug -KamataEngineRoot "D:\your\KamataEngine"

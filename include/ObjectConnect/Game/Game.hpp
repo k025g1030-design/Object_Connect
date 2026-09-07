@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace object_connect {
 
@@ -25,6 +26,7 @@ public:
 
     [[nodiscard]] bool ShouldQuit() const noexcept;
     [[nodiscard]] bool IsInitialized() const noexcept;
+    [[nodiscard]] const std::vector<std::string>& GetStartupWarnings() const noexcept;
 
 private:
     struct Impl;

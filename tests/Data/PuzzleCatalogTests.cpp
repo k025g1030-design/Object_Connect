@@ -19,6 +19,9 @@ namespace {
 constexpr std::string_view kLevelsHeader =
     "level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,"
     "background_color,vessel_color,base_width,tip_width,width_variation\n";
+constexpr std::string_view kCurrentLevelsHeader =
+    "level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,"
+    "background_color,vessel_color,base_width,tip_width,width_variation,wrap_edges\n";
 constexpr std::string_view kMapHeader =
     "instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,"
     "display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length\n";
@@ -30,6 +33,19 @@ constexpr std::string_view kNodePresetsHeader =
     return std::string{kLevelsHeader} +
            "alpha,ALPHA,data/maps/alpha.csv,beta,100,,,,,,\n"
            "beta,BETA,data/maps/beta.csv,missing_next,0,0,#010203,#04050607,0,2,0.5\n";
+}
+
+[[nodiscard]] std::string CurrentLevels(const std::string_view alphaWrap,
+                                        const std::string_view betaWrap) {
+    std::string levels{kCurrentLevelsHeader};
+    levels += "alpha,ALPHA,data/maps/alpha.csv,beta,100,,,,,,,";
+    levels += alphaWrap;
+    levels += '\n';
+    levels +=
+        "beta,BETA,data/maps/beta.csv,missing_next,0,0,#010203,#04050607,0,2,0.5,";
+    levels += betaWrap;
+    levels += '\n';
+    return levels;
 }
 
 [[nodiscard]] std::string ValidPresets() {
@@ -159,7 +175,8 @@ void TestValidCatalogAndDefaults(TestContext& context) {
     const PuzzleDefinition& alpha = catalog.GetPuzzles()[0];
     context.Expect(alpha.id == "alpha" && alpha.title == "ALPHA" &&
                        alpha.mapPath == "data/maps/alpha.csv" &&
-                       alpha.nextLevelId == std::optional<std::string>{"beta"},
+                       alpha.nextLevelId == std::optional<std::string>{"beta"} &&
+                       !alpha.wrapEdges,
                    "level identity, map path, and next-level metadata are retained");
     context.Expect(NearlyEqual(alpha.totalLength, 100.0f) &&
                        NearlyEqual(alpha.minimumSlackRatio, 1.05f) &&
@@ -219,6 +236,68 @@ void TestValidCatalogAndDefaults(TestContext& context) {
                    "the data loader does not impose canvas bounds");
 }
 
+void TestLevelWrapCompatibilityAndWarnings(TestContext& context) {
+    const std::string nodes = ValidPresets();
+    const std::string alpha = ValidAlphaMap();
+    const std::string beta = ValidBetaMap();
+    const auto maps = ValidMaps(alpha, beta);
+    PuzzleCatalog catalog;
+    std::string error;
+    std::vector<std::string> warnings{"stale warning"};
+
+    const std::string current = CurrentLevels("1", "1");
+    context.Expect(
+        PuzzleCatalogLoader::Parse({current, nodes, maps}, catalog, error, &warnings),
+        "the current levels schema accepts explicit wrap edge flags");
+    context.Expect(error.empty() && warnings.empty() &&
+                       catalog.GetPuzzles().size() == 2 &&
+                       catalog.GetPuzzles()[0].wrapEdges &&
+                       catalog.GetPuzzles()[1].wrapEdges,
+                   "an all-enabled catalog parses without stale warnings");
+
+    const std::string disabled = CurrentLevels("0", "0");
+    context.Expect(
+        PuzzleCatalogLoader::Parse(
+            {disabled, nodes, maps}, catalog, error, &warnings),
+        "the same catalog object accepts a subsequent all-disabled load");
+    context.Expect(error.empty() && warnings.empty() &&
+                       catalog.GetPuzzles().size() == 2 &&
+                       !catalog.GetPuzzles()[0].wrapEdges &&
+                       !catalog.GetPuzzles()[1].wrapEdges,
+                   "an all-disabled load replaces all enabled state");
+
+    const std::string blank = CurrentLevels("", "0");
+    context.Expect(
+        PuzzleCatalogLoader::Parse({blank, nodes, maps}, catalog, error, &warnings),
+        "a blank wrap edge field remains a structurally present current field");
+    context.Expect(error.empty() && warnings.empty() &&
+                       !catalog.GetPuzzles()[0].wrapEdges,
+                   "a blank wrap edge field defaults to disabled");
+
+    const std::string invalid = CurrentLevels("enabled", "0");
+    context.Expect(
+        PuzzleCatalogLoader::Parse({invalid, nodes, maps}, catalog, error, &warnings),
+        "an invalid wrap edge value is non-fatal");
+    context.Expect(error.empty() && catalog.GetPuzzles().size() == 2 &&
+                       !catalog.GetPuzzles()[0].wrapEdges,
+                   "an invalid wrap edge value is treated as disabled");
+    context.Expect(warnings.size() == 1 &&
+                       warnings.front().find("levels.csv line 2") != std::string::npos &&
+                       warnings.front().find("column 12") != std::string::npos &&
+                       warnings.front().find("wrap_edges") != std::string::npos,
+                   "an invalid wrap edge value reports a recognizable field warning");
+
+    const std::string legacy = ValidLevels();
+    context.Expect(
+        PuzzleCatalogLoader::Parse({legacy, nodes, maps}, catalog, error, &warnings),
+        "the legacy eleven-column levels schema remains loadable");
+    context.Expect(error.empty() && warnings.empty() &&
+                       catalog.GetPuzzles().size() == 2 &&
+                       !catalog.GetPuzzles()[0].wrapEdges &&
+                       !catalog.GetPuzzles()[1].wrapEdges,
+                   "legacy loading disables wrapping and clears prior diagnostics");
+}
+
 void TestStructuralAndScalarErrors(TestContext& context) {
     const std::string levels = ValidLevels();
     const std::string alpha = ValidAlphaMap();
@@ -229,6 +308,19 @@ void TestStructuralAndScalarErrors(TestContext& context) {
         levels, "level_id,level_name", "puzzle_id,level_name");
     ExpectCatalogRejected(context, wrongHeader, maps, "header must be exactly",
                           "levels.csv uses one exact header");
+
+    const std::string wrongCurrentHeader = ReplaceOnce(
+        CurrentLevels("0", "0"), "wrap_edges", "edge_wrap");
+    ExpectCatalogRejected(context, wrongCurrentHeader, maps,
+                          "header must be exactly",
+                          "the current levels schema rejects renamed fields");
+
+    const std::string currentWithLegacyRows =
+        std::string{kCurrentLevelsHeader} +
+        "alpha,ALPHA,data/maps/alpha.csv,beta,100,,,,,,\n"
+        "beta,BETA,data/maps/beta.csv,missing_next,0,0,#010203,#04050607,0,2,0.5\n";
+    ExpectCatalogRejected(context, currentWithLegacyRows, maps, "expected 12",
+                          "a current header still requires a twelfth field in every row");
 
     const std::string duplicateLevel = levels +
         "alpha,DUPLICATE,data/maps/alpha.csv,,1,,,,,,\n";
@@ -385,10 +477,29 @@ void TestBundledCatalogs(TestContext& context) {
                        std::string{OBJECT_CONNECT_TEST_RESOURCE_ROOT},
                        catalog, error),
                    "the bundled levels and per-level map CSV files load");
-    if (!error.empty() || catalog.GetPuzzles().size() != 3) {
-        context.Fail("bundled puzzle catalog contains exactly three levels");
+    constexpr std::array<std::string_view, 14> expectedIds = {
+        "first_link", "around_block", "clot_path", "test_01", "test_02",
+        "test_03",    "test_04",      "test_05",   "test_06", "test_07",
+        "test_08",    "test_09",      "test_10",   "test_11",
+    };
+    constexpr std::array expectedWrapEdges = {
+        true, false, false, false, true, true, true,
+        true, true,  true,  true,  true, true, true,
+    };
+    if (!error.empty() || catalog.GetPuzzles().size() != expectedIds.size()) {
+        context.Fail("bundled puzzle catalog contains exactly the authored levels");
         return;
     }
+
+    bool levelOrderAndWrapFlagsMatch = true;
+    for (std::size_t index = 0; index < expectedIds.size(); ++index) {
+        levelOrderAndWrapFlagsMatch =
+            levelOrderAndWrapFlagsMatch &&
+            catalog.GetPuzzles()[index].id == expectedIds[index] &&
+            catalog.GetPuzzles()[index].wrapEdges == expectedWrapEdges[index];
+    }
+    context.Expect(levelOrderAndWrapFlagsMatch,
+                   "bundled level order and wrap flags match levels.csv");
 
     context.Expect(catalog.GetPuzzles()[0].id == "first_link" &&
                        catalog.GetPuzzles()[0].nodes.size() == 2 &&
@@ -425,6 +536,7 @@ void TestBundledCatalogs(TestContext& context) {
 void RunPuzzleCatalogTests(TestContext& context) {
     TestCsvReader(context);
     TestValidCatalogAndDefaults(context);
+    TestLevelWrapCompatibilityAndWarnings(context);
     TestStructuralAndScalarErrors(context);
     TestNodePresetCatalog(context);
     TestIndependentDiskLoad(context);

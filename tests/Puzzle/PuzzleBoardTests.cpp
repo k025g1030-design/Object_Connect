@@ -52,15 +52,29 @@ namespace {
 }
 
 [[nodiscard]] BoardPointerInput PressAt(const Vec2 position) {
-    return {position, true, true, false};
+    return {position, true, true, false, std::nullopt};
 }
 
 [[nodiscard]] BoardPointerInput DragTo(const Vec2 position) {
-    return {position, false, true, false};
+    return {position, false, true, false, std::nullopt};
+}
+
+[[nodiscard]] BoardPointerInput DragToWrapped(
+    const Vec2 canonicalPosition, const Vec2 unwrappedPosition) {
+    BoardPointerInput input = DragTo(canonicalPosition);
+    input.unwrappedPosition = unwrappedPosition;
+    return input;
 }
 
 [[nodiscard]] BoardPointerInput ReleaseAt(const Vec2 position) {
-    return {position, false, false, true};
+    return {position, false, false, true, std::nullopt};
+}
+
+[[nodiscard]] BoardPointerInput ReleaseAtWrapped(
+    const Vec2 canonicalPosition, const Vec2 unwrappedPosition) {
+    BoardPointerInput input = ReleaseAt(canonicalPosition);
+    input.unwrappedPosition = unwrappedPosition;
+    return input;
 }
 
 void BeginDrag(PuzzleBoard& board, const PuzzleDefinition& puzzle,
@@ -341,6 +355,87 @@ void TestGlobalAndPerSourceLengthBudgets(TestContext& context) {
                    "idle board reports global length exhaustion");
 }
 
+void TestSourceSelectionTransitionContract(TestContext& context) {
+    PuzzleDefinition puzzle = MakePuzzle();
+    puzzle.nodes = {
+        MakeNode("root", NodeType::Root, 2, 2, 0, 2, 1000.0f),
+        MakeNode("inactive", NodeType::Follow, 12, 2, 1, 1, 1000.0f),
+        MakeNode("dead", NodeType::Dead, 22, 2, 0, 0, 0.0f),
+    };
+
+    PuzzleBoard board;
+    std::string error;
+    context.Expect(board.Initialize(puzzle, error),
+                   "source-selection transition board initializes");
+
+    board.Update(PressAt({1.0f, 1.0f}), 1.0f / 60.0f);
+    context.Expect(!board.IsDragging(),
+                   "blank space does not begin a source-selection transition");
+    board.Update(PressAt(Center(puzzle, 1)), 1.0f / 60.0f);
+    board.Update(PressAt(Center(puzzle, 2)), 1.0f / 60.0f);
+    context.Expect(!board.IsDragging(),
+                   "inactive and dead nodes do not begin source selection");
+
+    const bool wasDragging = board.IsDragging();
+    board.Update(PressAt(Center(puzzle, 0)), 1.0f / 60.0f);
+    context.Expect(!wasDragging && board.IsDragging(),
+                   "an active source produces exactly the false-to-true cue transition");
+
+    const bool wasDraggingWhileHeld = board.IsDragging();
+    board.Update(DragTo(Center(puzzle, 0)), 1.0f / 60.0f);
+    context.Expect(wasDraggingWhileHeld && board.IsDragging(),
+                   "holding an existing selection does not produce another transition");
+
+    board.CancelDrag(true);
+    context.Expect(!board.IsDragging(),
+                   "cancelling resets the source-selection transition state");
+    board.Update(PressAt(Center(puzzle, 0)), 1.0f / 60.0f);
+    context.Expect(board.IsDragging(),
+                   "the same source can be selected again after cancellation");
+}
+
+void TestLengthExhaustionRespectsWrapEdges(TestContext& context) {
+    const AxisAlignedBox bounds{{0.0f, 0.0f}, {160.0f, 160.0f}};
+    PuzzleDefinition puzzle = MakePuzzle();
+    puzzle.totalLength = 34.0f;
+    puzzle.minimumSlackRatio = 1.05f;
+    puzzle.nodes = {
+        MakeNode("root", NodeType::Root, 8, 1, 0, 1, 34.0f),
+        MakeNode("end", NodeType::End, 0, 1, 1, 0, 0.0f),
+    };
+
+    PuzzleBoard board;
+    std::string error;
+    context.Expect(board.Initialize(puzzle, bounds, error),
+                   "non-wrapping length-warning board initializes");
+    context.Expect(board.IsLengthExhausted(),
+                   "disabled wrapping keeps the legacy direct-distance warning");
+
+    puzzle.wrapEdges = true;
+    context.Expect(board.Initialize(puzzle, bounds, error),
+                   "wrapping length-warning board initializes");
+    context.Expect(!board.IsLengthExhausted() &&
+                       !board.MakeSnapshot().lengthExhausted,
+                   "an affordable adjacent target image suppresses the length warning");
+
+    BeginDrag(board, puzzle, 0);
+    board.Update(ReleaseAtWrapped(Center(puzzle, 1),
+                                  Center(puzzle, 1) + Vec2{160.0f, 0.0f}),
+                 1.0f / 60.0f);
+    context.Expect(board.IsSolved() &&
+                       board.GetCompletedConnectionCount() == 1 &&
+                       NearlyEqual(board.GetCommittedLines()[0].committedLength,
+                                   33.6f, 0.01f),
+                   "the route accepted by the warning probe is an actual wrapped commit");
+
+    puzzle.totalLength = 33.5f;
+    puzzle.nodes[0].maxOutgoingLength = 33.5f;
+    context.Expect(board.Initialize(puzzle, bounds, error),
+                   "short wrapping length-warning board initializes");
+    context.Expect(board.IsLengthExhausted(),
+                   "wrapping still reports exhaustion when every image exceeds the budget");
+}
+
 void TestRetractionRefund(TestContext& context) {
     PuzzleDefinition puzzle = MakePuzzle();
     puzzle.totalLength = 400.0f;
@@ -432,6 +527,220 @@ void TestDeadNodeBlockingAndMissingDead(TestContext& context) {
                    "missing-placement dead and end nodes have no gameplay presence");
 }
 
+void TestWrappedBoardPathAndBoundsContract(TestContext& context) {
+    const AxisAlignedBox bounds{{0.0f, 0.0f}, {160.0f, 160.0f}};
+    PuzzleDefinition puzzle = MakePuzzle();
+    puzzle.wrapEdges = true;
+    puzzle.totalLength = 200.0f;
+    puzzle.minimumSlackRatio = 1.05f;
+    puzzle.nodes = {
+        MakeNode("root", NodeType::Root, 8, 1, 0, 1, 200.0f),
+        MakeNode("end", NodeType::End, 0, 1, 1, 0, 0.0f),
+        MakeNode("middle_dead", NodeType::Dead, 4, 1, 0, 0, 0.0f),
+        MakeNode("middle_follow", NodeType::Follow, 5, 1, 1, 1, 100.0f),
+    };
+
+    PuzzleBoard board;
+    std::string error;
+    context.Expect(!board.Initialize(puzzle, error) &&
+                       !board.IsInitialized() &&
+                       error.find("bounds") != std::string::npos,
+                   "wrap-enabled boards require explicit playfield bounds");
+    context.Expect(board.Initialize(puzzle, bounds, error),
+                   "wrap-enabled board initializes with session bounds");
+
+    BeginDrag(board, puzzle, 0);
+    board.Update(ReleaseAtWrapped(Center(puzzle, 1),
+                                  Center(puzzle, 1) + Vec2{160.0f, 0.0f}),
+                 1.0f / 60.0f);
+    const PuzzleBoardSnapshot wrapped = board.MakeSnapshot();
+    context.Expect(board.IsSolved() &&
+                       board.GetCompletedConnectionCount() == 1,
+                   "pointer winding commits to the canonical node across an edge");
+    context.Expect(wrapped.playfieldBounds.has_value() &&
+                       wrapped.playfieldBounds->minimum == bounds.minimum &&
+                       wrapped.playfieldBounds->maximum == bounds.maximum,
+                   "snapshot carries the exact session bounds used by geometry");
+    context.Expect(wrapped.tentacles.size() == 1 &&
+                       wrapped.tentacles[0].drawTranslations ==
+                           std::vector<Vec2>{{0.0f, 0.0f}, {-160.0f, 0.0f}},
+                   "renderer snapshot consumes authoritative path image translations");
+    context.Expect(wrapped.nodeStates.size() == 4 &&
+                       !wrapped.nodeStates[3].active,
+                   "a node located only in the portal gap is not activated");
+    context.Expect(board.GetCommittedLines().size() == 1 &&
+                       NearlyEqual(
+                           board.GetCommittedLines()[0].committedLength,
+                           33.6f, 0.01f) &&
+                       NearlyEqual(board.GetRemainingLength(), 166.4f, 0.01f),
+                   "portal jump adds no length and existing slack applies only to visible travel");
+}
+
+void TestWrappedPreviewRetracesThroughPortal(TestContext& context) {
+    const AxisAlignedBox bounds{{0.0f, 0.0f}, {160.0f, 160.0f}};
+    PuzzleDefinition puzzle = MakePuzzle();
+    puzzle.wrapEdges = true;
+    puzzle.totalLength = 200.0f;
+    puzzle.nodes = {
+        MakeNode("root", NodeType::Root, 8, 1, 0, 1, 200.0f),
+        MakeNode("end", NodeType::End, 2, 6, 1, 0, 0.0f),
+    };
+
+    PuzzleBoard board;
+    std::string error;
+    context.Expect(board.Initialize(puzzle, bounds, error),
+                   "wrapped retraction board initializes");
+    BeginDrag(board, puzzle, 0);
+    const Vec2 canonicalTip{40.0f, 32.0f};
+    const Vec2 unwrappedTip{200.0f, 32.0f};
+    for (int frame = 0; frame < 8; ++frame) {
+        board.Update(DragToWrapped(canonicalTip, unwrappedTip),
+                     1.0f / 60.0f);
+    }
+
+    const PuzzleBoardSnapshot extended = board.MakeSnapshot();
+    context.Expect(extended.dragging && extended.tentacles.size() == 1 &&
+                       !extended.tentacles[0].points.empty() &&
+                       extended.tentacles[0].points.back().x > bounds.maximum.x &&
+                       extended.tentacles[0].drawTranslations ==
+                           std::vector<Vec2>{{0.0f, 0.0f}, {-160.0f, 0.0f}},
+                   "preview visibly reaches the entrance side before release");
+    if (extended.tentacles.empty() || extended.tentacles[0].points.empty()) {
+        return;
+    }
+    const float releasedTipX = extended.tentacles[0].points.back().x;
+
+    board.Update(ReleaseAtWrapped(canonicalTip, unwrappedTip),
+                 1.0f / 60.0f);
+    context.Expect(board.MakeSnapshot().retracting &&
+                       board.GetCompletedConnectionCount() == 0,
+                   "releasing away from a node begins wrapped retraction");
+
+    board.Update({}, 0.05f);
+    const PuzzleBoardSnapshot firstStep = board.MakeSnapshot();
+    context.Expect(firstStep.retracting && firstStep.tentacles.size() == 1 &&
+                       !firstStep.tentacles[0].points.empty() &&
+                       firstStep.tentacles[0].points.back().x < releasedTipX &&
+                       firstStep.tentacles[0].points.back().x > bounds.maximum.x &&
+                       firstStep.tentacles[0].drawTranslations.size() == 2,
+                   "wrapped tip moves back on the entrance side instead of jumping to the root");
+
+    board.Update({}, 0.05f);
+    board.Update({}, 0.05f);
+    const PuzzleBoardSnapshot beforePortal = board.MakeSnapshot();
+    context.Expect(beforePortal.retracting &&
+                       beforePortal.tentacles.size() == 1 &&
+                       !beforePortal.tentacles[0].points.empty() &&
+                       beforePortal.tentacles[0].points.back().x >
+                           bounds.maximum.x &&
+                       beforePortal.tentacles[0].drawTranslations.size() == 2,
+                   "retraction keeps the entrance projection until the tip reaches the portal");
+
+    board.Update({}, 0.05f);
+    const PuzzleBoardSnapshot afterPortal = board.MakeSnapshot();
+    context.Expect(afterPortal.retracting && afterPortal.tentacles.size() == 1 &&
+                       !afterPortal.tentacles[0].points.empty() &&
+                       afterPortal.tentacles[0].points.back().x <
+                           bounds.maximum.x &&
+                       afterPortal.tentacles[0].drawTranslations ==
+                           std::vector<Vec2>{{0.0f, 0.0f}},
+                   "tip exits the portal in reverse and drops the obsolete entrance projection");
+
+    FinishRetraction(board);
+    context.Expect(!board.MakeSnapshot().retracting &&
+                       board.MakeSnapshot().tentacles.empty() &&
+                       NearlyEqual(board.GetRemainingLength(),
+                                   board.GetTotalLength(), 0.01f),
+                   "wrapped retraction clears the preview and refunds its full reservation");
+}
+
+void TestWrappedBoardCollisionLengthAndStateIsolation(TestContext& context) {
+    const AxisAlignedBox bounds{{0.0f, 0.0f}, {160.0f, 160.0f}};
+    PuzzleDefinition blocked = MakePuzzle();
+    blocked.wrapEdges = true;
+    blocked.totalLength = 200.0f;
+    blocked.nodes = {
+        MakeNode("root", NodeType::Root, 8, 1, 0, 1, 200.0f),
+        MakeNode("end", NodeType::End, 2, 1, 1, 0, 0.0f),
+        MakeNode("entrance_dead", NodeType::Dead, 0, 1, 0, 0, 0.0f),
+    };
+    blocked.nodes[2].widthTiles = 1;
+
+    PuzzleBoard board;
+    std::string error;
+    context.Expect(board.Initialize(blocked, bounds, error),
+                   "wrapped collision board initializes");
+    BeginDrag(board, blocked, 0);
+    board.Update(ReleaseAtWrapped(Center(blocked, 1),
+                                  Center(blocked, 1) + Vec2{160.0f, 0.0f}),
+                 1.0f / 60.0f);
+    context.Expect(board.GetCompletedConnectionCount() == 0 &&
+                       board.MakeSnapshot().retracting,
+                   "dead node on the entrance-side visible segment still blocks");
+    FinishRetraction(board);
+
+    PuzzleDefinition exitBlocked = MakePuzzle();
+    exitBlocked.wrapEdges = true;
+    exitBlocked.totalLength = 200.0f;
+    exitBlocked.nodes = {
+        MakeNode("root", NodeType::Root, 7, 1, 0, 1, 200.0f),
+        MakeNode("end", NodeType::End, 0, 1, 1, 0, 0.0f),
+        MakeNode("exit_dead", NodeType::Dead, 9, 1, 0, 0, 0.0f),
+    };
+    exitBlocked.nodes[2].widthTiles = 1;
+    context.Expect(board.Initialize(exitBlocked, bounds, error),
+                   "exit-side wrapped collision board initializes");
+    BeginDrag(board, exitBlocked, 0);
+    board.Update(ReleaseAtWrapped(Center(exitBlocked, 1),
+                                  Center(exitBlocked, 1) + Vec2{160.0f, 0.0f}),
+                 1.0f / 60.0f);
+    context.Expect(board.GetCompletedConnectionCount() == 0 &&
+                       board.MakeSnapshot().retracting,
+                   "dead node on the exit-side visible segment still blocks");
+    FinishRetraction(board);
+
+    PuzzleDefinition tooShort = MakePuzzle();
+    tooShort.wrapEdges = true;
+    tooShort.totalLength = 33.5f;
+    tooShort.minimumSlackRatio = 1.05f;
+    tooShort.nodes = {
+        MakeNode("root", NodeType::Root, 8, 1, 0, 1, 33.5f),
+        MakeNode("end", NodeType::End, 0, 1, 1, 0, 0.0f),
+    };
+    context.Expect(board.Initialize(tooShort, bounds, error),
+                   "short wrapped board initializes");
+    BeginDrag(board, tooShort, 0);
+    board.Update(ReleaseAtWrapped(Center(tooShort, 1),
+                                  Center(tooShort, 1) + Vec2{160.0f, 0.0f}),
+                 1.0f / 60.0f);
+    context.Expect(board.GetCompletedConnectionCount() == 0 &&
+                       board.MakeSnapshot().retracting,
+                   "wrapping cannot bypass the existing length limit");
+    FinishRetraction(board);
+
+    PuzzleDefinition closed = tooShort;
+    closed.wrapEdges = false;
+    closed.totalLength = 200.0f;
+    closed.nodes[0].maxOutgoingLength = 200.0f;
+    context.Expect(board.Initialize(closed, bounds, error),
+                   "same board can reload with wrapping disabled");
+    BeginDrag(board, closed, 0);
+    board.Update(ReleaseAtWrapped(Center(closed, 1),
+                                  Center(closed, 1) + Vec2{160.0f, 0.0f}),
+                 1.0f / 60.0f);
+    context.Expect(board.GetCompletedConnectionCount() == 1 &&
+                       board.MakeSnapshot().tentacles[0].drawTranslations ==
+                           std::vector<Vec2>{{0.0f, 0.0f}},
+                   "disabled state ignores stale unwrapped input and uses the legacy direct path");
+
+    PuzzleDefinition missingSetting = closed;
+    context.Expect(board.Initialize(missingSetting, error) &&
+                       !board.MakeSnapshot().playfieldBounds.has_value() &&
+                       board.MakeSnapshot().tentacles.empty() &&
+                       board.GetCompletedConnectionCount() == 0,
+                   "legacy reload is bounds-independent and clears wrapped render state");
+}
+
 void TestBundledFirstLinkIntegration(TestContext& context) {
     PuzzleCatalog catalog;
     std::string error;
@@ -461,37 +770,71 @@ void TestBundledFirstLinkIntegration(TestContext& context) {
     const std::size_t endIndex =
         static_cast<std::size_t>(std::distance(puzzle->nodes.begin(), endIt));
 
+    const AxisAlignedBox bounds{{0.0f, 0.0f}, {1280.0f, 720.0f}};
     PuzzleBoard board;
-    context.Expect(board.Initialize(*puzzle, error),
+    const bool initialized = board.Initialize(*puzzle, bounds, error);
+    context.Expect(initialized,
                    "board initializes directly from loaded first_link map snapshot");
+    if (!initialized) {
+        return;
+    }
     const PuzzleBoardSnapshot initial = board.MakeSnapshot();
     context.Expect(initial.nodeStates[rootIndex].active &&
                        initial.nodeStates[rootIndex].availableSource &&
-                       !initial.nodeStates[endIndex].active,
+                       !initial.nodeStates[endIndex].active &&
+                       !initial.lengthExhausted,
                    "loaded map roles drive initial root/end runtime state");
     context.Expect(rootIt->maxOutgoing == 1 && endIt->maxIncoming == 1 &&
                        NearlyEqual(board.GetRemainingOutgoingLength(rootIndex),
                                    rootIt->maxOutgoingLength, 0.01f),
                    "loaded map capacities and local budget reach the board unchanged");
 
-    Connect(board, *puzzle, rootIndex, endIndex);
+    const Vec2 canonicalEnd = Center(*puzzle, endIndex);
+    context.Expect(puzzle->wrapEdges,
+                   "authored first_link integration level enables edge wrapping");
+    const Vec2 releaseEnd = canonicalEnd + Vec2{
+        -(bounds.maximum.x - bounds.minimum.x), 0.0f};
+    const float expectedCommittedLength =
+        Length(releaseEnd - Center(*puzzle, rootIndex)) *
+        puzzle->minimumSlackRatio;
+    context.Expect(
+        expectedCommittedLength <= puzzle->totalLength &&
+            Length(canonicalEnd - Center(*puzzle, rootIndex)) *
+                    puzzle->minimumSlackRatio >
+                puzzle->totalLength,
+        "first_link authoring requires the left-boundary route to fit its budget");
+
+    BeginDrag(board, *puzzle, rootIndex);
+    board.Update(ReleaseAtWrapped(canonicalEnd, releaseEnd), 1.0f / 60.0f);
     context.Expect(board.IsSolved() && board.GetCompletedConnectionCount() == 1,
                    "loaded first_link root can connect to its end and solve");
+    if (board.GetCommittedLines().empty()) {
+        return;
+    }
     context.Expect(board.GetCommittedLines().front().fromNodeIndex == rootIndex &&
                        board.GetCommittedLines().front().toNodeIndex == endIndex,
                    "loaded-map connection is exposed through runtime scoring data");
+    context.Expect(
+        NearlyEqual(board.GetCommittedLines().front().committedLength,
+                    expectedCommittedLength, 0.01f),
+        "first_link consumes the authored left-boundary crossing length");
 }
 
 } // namespace
 
 void RunPuzzleBoardTests(TestContext& context) {
     TestInitializationAndMissingPlacement(context);
+    TestSourceSelectionTransitionContract(context);
     TestMultiRootBranchMergeAndAllEnds(context);
     TestRolesAndCapacities(context);
     TestDuplicateSelfAndDirectedCycle(context);
     TestGlobalAndPerSourceLengthBudgets(context);
+    TestLengthExhaustionRespectsWrapEdges(context);
     TestRetractionRefund(context);
     TestDeadNodeBlockingAndMissingDead(context);
+    TestWrappedBoardPathAndBoundsContract(context);
+    TestWrappedPreviewRetracesThroughPortal(context);
+    TestWrappedBoardCollisionLengthAndStateIsolation(context);
     TestBundledFirstLinkIntegration(context);
 }
 
