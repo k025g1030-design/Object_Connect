@@ -83,8 +83,16 @@ Repair-PathEnvironmentVariable
 $cmakeExecutable = Get-CompatibleCMake
 $configureArguments = @("--preset", "vs2026-x64")
 
-if ($KamataEngineRoot) {
-    $resolvedEngineRoot = [System.IO.Path]::GetFullPath($KamataEngineRoot)
+$requestedEngineRoot = $KamataEngineRoot
+if (-not $requestedEngineRoot) {
+    $requestedEngineRoot = [System.Environment]::GetEnvironmentVariable(
+        "KAMATA_ENGINE",
+        [System.EnvironmentVariableTarget]::Process
+    )
+}
+
+if ($requestedEngineRoot) {
+    $resolvedEngineRoot = [System.IO.Path]::GetFullPath($requestedEngineRoot)
     $configureArguments += "-DKAMATA_ENGINE_ROOT:PATH=$resolvedEngineRoot"
 }
 
