@@ -127,6 +127,7 @@ private:
     struct CommitCandidate final {
         std::size_t targetNodeIndex = 0;
         WrappedPath path;
+        float requiredLength = 0.0f;
     };
 
     [[nodiscard]] bool InitializeInternal(

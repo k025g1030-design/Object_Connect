@@ -394,6 +394,60 @@ void TestSourceSelectionTransitionContract(TestContext& context) {
                    "the same source can be selected again after cancellation");
 }
 
+void TestTargetConnectionHitPadding(TestContext& context) {
+    PuzzleDefinition puzzle = MakePuzzle();
+    puzzle.nodes = {
+        MakeNode("root", NodeType::Root, 2, 2, 0, 1, 1000.0f),
+        MakeNode("end", NodeType::End, 12, 2, 1, 0, 0.0f),
+    };
+
+    const Vec2 sourceCenter = Center(puzzle, 0);
+    const Vec2 targetCenter = Center(puzzle, 1);
+    const Vec2 targetTopLeft = *puzzle.nodes[1].GetTopLeftPosition();
+    const float expectedLength = Length(targetCenter - sourceCenter);
+    const Vec2 insidePadding{
+        targetTopLeft.x - kPuzzleTileSize * 0.5f, targetCenter.y};
+
+    PuzzleBoard board;
+    std::string error;
+    context.Expect(board.Initialize(puzzle, error),
+                   "target-hit-padding board initializes");
+    BeginDrag(board, puzzle, 0);
+    board.Update(ReleaseAt(insidePadding), 1.0f / 60.0f);
+
+    const PuzzleBoardSnapshot connected = board.MakeSnapshot();
+    const bool hasCommittedLine = board.GetCommittedLines().size() == 1;
+    context.Expect(hasCommittedLine &&
+                       board.GetCommittedLines().front().toNodeIndex == 1,
+                   "release outside the visual node but inside one-tile padding connects");
+    context.Expect(
+        !connected.tentacles.empty() &&
+            !connected.tentacles[0].points.empty() &&
+            NearlyEqual(connected.tentacles[0].points.back().x,
+                        targetCenter.x, 0.01f) &&
+            NearlyEqual(connected.tentacles[0].points.back().y,
+                        targetCenter.y, 0.01f),
+        "expanded target detection keeps the vessel endpoint at the node center");
+    if (hasCommittedLine) {
+        context.Expect(
+            NearlyEqual(board.GetCommittedLines().front().committedLength,
+                        expectedLength, 0.01f),
+            "near-side padding reserves the real center path without bypassing length");
+    }
+
+    context.Expect(board.Initialize(puzzle, error),
+                   "target-hit-padding rejection board initializes");
+    BeginDrag(board, puzzle, 0);
+    board.Update(DragTo(targetCenter), 1.0f / 60.0f);
+    const Vec2 outsidePadding{
+        targetTopLeft.x - kPuzzleTileSize - 0.25f, targetCenter.y};
+    board.Update(ReleaseAt(outsidePadding), 1.0f / 60.0f);
+    const PuzzleBoardSnapshot rejected = board.MakeSnapshot();
+    context.Expect(board.GetCompletedConnectionCount() == 0 &&
+                       rejected.retracting,
+                   "release beyond one-tile target padding remains rejected");
+}
+
 void TestLengthExhaustionRespectsWrapEdges(TestContext& context) {
     const AxisAlignedBox bounds{{0.0f, 0.0f}, {160.0f, 160.0f}};
     PuzzleDefinition puzzle = MakePuzzle();
@@ -825,6 +879,7 @@ void TestBundledFirstLinkIntegration(TestContext& context) {
 void RunPuzzleBoardTests(TestContext& context) {
     TestInitializationAndMissingPlacement(context);
     TestSourceSelectionTransitionContract(context);
+    TestTargetConnectionHitPadding(context);
     TestMultiRootBranchMergeAndAllEnds(context);
     TestRolesAndCapacities(context);
     TestDuplicateSelfAndDirectedCycle(context);

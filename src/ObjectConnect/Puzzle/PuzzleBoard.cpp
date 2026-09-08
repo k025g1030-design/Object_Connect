@@ -17,6 +17,7 @@ constexpr float kRetractionSeconds = 0.22f;
 constexpr std::size_t kDefaultPointCount = 10;
 constexpr float kDefaultFollowDelaySeconds = 0.03f;
 constexpr float kDeadCollisionBackoff = 0.05f;
+constexpr float kTargetHitPadding = kPuzzleTileSize;
 
 [[nodiscard]] float NormalizeDeltaSeconds(const float deltaSeconds) noexcept {
     if (!std::isfinite(deltaSeconds) || deltaSeconds <= 0.0f) {
@@ -595,9 +596,21 @@ void PuzzleBoard::CommitConnection(CommitCandidate candidate) noexcept {
         return;
     }
 
+    const float maximumLength = preview_->tentacle.GetMaxLength();
+    if (!std::isfinite(candidate.requiredLength) ||
+        candidate.requiredLength < 0.0f ||
+        !std::isfinite(maximumLength) || maximumLength < 0.0f ||
+        candidate.requiredLength > maximumLength + kLengthEpsilon) {
+        BeginRetraction();
+        return;
+    }
+    preview_->reservedLength = std::clamp(
+        (std::max)(preview_->reservedLength, candidate.requiredLength),
+        0.0f, maximumLength);
     const float committedLength = preview_->reservedLength;
     preview_->tentacle.SetRootAnchor(*root);
     preview_->tentacle.AttachTip(candidate.path.unwrappedEnd);
+    preview_->tentacle.SetDeployedLength(committedLength);
 
     CommittedLine line{sourceNodeIndex, targetNodeIndex, committedLength};
     Segment segment{};
@@ -750,8 +763,12 @@ PuzzleBoard::BuildCommitCandidate(
         GetNodeBounds(targetNodeIndex);
     const std::optional<Vec2> source = GetNodeCenter(sourceNodeIndex);
     const std::optional<Vec2> target = GetNodeCenter(targetNodeIndex);
-    if (!targetBounds.has_value() || !source.has_value() || !target.has_value() ||
-        !PointInAxisAlignedBox(pointerPath.canonicalEnd, *targetBounds)) {
+    if (!targetBounds.has_value() || !source.has_value() || !target.has_value()) {
+        return std::nullopt;
+    }
+    const AxisAlignedBox targetHitBounds =
+        ExpandAxisAlignedBox(*targetBounds, kTargetHitPadding);
+    if (!PointInAxisAlignedBox(pointerPath.canonicalEnd, targetHitBounds)) {
         return std::nullopt;
     }
 
@@ -776,7 +793,8 @@ PuzzleBoard::BuildCommitCandidate(
     const float requiredLength =
         path->length *
         EffectiveSlackRatio(definition_.minimumSlackRatio);
-    if (preview_->reservedLength + kLengthEpsilon < requiredLength) {
+    if (!std::isfinite(requiredLength) || requiredLength < 0.0f ||
+        preview_->tentacle.GetMaxLength() + kLengthEpsilon < requiredLength) {
         return std::nullopt;
     }
 
@@ -785,7 +803,7 @@ PuzzleBoard::BuildCommitCandidate(
     if (IsBlockedByDeadNode(*path, clearance)) {
         return std::nullopt;
     }
-    return CommitCandidate{targetNodeIndex, std::move(*path)};
+    return CommitCandidate{targetNodeIndex, std::move(*path), requiredLength};
 }
 
 bool PuzzleBoard::IsDuplicateConnection(
