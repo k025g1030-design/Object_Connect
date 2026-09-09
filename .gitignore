@@ -12,6 +12,7 @@
 !/Docs/ObjectFPS_MVP_TechnicalReport.zh-TW.md
 !/Docs/ObjectFPS_MVP_TechnicalReport.ja.md
 /target/
+/local_backups/
 /*.obj
 CMakeUserPresets.json
 *.user

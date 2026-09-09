@@ -1,0 +1,10 @@
+instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
+bone_01,bone_dead,,,,,,33,10,,,
+bone_02,bone_dead,,,,,,43,12,,,
+bone_03,bone_block,,,,,,23,12,,,
+bone_04,bone_block,,,,,,33,0,,,
+heart,heart_root,,,,,,11,19,,,
+organ_01,organ_follow,,,,,,63,19,,,
+brain,brain_end,,,,,,37,23,,,
+organ_02,organ_follow,,,,,,37,42,,,
+organ_03,organ_follow,,,,,,37,38,,,

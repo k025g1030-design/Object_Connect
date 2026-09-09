@@ -1,5 +1,8 @@
 preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,max_incoming,max_outgoing,max_outgoing_length
-heart_root,root,assets/textures/node/heart.png,3,3,HEART,,2,800
-organ_follow,follow,assets/textures/node/organ.png,3,3,ORGAN,3,2,600
-brain_end,end,assets/textures/node/brain.png,3,3,BRAIN,3,,
-bone_dead,dead,,10,8,,,,
+heart_root,root,assets/textures/node/heart.png,3,3,heart,,2,800
+organ_follow,follow,assets/textures/node/organ.png,3,3,organ,3,2,600
+brain_end,end,assets/textures/node/brain.png,3,3,brain,3,,
+bone_dead,dead,,10,10,,,,
+test_root,root,,1,1,,,,
+bone_wall_horizontal,dead,,20,1,,,,
+bone_block,dead,,10,10,,,,

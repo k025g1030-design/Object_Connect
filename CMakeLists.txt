@@ -155,9 +155,6 @@ set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/kamata.ico"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/nodes.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/first_link.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/around_block.csv"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/clot_path.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/mouse/mouse_icon_01.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/mouse/mouse_icon_02.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/mouse/mouse_icon_03.png"
@@ -195,6 +192,17 @@ set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/TextVS.hlsl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/TextPS.hlsl"
 )
+set(_bundled_stage_ids
+    stage_01 stage_02 stage_03 stage_04 stage_05
+    stage_06 stage_07 stage_08 stage_09 stage_10
+    stage_11 stage_12 stage_13 stage_14 stage_15
+    stage_16 stage_17 stage_18 stage_19 stage_20
+)
+foreach(_stage_id IN LISTS _bundled_stage_ids)
+    list(APPEND _required_project_resources
+        "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/${_stage_id}.csv"
+    )
+endforeach()
 foreach(_required_path IN LISTS _required_project_resources)
     if(NOT EXISTS "${_required_path}")
         message(FATAL_ERROR "Required Object_Connect resource was not found:\n  ${_required_path}")
@@ -331,10 +339,16 @@ add_custom_target(Object_Connect_Resources ALL
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${OBJECT_CONNECT_RESOURCE_DIR}"
             "${OBJECT_CONNECT_OUTPUT_DIR}/Resources"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            ${OBJECT_CONNECT_DXC_RUNTIME_FILES}
-            "${OBJECT_CONNECT_OUTPUT_DIR}"
-    DEPENDS ${OBJECT_CONNECT_RESOURCE_FILES} ${OBJECT_CONNECT_DXC_RUNTIME_FILES}
+    COMMAND "${CMAKE_COMMAND}"
+            "-DCONFIGURATION=$<CONFIG>"
+            "-DOUTPUT_DIRECTORY=${OBJECT_CONNECT_OUTPUT_DIR}"
+            "-DDXCOMPILER_SOURCE=${OBJECT_CONNECT_DXC_REDIST_DIR}/dxcompiler.dll"
+            "-DDXIL_SOURCE=${OBJECT_CONNECT_DXC_REDIST_DIR}/dxil.dll"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeployDxcRuntime.cmake"
+    DEPENDS
+        ${OBJECT_CONNECT_RESOURCE_FILES}
+        ${OBJECT_CONNECT_DXC_RUNTIME_FILES}
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeployDxcRuntime.cmake"
     COMMENT "Deploying Object_Connect resources and runtime dependencies"
     VERBATIM
 )

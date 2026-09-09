@@ -795,7 +795,7 @@ void TestWrappedBoardCollisionLengthAndStateIsolation(TestContext& context) {
                    "legacy reload is bounds-independent and clears wrapped render state");
 }
 
-void TestBundledFirstLinkIntegration(TestContext& context) {
+void TestBundledStageOneIntegration(TestContext& context) {
     PuzzleCatalog catalog;
     std::string error;
     context.Expect(
@@ -803,9 +803,9 @@ void TestBundledFirstLinkIntegration(TestContext& context) {
                                   std::string{OBJECT_CONNECT_TEST_RESOURCE_ROOT},
                                   catalog, error),
         "bundled level and map CSV files load for board integration");
-    const PuzzleDefinition* const puzzle = catalog.Find("first_link");
+    const PuzzleDefinition* const puzzle = catalog.Find("stage_01");
     if (puzzle == nullptr) {
-        context.Fail("bundled catalog exposes first_link");
+        context.Fail("bundled catalog exposes stage_01");
         return;
     }
 
@@ -816,7 +816,7 @@ void TestBundledFirstLinkIntegration(TestContext& context) {
         puzzle->nodes.begin(), puzzle->nodes.end(),
         [](const NodeDefinition& node) { return node.type == NodeType::End; });
     if (rootIt == puzzle->nodes.end() || endIt == puzzle->nodes.end()) {
-        context.Fail("first_link map snapshot contains root and end roles");
+        context.Fail("stage_01 map snapshot contains root and end roles");
         return;
     }
     const std::size_t rootIndex =
@@ -828,7 +828,7 @@ void TestBundledFirstLinkIntegration(TestContext& context) {
     PuzzleBoard board;
     const bool initialized = board.Initialize(*puzzle, bounds, error);
     context.Expect(initialized,
-                   "board initializes directly from loaded first_link map snapshot");
+                   "board initializes directly from loaded stage_01 map snapshot");
     if (!initialized) {
         return;
     }
@@ -844,22 +844,17 @@ void TestBundledFirstLinkIntegration(TestContext& context) {
                    "loaded map capacities and local budget reach the board unchanged");
 
     const Vec2 canonicalEnd = Center(*puzzle, endIndex);
-    context.Expect(puzzle->wrapEdges,
-                   "authored first_link integration level enables edge wrapping");
-    const Vec2 releaseEnd = canonicalEnd + Vec2{
-        -(bounds.maximum.x - bounds.minimum.x), 0.0f};
+    context.Expect(!puzzle->wrapEdges,
+                   "authored stage_01 integration level uses direct board routing");
     const float expectedCommittedLength =
-        Length(releaseEnd - Center(*puzzle, rootIndex)) *
+        Length(canonicalEnd - Center(*puzzle, rootIndex)) *
         puzzle->minimumSlackRatio;
     context.Expect(
-        expectedCommittedLength <= puzzle->totalLength &&
-            Length(canonicalEnd - Center(*puzzle, rootIndex)) *
-                    puzzle->minimumSlackRatio >
-                puzzle->totalLength,
-        "first_link authoring requires the left-boundary route to fit its budget");
+        expectedCommittedLength <= puzzle->totalLength,
+        "stage_01 direct route fits its authored global budget");
 
     BeginDrag(board, *puzzle, rootIndex);
-    board.Update(ReleaseAtWrapped(canonicalEnd, releaseEnd), 1.0f / 60.0f);
+    board.Update(ReleaseAt(canonicalEnd), 1.0f / 60.0f);
     context.Expect(board.IsSolved() && board.GetCompletedConnectionCount() == 1,
                    "loaded first_link root can connect to its end and solve");
     if (board.GetCommittedLines().empty()) {
@@ -871,7 +866,7 @@ void TestBundledFirstLinkIntegration(TestContext& context) {
     context.Expect(
         NearlyEqual(board.GetCommittedLines().front().committedLength,
                     expectedCommittedLength, 0.01f),
-        "first_link consumes the authored left-boundary crossing length");
+        "stage_01 consumes the authored direct-route length");
 }
 
 } // namespace
@@ -890,7 +885,7 @@ void RunPuzzleBoardTests(TestContext& context) {
     TestWrappedBoardPathAndBoundsContract(context);
     TestWrappedPreviewRetracesThroughPortal(context);
     TestWrappedBoardCollisionLengthAndStateIsolation(context);
-    TestBundledFirstLinkIntegration(context);
+    TestBundledStageOneIntegration(context);
 }
 
 } // namespace object_connect::tests

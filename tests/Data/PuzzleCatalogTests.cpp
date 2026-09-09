@@ -4,6 +4,7 @@
 #include "ObjectConnect/Data/PuzzleCatalogLoader.hpp"
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <span>
@@ -524,31 +525,39 @@ void TestBundledCatalogs(TestContext& context) {
                        std::string{OBJECT_CONNECT_TEST_RESOURCE_ROOT},
                        catalog, error),
                    "the bundled levels and per-level map CSV files load");
-    constexpr std::array<std::string_view, 14> expectedIds = {
-        "first_link", "around_block", "clot_path", "test_01", "test_02",
-        "test_03",    "test_04",      "test_05",   "test_06", "test_07",
-        "test_08",    "test_09",      "test_10",   "test_11",
+    constexpr std::array<std::string_view, 20> expectedIds = {
+        "stage_01", "stage_02", "stage_03", "stage_04", "stage_05",
+        "stage_06", "stage_07", "stage_08", "stage_09", "stage_10",
+        "stage_11", "stage_12", "stage_13", "stage_14", "stage_15",
+        "stage_16", "stage_17", "stage_18", "stage_19", "stage_20",
     };
     constexpr std::array expectedWrapEdges = {
-        true, false, false, false, true, true, true,
-        true, true,  true,  true,  true, true, true,
+        false, false, false, false, false, true,  false,
+        false, true,  false, true,  false, true,  false,
+        false, true,  true,  true,  true,  true,
     };
     if (!error.empty() || catalog.GetPuzzles().size() != expectedIds.size()) {
         context.Fail("bundled puzzle catalog contains exactly the authored levels");
         return;
     }
 
-    bool levelOrderAndWrapFlagsMatch = true;
+    bool levelMetadataMatches = true;
     for (std::size_t index = 0; index < expectedIds.size(); ++index) {
-        levelOrderAndWrapFlagsMatch =
-            levelOrderAndWrapFlagsMatch &&
+        const std::string ordinal = index < 9
+            ? "0" + std::to_string(index + 1)
+            : std::to_string(index + 1);
+        levelMetadataMatches =
+            levelMetadataMatches &&
             catalog.GetPuzzles()[index].id == expectedIds[index] &&
+            catalog.GetPuzzles()[index].title == "stage " + ordinal &&
+            catalog.GetPuzzles()[index].mapPath ==
+                "data/maps/" + std::string{expectedIds[index]} + ".csv" &&
             catalog.GetPuzzles()[index].wrapEdges == expectedWrapEdges[index];
     }
-    context.Expect(levelOrderAndWrapFlagsMatch,
-                   "bundled level order and wrap flags match levels.csv");
+    context.Expect(levelMetadataMatches,
+                   "bundled level IDs, lowercase names, map paths, order, and wrap flags match levels.csv");
 
-    context.Expect(catalog.GetPuzzles()[0].id == "first_link" &&
+    context.Expect(catalog.GetPuzzles()[0].id == "stage_01" &&
                        catalog.GetPuzzles()[0].nodes.size() == 2 &&
                        catalog.GetPuzzles()[0].nodes.front().type == NodeType::Root &&
                        catalog.GetPuzzles()[0].nodes.front().texturePath ==
@@ -558,15 +567,17 @@ void TestBundledCatalogs(TestContext& context) {
                            catalog.GetPuzzles()[0].nodes.front().maxOutgoingLength,
                            700.0f) &&
                        catalog.GetPuzzles()[0].nodes.back().type == NodeType::End,
-                   "first_link inherits preset visuals while map capacities override defaults");
-    context.Expect(catalog.GetPuzzles()[1].nodes.size() == 5 &&
-                       catalog.GetPuzzles()[1].nodes.back().type == NodeType::Dead,
-                   "around_block converts its old obstacle into a dead node rectangle");
-    context.Expect(catalog.GetPuzzles()[2].nodes.size() == 9 &&
-                       catalog.GetPuzzles()[2].nodes[6].type == NodeType::End &&
-                       catalog.GetPuzzles()[2].nodes[7].type == NodeType::Dead &&
-                       catalog.GetPuzzles()[2].nodes[8].type == NodeType::Dead,
-                   "clot_path migrates intermediate nodes and both old obstacles");
+                   "stage_01 inherits preset visuals while map capacities override defaults");
+    const PuzzleDefinition* const stage04 = catalog.Find("stage_04");
+    const PuzzleDefinition* const stage05 = catalog.Find("stage_05");
+    context.Expect(stage04 != nullptr && stage04->nodes.size() == 5 &&
+                       stage04->nodes.back().type == NodeType::Dead,
+                   "stage_04 retains its authored obstacle rectangle");
+    context.Expect(stage05 != nullptr && stage05->nodes.size() == 9 &&
+                       stage05->nodes[6].type == NodeType::End &&
+                       stage05->nodes[7].type == NodeType::Dead &&
+                       stage05->nodes[8].type == NodeType::Dead,
+                   "stage_05 retains its intermediate nodes and both obstacles");
 
     bool allInteractiveNodesAreThreeByThree = true;
     for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
@@ -580,6 +591,26 @@ void TestBundledCatalogs(TestContext& context) {
     }
     context.Expect(allInteractiveNodesAreThreeByThree,
                    "all bundled root, follow, and end nodes occupy exactly 3x3 tiles");
+
+    const auto isLowerEnglishDisplayName = [](const std::string_view text) {
+        for (const char character : text) {
+            const bool lowercaseLetter = character >= 'a' && character <= 'z';
+            const bool digit = character >= '0' && character <= '9';
+            if (!lowercaseLetter && !digit && character != ' ') {
+                return false;
+            }
+        }
+        return true;
+    };
+    bool nodeNamesAreLowerEnglish = true;
+    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
+        for (const NodeDefinition& node : puzzle.nodes) {
+            nodeNamesAreLowerEnglish = nodeNamesAreLowerEnglish &&
+                isLowerEnglishDisplayName(node.displayName);
+        }
+    }
+    context.Expect(nodeNamesAreLowerEnglish,
+                   "all resolved bundled node display names use lowercase English");
 
     const auto findNode = [](const PuzzleDefinition& puzzle,
                              const std::string_view id)
@@ -598,13 +629,13 @@ void TestBundledCatalogs(TestContext& context) {
         std::string_view texturePath;
     };
     constexpr std::array expectedNamedTextures = {
-        ExpectedNodeTexture{"around_block", "lung", "assets/textures/node/lung.png"},
-        ExpectedNodeTexture{"around_block", "liver", "assets/textures/node/liver.png"},
-        ExpectedNodeTexture{"clot_path", "lung", "assets/textures/node/lung.png"},
-        ExpectedNodeTexture{"clot_path", "kidney", "assets/textures/node/kidney.png"},
-        ExpectedNodeTexture{"clot_path", "liver", "assets/textures/node/liver.png"},
-        ExpectedNodeTexture{"clot_path", "stomach", "assets/textures/node/stomach.png"},
-        ExpectedNodeTexture{"clot_path", "lung_lower", "assets/textures/node/lung.png"},
+        ExpectedNodeTexture{"stage_04", "lung", "assets/textures/node/lung.png"},
+        ExpectedNodeTexture{"stage_04", "liver", "assets/textures/node/liver.png"},
+        ExpectedNodeTexture{"stage_05", "lung", "assets/textures/node/lung.png"},
+        ExpectedNodeTexture{"stage_05", "kidney", "assets/textures/node/kidney.png"},
+        ExpectedNodeTexture{"stage_05", "liver", "assets/textures/node/liver.png"},
+        ExpectedNodeTexture{"stage_05", "stomach", "assets/textures/node/stomach.png"},
+        ExpectedNodeTexture{"stage_05", "lung_lower", "assets/textures/node/lung.png"},
     };
     bool namedTextureOverridesMatch = true;
     for (const ExpectedNodeTexture& expected : expectedNamedTextures) {
@@ -617,53 +648,78 @@ void TestBundledCatalogs(TestContext& context) {
     context.Expect(namedTextureOverridesMatch,
                    "bundled named organ nodes resolve their authored image overrides");
 
-    const PuzzleDefinition* const genericPuzzle = catalog.Find("test_01");
+    const PuzzleDefinition* const genericPuzzle = catalog.Find("stage_07");
     const NodeDefinition* const genericOrgan = genericPuzzle != nullptr
-        ? findNode(*genericPuzzle, "organ_follow_1")
+        ? findNode(*genericPuzzle, "organ_01")
         : nullptr;
     context.Expect(genericOrgan != nullptr &&
                        genericOrgan->texturePath ==
                            "assets/textures/node/organ.png",
                    "generic ORGAN nodes inherit organ.png from their preset");
 
-    struct ExpectedDeadGeometry final {
-        std::string_view nodeId;
-        std::uint32_t widthTiles;
-        std::uint32_t heightTiles;
-        TilePosition tilePosition;
+    struct ExpectedDeadFingerprint final {
+        std::size_t count;
+        std::uint64_t fingerprint;
     };
-    constexpr std::array expectedDeadGeometry = {
-        ExpectedDeadGeometry{"rib_cage", 14, 12, {33, 16}},
-        ExpectedDeadGeometry{"central_bone", 15, 12, {30, 16}},
-        ExpectedDeadGeometry{"right_bone", 12, 12, {48, 16}},
-        ExpectedDeadGeometry{"bone_dead_1", 5, 10, {18, 7}},
-        ExpectedDeadGeometry{"bone_dead_2", 3, 10, {32, 7}},
+    constexpr std::array<ExpectedDeadFingerprint, 20> expectedDead = {{
+        {0, 0xcbf29ce484222325ULL}, {0, 0xcbf29ce484222325ULL},
+        {0, 0xcbf29ce484222325ULL}, {1, 0xa479170a41ea30c3ULL},
+        {2, 0x1e7ac45e2231598bULL}, {4, 0x573357561f78f32aULL},
+        {2, 0xfe2e3eace398d83dULL}, {4, 0xb67a90ffd6764728ULL},
+        {9, 0x9d33193e4b017f96ULL}, {4, 0xe59ba5105a0f0333ULL},
+        {14, 0x15801a5b233baeceULL}, {6, 0xd3d7a230b329f466ULL},
+        {17, 0x54f3630469e72f98ULL}, {6, 0x9655cc453d917336ULL},
+        {4, 0x2028291e27366ad5ULL}, {7, 0x5e8f555f4d631072ULL},
+        {9, 0xe983bc3f7d3f3ae5ULL}, {12, 0xbe36c1d8c9c01e4dULL},
+        {16, 0x4bd8f413c35d7ba0ULL}, {8, 0x0adb5b9926c2ad15ULL},
+    }};
+    const auto mixByte = [](std::uint64_t hash, const std::uint8_t value) {
+        constexpr std::uint64_t prime = 1099511628211ULL;
+        return (hash ^ value) * prime;
     };
-    std::size_t bundledDeadCount = 0;
     bool deadGeometryAndProceduralVisualMatch = true;
-    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
+    std::size_t bundledDeadCount = 0;
+    for (std::size_t puzzleIndex = 0;
+         puzzleIndex < catalog.GetPuzzles().size(); ++puzzleIndex) {
+        const PuzzleDefinition& puzzle = catalog.GetPuzzles()[puzzleIndex];
+        std::uint64_t fingerprint = 14695981039346656037ULL;
+        std::size_t stageDeadCount = 0;
         for (const NodeDefinition& node : puzzle.nodes) {
             if (node.type != NodeType::Dead) {
                 continue;
             }
+            ++stageDeadCount;
             ++bundledDeadCount;
-            const ExpectedDeadGeometry* matched = nullptr;
-            for (const ExpectedDeadGeometry& expected : expectedDeadGeometry) {
-                if (node.id == expected.nodeId) {
-                    matched = &expected;
-                    break;
-                }
+            for (const unsigned char character : node.id) {
+                fingerprint = mixByte(fingerprint, character);
             }
+            fingerprint = mixByte(fingerprint, 0xffu);
+            const auto mixUnsigned = [&mixByte, &fingerprint](
+                                         const std::uint32_t value) {
+                for (std::uint32_t shift = 0; shift < 32; shift += 8) {
+                    fingerprint = mixByte(
+                        fingerprint,
+                        static_cast<std::uint8_t>((value >> shift) & 0xffu));
+                }
+            };
+            mixUnsigned(node.widthTiles);
+            mixUnsigned(node.heightTiles);
+            mixUnsigned(node.tilePosition.has_value()
+                            ? static_cast<std::uint32_t>(node.tilePosition->x)
+                            : 0u);
+            mixUnsigned(node.tilePosition.has_value()
+                            ? static_cast<std::uint32_t>(node.tilePosition->y)
+                            : 0u);
             deadGeometryAndProceduralVisualMatch =
-                deadGeometryAndProceduralVisualMatch && matched != nullptr &&
-                node.texturePath.empty() &&
-                node.widthTiles == matched->widthTiles &&
-                node.heightTiles == matched->heightTiles &&
-                node.tilePosition.has_value() &&
-                *node.tilePosition == matched->tilePosition;
+                deadGeometryAndProceduralVisualMatch &&
+                node.texturePath.empty() && node.tilePosition.has_value();
         }
+        deadGeometryAndProceduralVisualMatch =
+            deadGeometryAndProceduralVisualMatch &&
+            stageDeadCount == expectedDead[puzzleIndex].count &&
+            fingerprint == expectedDead[puzzleIndex].fingerprint;
     }
-    context.Expect(bundledDeadCount == 23 &&
+    context.Expect(bundledDeadCount == 125 &&
                        deadGeometryAndProceduralVisualMatch,
                    "every bundled dead node keeps its authored collision rectangle and uses procedural visuals");
 
@@ -673,20 +729,33 @@ void TestBundledCatalogs(TestContext& context) {
                        std::string{OBJECT_CONNECT_TEST_RESOURCE_ROOT},
                        presets, error),
                    "the bundled runtime node presets also load independently for tools");
-    context.Expect(error.empty() && presets.GetPresets().size() == 4,
-                   "bundled presets cover root, follow, end, and dead authoring roles");
+    context.Expect(error.empty() && presets.GetPresets().size() == 7,
+                   "bundled presets cover interactive, dead, and retained tool authoring roles");
     const NodePresetDefinition* const heart = presets.Find("heart_root");
     const NodePresetDefinition* const organ = presets.Find("organ_follow");
     const NodePresetDefinition* const brain = presets.Find("brain_end");
     const NodePresetDefinition* const bone = presets.Find("bone_dead");
+    const NodePresetDefinition* const horizontalWall =
+        presets.Find("bone_wall_horizontal");
+    const NodePresetDefinition* const boneBlock = presets.Find("bone_block");
     context.Expect(heart != nullptr && organ != nullptr && brain != nullptr &&
-                       bone != nullptr &&
+                       bone != nullptr && horizontalWall != nullptr &&
+                       boneBlock != nullptr &&
                        heart->texturePath == "assets/textures/node/heart.png" &&
                        organ->texturePath == "assets/textures/node/organ.png" &&
                        brain->texturePath == "assets/textures/node/brain.png" &&
                        bone->texturePath.empty() && bone->widthTiles == 10 &&
-                       bone->heightTiles == 8,
-                   "bundled presets resolve organ textures while bone_dead stays procedural");
+                       bone->heightTiles == 10 &&
+                       horizontalWall->texturePath.empty() &&
+                       horizontalWall->widthTiles == 20 &&
+                       horizontalWall->heightTiles == 1 &&
+                       boneBlock->texturePath.empty() &&
+                       boneBlock->widthTiles == 10 &&
+                       boneBlock->heightTiles == 10 &&
+                       heart->displayName == "heart" &&
+                       organ->displayName == "organ" &&
+                       brain->displayName == "brain",
+                   "bundled presets resolve lowercase organ visuals while all dead presets stay procedural");
 }
 
 } // namespace

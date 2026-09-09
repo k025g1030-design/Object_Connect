@@ -56,7 +56,7 @@ Object_Connect_CoreTests
 ```text
 levels.csv
 nodes.csv
-maps/<level>.csv
+maps/<level_id>.csv
 ```
 
 ### 4.1 Level catalog

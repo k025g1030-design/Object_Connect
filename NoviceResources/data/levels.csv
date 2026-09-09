@@ -1,15 +1,21 @@
 level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation,wrap_edges
-first_link,FIRST LINK,data/maps/first_link.csv,around_block,700,,,,,,,1
-around_block,AROUND BLOCK,data/maps/around_block.csv,clot_path,1250,1.05,#140D12,#861B2B,16,16,0.16,0
-clot_path,CLOT PATH,data/maps/clot_path.csv,,2450,1.05,#120B10,#861B2B,16,16,0.16,0
-test_01,test_00,data/maps/test_01.csv,,2450,,,,,,,0
-test_02,test_02,data/maps/test_02.csv,,1500,,,,,,,1
-test_03,test_03,data/maps/test_02.csv,,1500,,,,,,,1
-test_04,test_04,data/maps/test_02.csv,,1500,,,,,,,1
-test_05,test_05,data/maps/test_02.csv,,1500,,,,,,,1
-test_06,test_06,data/maps/test_02.csv,,1500,,,,,,,1
-test_07,test_07,data/maps/test_02.csv,,1500,,,,,,,1
-test_08,test_08,data/maps/test_02.csv,,1500,,,,,,,1
-test_09,test_09,data/maps/test_02.csv,,1500,,,,,,,1
-test_10,test_10,data/maps/test_02.csv,,1500,,,,,,,1
-test_11,test_11,data/maps/test_02.csv,,1500,,,,,,,1
+stage_01,stage 01,data/maps/stage_01.csv,stage_02,700,,,,,,,0
+stage_02,stage 02,data/maps/stage_02.csv,stage_03,750,,,,,,,0
+stage_03,stage 03,data/maps/stage_03.csv,stage_04,1500,,,,,,,0
+stage_04,stage 04,data/maps/stage_04.csv,stage_05,1250,1.05,#140D12,#861B2B,16,16,0.16,0
+stage_05,stage 05,data/maps/stage_05.csv,stage_06,2450,1.05,#120B10,#861B2B,16,16,0.16,0
+stage_06,stage 06,data/maps/stage_06.csv,stage_07,2500,,,,,,,1
+stage_07,stage 07,data/maps/stage_07.csv,stage_08,2000,,,,,,,0
+stage_08,stage 08,data/maps/stage_08.csv,stage_09,2500,,,,,,,0
+stage_09,stage 09,data/maps/stage_09.csv,stage_10,2000,,,,,,,1
+stage_10,stage 10,data/maps/stage_10.csv,stage_11,2500,,,,,,,0
+stage_11,stage 11,data/maps/stage_11.csv,stage_12,2500,,,,,,,1
+stage_12,stage 12,data/maps/stage_12.csv,stage_13,2300,,,,,,,0
+stage_13,stage 13,data/maps/stage_13.csv,stage_14,3000,,,,,,,1
+stage_14,stage 14,data/maps/stage_14.csv,stage_15,4500,,,,,,,0
+stage_15,stage 15,data/maps/stage_15.csv,stage_16,4600,,,,,,,0
+stage_16,stage 16,data/maps/stage_16.csv,stage_17,4000,,,,,,,1
+stage_17,stage 17,data/maps/stage_17.csv,stage_18,4000,,,,,,,1
+stage_18,stage 18,data/maps/stage_18.csv,stage_19,2500,,,,,,,1
+stage_19,stage 19,data/maps/stage_19.csv,stage_20,3700,,,,,,,1
+stage_20,stage 20,data/maps/stage_20.csv,,5000,,,,,,,1

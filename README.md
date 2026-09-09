@@ -129,9 +129,10 @@ data/
   levels.csv             レベル順、マップのパス、次のレベルID、全体予算、見た目
   nodes.csv              再利用できるノードのひな形一覧
   maps/
-    first_link.csv       各レベルで実際に使うノードと配置位置
-    around_block.csv
-    clot_path.csv
+    stage_01.csv         各レベルで実際に使うノードと配置位置
+    ...
+    stage_20.csv
+    archive/             catalog から参照しない試作マップ
 ```
 
 ### `levels.csv`
@@ -141,6 +142,8 @@ level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,back
 ```
 
 - CSV の行の順番が、Level Select の並び順になります。
+- 同梱レベルの `level_id` は `stage_01`～`stage_20`、`level_name` は `stage 01`～`stage 20` に統一します。どちらも小文字の英語と数字だけを使います。
+- マップ名は level ID と一致させ、`stage_01` なら `data/maps/stage_01.csv` を使います。
 - `map_path` は `Resources/` からの安全な相対パスです。
 - `next_level_id` は空にできます。ゲームは、指定した ID が本当に存在するときだけ Next を表示します。
 - `total_length` は、レベル全体で使える長さです。
@@ -170,6 +173,8 @@ instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,dis
 ```
 
 - `instance_id` は、そのマップの中で重複しない ID にします。
+- 一般マップの instance ID は、root を `heart`、end を `brain`、follow を行順の `organ_01`～、dead を行順の `bone_01`～とします。意味のある固有名を持つマップでは、`lung` や `rib_cage` のような小文字英語の lower_snake_case を使えます。
+- `display_name` は空欄、または小文字の英語と数字・空白だけにします。
 - `source_preset_id` は空にできます。指定する場合は、`nodes.csv` に同じ ID のひな形が必要です。
 - `node_type` に使える値は `root`、`follow`、`end`、`dead` だけです。ひな形がある場合は空にして引き継げます。ひな形がない場合は必ず指定します。
 - 1 マスは固定で 16×16 の論理ピクセルです。`tile_x`／`tile_y` は長方形の左上の位置です。
@@ -254,7 +259,7 @@ $env:KAMATA_ENGINE = "D:\path\to\KamataEngine"
 
 実行ファイルは `target/<Configuration>/Object_Connect.exe` に作られます。ビルド時に `NoviceResources/` を、実行ファイルと同じ場所にある `Resources/` へコピーします。必須の `NoviceResources/fonts/game.ttf` も、この処理で `Resources/fonts/game.ttf` になります。プログラムの開始時に、作業フォルダーを実行ファイルのある場所へ設定します。
 
-Debug の DirectX debug layer が必要とする `dxcompiler.dll` と `dxil.dll` も、CMake が Windows SDK の x64 Redist から実行ファイルと同じ場所へコピーします。出力を構成に依存せず自己完結させるため、2 つの DLL は Debug／Release の両方へ配置します。この処理は Visual Studio と CLion／Ninja で共通です。SDK を標準外の場所に置く場合は、CMake の `OBJECT_CONNECT_DXC_REDIST_DIR` に 2 つの DLL があるディレクトリを指定してください。
+Debug の DirectX debug layer が必要とする `dxcompiler.dll` と `dxil.dll` は、CMake が Windows SDK の x64 Redist から Debug 実行ファイルと同じ場所へコピーします。Release は debug layer を有効にしないため、この 2 ファイルを配置せず、以前のビルドで残った副本もデプロイ時に削除します。Release の CRT、KamataEngine、DirectXTex は静的リンクされるため、配布物は `Object_Connect.exe` と `Resources/` だけです。この処理は Visual Studio と CLion／Ninja で共通です。SDK を標準外の場所に置く場合は、CMake の `OBJECT_CONNECT_DXC_REDIST_DIR` に 2 つの DLL があるディレクトリを指定してください。
 
 プロジェクトは C++20 を使い、MSVC には `/W4 /WX /sdl /permissive- /utf-8` を設定しています。
 
