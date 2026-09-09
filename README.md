@@ -20,22 +20,23 @@
 ## 現在のゲームの流れ
 
 ```text
-MAIN MENU
-  PLAY -> LEVEL SELECT -> PLAYING
-  EXIT                    |
-                          +-- Esc またはフォーカスを失う -> PAUSED
-                          |                                  RESUME
-                          |                                  LEVEL SELECT
-                          |                                  MAIN MENU
-                          |                                  EXIT GAME
-                          |
-                          +-- 配置済みのすべての end が有効 -> SOLVED
-                                                               NEXT PUZZLE（有効な next_level_id）
-                                                               LEVEL SELECT
-                                                               RETRY
+メインメニュー
+  ゲーム開始 -> ステージ選択 -> プレイ中
+  終了                         |
+                               +-- Esc またはフォーカスを失う -> 一時停止
+                               |                                  再開
+                               |                                  リトライ
+                               |                                  ステージ選択
+                               |                                  メインメニュー
+                               |                                  ゲーム終了
+                               |
+                               +-- 配置済みのすべての end が有効 -> クリア
+                                                                    次のステージ（有効な next_level_id）
+                                                                    ステージ選択
+                                                                    リトライ
 ```
 
-レベル選択の並び順は、`levels.csv` の行の順番と同じです。画面は 5 列×2 行の 10 レベル単位で表示し、左右の矢印またはマウスホイールでページを切り替えます。`NEXT PUZZLE` は行の順番には依存しません。現在のレベルにある `next_level_id` を読み、catalog の中から同じ ID を探します。この項目が空、または ID が見つからない場合は、Next を表示しません。
+レベル選択の並び順は、`levels.csv` の行の順番と同じです。画面は 5 列×2 行の 10 レベル単位で表示し、左右の矢印またはマウスホイールでページを切り替えます。`次のステージ` は行の順番には依存しません。現在のレベルにある `next_level_id` を読み、catalog の中から同じ ID を探します。この項目が空、または ID が見つからない場合は、この項目を表示しません。
 
 レベルを切り替える、レベルから出る、またはリトライすると、`PuzzleBoard` を作り直します。そのため、ノードの状態、接続、残りの長さはすべて初期状態に戻ります。クリア後は、約 0.6 秒たってからクリアメニューを操作できます。
 
@@ -46,7 +47,7 @@ MAIN MENU
 - レベル選択中の左右の矢印またはマウスホイール：10 レベル単位でページを切り替えます。
 - 光っている接続元ノードの上でマウス左ボタンを押し、そのまま接続できるノードまでドラッグして、ボタンを離します。
 - `Esc`：プレイ中は一時停止します。一時停止中はゲームに戻ります。レベル選択画面ではメインメニューへ、クリア画面ではレベル選択へ戻ります。
-- `R`：プレイ中または一時停止中に、現在のレベルを最初からやり直します。
+- 一時停止メニューの `リトライ`：現在のレベルを最初からやり直します。
 
 ゲームの client 領域内では 32×32 のカスタムカーソルを使います。通常は開いた手、メニュー／有効なページ矢印の上では指差し、血管を掴んでいる間は握り拳になります。OS カーソルを隠すのはウィンドウにフォーカスがあり、ポインターが client 内にある間だけです。外へ出る、フォーカスを失う、またはカスタムカーソルの初期化に失敗した場合は OS カーソルへ戻ります。フォーカスを失うと、ドラッグ中の仮の線はすぐにキャンセルされ、ゲームは自動で一時停止します。もう一度フォーカスを得ても、自動では再開しません。
 
@@ -102,7 +103,7 @@ min(レベル全体の残りの長さ, 接続元の outgoing の残りの長さ)
 
 ドラッグに必要な長さは `distance(source, cursor) * minimum_slack_ratio` です。一度確保した長さは増えるだけで、カーソルを戻しても自動では短くなりません。そのため、線にたるみを持たせられます。ただし、その分だけ後で使える長さは減ります。ノードのない場所、接続できないノード、または `dead` に妨げられた場所でボタンを離すと、仮の線は約 0.22 秒かけて戻り、確保した長さも少しずつ返されます。
 
-HUD には `REMAINING n / total` を表示します。通常の操作状態で、接続数に空きのある接続先が残っているのに、どの接続にもレベル全体または接続元の長さが足りない場合は、`NOT ENOUGH LENGTH` を表示します。`wrap_edges=1` のレベルでは、直接経路だけでなく上下左右および角を越える隣接 image の実経路長と障害物も同じ判定に含めます。
+HUD には `残り n / total` を表示します。通常の操作状態で、接続数に空きのある接続先が残っているのに、どの接続にもレベル全体または接続元の長さが足りない場合は、`長さが足りません` を表示します。`wrap_edges=1` のレベルでは、直接経路だけでなく上下左右および角を越える隣接 image の実経路長と障害物も同じ判定に含めます。
 
 ## `dead` 障害物で現在できること
 
@@ -174,7 +175,7 @@ instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,dis
 
 - `instance_id` は、そのマップの中で重複しない ID にします。
 - 一般マップの instance ID は、root を `heart`、end を `brain`、follow を行順の `organ_01`～、dead を行順の `bone_01`～とします。意味のある固有名を持つマップでは、`lung` や `rib_cage` のような小文字英語の lower_snake_case を使えます。
-- `display_name` は空欄、または小文字の英語と数字・空白だけにします。
+- `display_name` は画面表示用の UTF-8 文字列です。同梱マップの `organ_follow` は、貼り絵に合わせて `肺`、`肝臓`、`腎臓`、`胃` のいずれかを使います。心臓と大脳は、それぞれ特別な root／end ノード専用です。
 - `source_preset_id` は空にできます。指定する場合は、`nodes.csv` に同じ ID のひな形が必要です。
 - `node_type` に使える値は `root`、`follow`、`end`、`dead` だけです。ひな形がある場合は空にして引き継げます。ひな形がない場合は必ず指定します。
 - 1 マスは固定で 16×16 の論理ピクセルです。`tile_x`／`tile_y` は長方形の左上の位置です。
@@ -210,7 +211,7 @@ UI とレベルの描画処理は、同じ参照カウント付きの一覧を�
 
 ## Unicode フォントと文字表示
 
-HUD とメニューの文字は KamataEngine の固定 ASCII `DebugText` ではなく、runtime の `FontSystem` が描画します。入力は UTF-8 として厳密にデコードされ、Unicode scalar value、glyph layout、glyph cache、`R8_UNORM` atlas、文字に依存しない textured quad、DirectX 12 draw call の順に処理されます。ASCII、日本語、改行を同じ API で扱い、幅と baseline は TTF の advance、bearing、kerning、ascent、descent、line gap から計算します。Level Select の正式な見出しは、41px で画面中央に配置する `ステージ選択` です。ほかの正式な UI 文言は変更していません。
+HUD とメニューの文字は KamataEngine の固定 ASCII `DebugText` ではなく、runtime の `FontSystem` が描画します。入力は UTF-8 として厳密にデコードされ、Unicode scalar value、glyph layout、glyph cache、`R8_UNORM` atlas、文字に依存しない textured quad、DirectX 12 draw call の順に処理されます。ASCII、日本語、改行を同じ API で扱い、幅と baseline は TTF の advance、bearing、kerning、ascent、descent、line gap から計算します。画面上のゲーム title `OBJECT CONNECT` は維持し、メニュー見出し、項目、操作案内と HUD は日本語で表示します。
 
 フォントファイルは `NoviceResources/fonts/game.ttf` に置いてください。ビルド後の必須 runtime asset は `Resources/fonts/game.ttf` で、`GameConfig::uiFontPath` の初期値 `fonts/game.ttf` から解決されます。ファイルがない、または有効な TTF として読み込めない場合は、解決後のフルパスを含むエラーでゲームの初期化に失敗します。この TTF はゲームに同梱した信頼できるファイルだけを使用してください。FontSystem は KamataEngine に付属する `imstb_truetype.h` 1.26 を private 実装として使い、FreeType、SDL_ttf、OS のシステムフォント、追加 DLL には依存しません。
 
@@ -231,8 +232,8 @@ Glyph は `{font, pixel size, code point}` ごとに初回だけ rasterize し�
 runtime の `GameAudio` は `Resources/audio/` の `bgm_start.wav`、`bgm_loop.wav`、
 `line_hold.wav`、`line_relax.wav` を初期化時に一度だけ読み込みます。起動直後に intro を
 0.9 で一度再生し、終了を polling した次の update で 0.4 の loop へ移ります。実際に一度
-レベルへ入った後で MAIN MENU に戻ったときだけ、この sequence を intro から再開します。
-LEVEL SELECT を見て戻るだけでは再開しません。個別 clip の読み込みに失敗した場合は、
+レベルへ入った後でメインメニューに戻ったときだけ、この sequence を intro から再開します。
+ステージ選択を見て戻るだけでは再開しません。個別 clip の読み込みに失敗した場合は、
 毎 frame 再試行せず安全に無音へ fallback します。
 
 有効な source からドラッグを始めると `line_hold` を 0.65 の one-shot で一度再生し、BGM を

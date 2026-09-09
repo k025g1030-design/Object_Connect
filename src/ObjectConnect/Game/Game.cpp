@@ -244,14 +244,6 @@ struct Game::Impl final {
             board->GetDefinition().wrapEdges && board->IsDragging();
         const InputState state = input.Sample(playfieldBounds, wrapPointer);
 
-        if (board && (screenBeforeInput == GameScreen::Playing ||
-                      screenBeforeInput == GameScreen::Paused) &&
-            state.keyboard.retryPressed) {
-            RequireStartPuzzle(*currentPuzzleIndex);
-            FinishFrame(state, deltaSeconds);
-            return;
-        }
-
         if (board && screenBeforeInput == GameScreen::Playing &&
             (state.keyboard.escapePressed || state.focusLost)) {
             const bool wasDragging = board->IsDragging();

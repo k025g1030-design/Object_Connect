@@ -76,7 +76,7 @@ std::size_t GameFlow::GetItemCount(const std::size_t puzzleCount,
     case GameScreen::Playing:
         return 0;
     case GameScreen::Paused:
-        return 4;
+        return 5;
     case GameScreen::Solved:
         return hasNextPuzzle ? 3 : 2;
     }
@@ -130,10 +130,12 @@ GameFlowResult GameFlow::ActivateSelected(const std::size_t puzzleCount,
             EnterPlaying();
             return {GameCommand::None, std::nullopt, true, false};
         case 1:
-            return {GameCommand::OpenLevelSelect, std::nullopt, false, false};
+            return {GameCommand::RetryPuzzle, std::nullopt, false, false};
         case 2:
-            return {GameCommand::ReturnToMainMenu, std::nullopt, false, false};
+            return {GameCommand::OpenLevelSelect, std::nullopt, false, false};
         case 3:
+            return {GameCommand::ReturnToMainMenu, std::nullopt, false, false};
+        case 4:
             return {GameCommand::QuitGame, std::nullopt, false, false};
         default:
             return {};

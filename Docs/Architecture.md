@@ -71,7 +71,7 @@ level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,back
 
 `wrap_edges` 使用 `0`／`1`，空值或缺少欄位時預設為關閉；非法值會產生一次性啟動警告並以關閉處理。為相容既有資料，Loader 同時接受末尾沒有 `wrap_edges` 的舊 11 欄 header；其他欄位名稱或順序仍採嚴格驗證。
 
-Loader 不要求 `next_level_id` 一定存在。`Game` 顯示 Solved 選單時會呼叫 `PuzzleCatalog::Find`；只有非空且確實存在的 ID 才產生 `NEXT PUZZLE`，並依該 ID 啟動關卡。未知 ID 和空值都視為沒有下一關。
+Loader 不要求 `next_level_id` 一定存在。`Game` 顯示 Solved 選單時會呼叫 `PuzzleCatalog::Find`；只有非空且確實存在的 ID 才產生 `次のステージ`，並依該 ID 啟動關卡。未知 ID 和空值都視為沒有下一關。
 
 ### 4.2 Node preset catalog
 
@@ -313,13 +313,13 @@ Decoder 拒絕 overlong encoding、surrogate、超過 U+10FFFF 與截斷序列�
 
 | Screen | 選項／行為 |
 | --- | --- |
-| MainMenu | `PLAY`、`EXIT` |
-| LevelSelect | CSV 順序的全部 puzzle、`BACK` |
+| MainMenu | `ゲーム開始`、`終了` |
+| LevelSelect | CSV 順序的全部 puzzle、`戻る` |
 | Playing | Board input；Esc／失焦進 Paused |
-| Paused | `RESUME`、`LEVEL SELECT`、`MAIN MENU`、`EXIT GAME` |
-| Solved | 有有效 next：`NEXT PUZZLE`、`LEVEL SELECT`、`RETRY`；否則只有後兩項 |
+| Paused | `再開`、`リトライ`、`ステージ選択`、`メインメニュー`、`ゲーム終了` |
+| Solved | 有有效 next：`次のステージ`、`ステージ選択`、`リトライ`；否則只有後兩項 |
 
-`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、audio adapter、`FontSystem` 和 puzzle／UI／cursor 三個 renderer。Start／Retry 建立新 Board；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
+`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、audio adapter、`FontSystem` 和 puzzle／UI／cursor 三個 renderer。Start／Retry 建立新 Board；遊戲中的重開入口位於 Paused 選單；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
 
 ## 13. 初始化與每幀資料流
 

@@ -12,7 +12,6 @@ struct KeyboardState final {
     bool nextPressed = false;
     bool enterPressed = false;
     bool escapePressed = false;
-    bool retryPressed = false;
 };
 
 struct MouseState final {

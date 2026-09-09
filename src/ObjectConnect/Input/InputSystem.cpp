@@ -163,7 +163,6 @@ InputState InputSystem::Sample(const AxisAlignedBox& playfieldBounds,
         input->TriggerKey(static_cast<BYTE>(DIK_RETURN)) ||
         input->TriggerKey(static_cast<BYTE>(DIK_NUMPADENTER));
     state.keyboard.escapePressed = input->TriggerKey(static_cast<BYTE>(DIK_ESCAPE));
-    state.keyboard.retryPressed = input->TriggerKey(static_cast<BYTE>(DIK_R));
 
     const KamataEngine::Vector2& mouse = input->GetMousePosition();
     const KamataEngine::Input::MouseMove relativeMouse = input->GetMouseMove();

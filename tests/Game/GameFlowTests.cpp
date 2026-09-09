@@ -97,8 +97,8 @@ void TestPlayingAndPause(TestContext& context) {
                    "escape enters pause without simulating that frame");
     context.Expect(flow.GetScreen() == GameScreen::Paused,
                    "pause becomes the active screen");
-    context.Expect(flow.GetItemCount(kPuzzleCount, false) == 4,
-                   "pause contains resume, level select, main menu, and exit");
+    context.Expect(flow.GetItemCount(kPuzzleCount, false) == 5,
+                   "pause contains resume, retry, level select, main menu, and exit");
 
     const GameFlowResult resumed = flow.Update(pause, kPuzzleCount, false);
     context.Expect(resumed.screenChanged && flow.GetScreen() == GameScreen::Playing,
@@ -112,11 +112,13 @@ void TestPlayingAndPause(TestContext& context) {
                    "pause resume item changes screen immediately");
 
     flow.EnterPaused();
-    context.Expect(ClickItem(flow, 1).command == GameCommand::OpenLevelSelect,
+    context.Expect(ClickItem(flow, 1).command == GameCommand::RetryPuzzle,
+                   "pause can retry the current puzzle");
+    context.Expect(ClickItem(flow, 2).command == GameCommand::OpenLevelSelect,
                    "pause can request level select");
-    context.Expect(ClickItem(flow, 2).command == GameCommand::ReturnToMainMenu,
+    context.Expect(ClickItem(flow, 3).command == GameCommand::ReturnToMainMenu,
                    "pause can request the main menu");
-    context.Expect(ClickItem(flow, 3).command == GameCommand::QuitGame,
+    context.Expect(ClickItem(flow, 4).command == GameCommand::QuitGame,
                    "pause can request game shutdown");
 
     flow.EnterPlaying();

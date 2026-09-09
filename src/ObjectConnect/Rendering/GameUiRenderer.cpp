@@ -156,7 +156,7 @@ void AddVerticalEntries(MenuLayout& layout,
     switch (screen) {
     case GameScreen::MainMenu: {
         constexpr std::array labels = {
-            std::string_view{"PLAY"}, std::string_view{"EXIT"}};
+            std::string_view{"ゲーム開始"}, std::string_view{"終了"}};
         AddVerticalEntries(layout, labels, 280.0f);
         break;
     }
@@ -204,7 +204,7 @@ void AddVerticalEntries(MenuLayout& layout,
         }
         layout.entries.push_back({
             puzzleCount,
-            "BACK",
+            "戻る",
             {kLevelBackLeft, kLevelBackTop, kLevelBackSize, kLevelBackSize},
             MenuLayout::EntryVisual::LevelBack,
         });
@@ -212,18 +212,20 @@ void AddVerticalEntries(MenuLayout& layout,
     }
     case GameScreen::Paused: {
         constexpr std::array labels = {
-            std::string_view{"RESUME"}, std::string_view{"LEVEL SELECT"},
-            std::string_view{"MAIN MENU"}, std::string_view{"EXIT GAME"}};
+            std::string_view{"再開"}, std::string_view{"リトライ"},
+            std::string_view{"ステージ選択"},
+            std::string_view{"メインメニュー"},
+            std::string_view{"ゲーム終了"}};
         AddVerticalEntries(layout, labels, 220.0f);
         break;
     }
     case GameScreen::Solved: {
         std::vector<std::string_view> labels;
         if (hasNextPuzzle) {
-            labels.push_back("NEXT PUZZLE");
+            labels.push_back("次のステージ");
         }
-        labels.push_back("LEVEL SELECT");
-        labels.push_back("RETRY");
+        labels.push_back("ステージ選択");
+        labels.push_back("リトライ");
         AddVerticalEntries(layout, labels, 280.0f);
         break;
     }
@@ -533,15 +535,12 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
                       active ? kActiveLabel : kInactiveLabel);
         }
         const std::string remainingText =
-            "REMAINING " + LengthText(board->remainingLength) + " / " +
+            "残り " + LengthText(board->remainingLength) + " / " +
             LengthText(board->totalLength);
         QueueText(*impl_->fontSystem, impl_->font, remainingText,
                   {28.0f, 24.0f}, 24);
-        QueueText(*impl_->fontSystem, impl_->font, "R - RETRY",
-                  {1252.0f, 28.0f}, 18,
-                  TextHorizontalAlignment::Right);
         if (board->lengthExhausted && !board->solved) {
-            QueueText(*impl_->fontSystem, impl_->font, "NOT ENOUGH LENGTH",
+            QueueText(*impl_->fontSystem, impl_->font, "長さが足りません",
                       {kUiWidth * 0.5f, 74.0f}, 25,
                       TextHorizontalAlignment::Center);
         }
@@ -549,10 +548,10 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
 
     switch (screen) {
     case GameScreen::MainMenu:
-        QueueText(*impl_->fontSystem, impl_->font, "OBJECT CONNECT",
+        QueueText(*impl_->fontSystem, impl_->font, "ブラッドライン",
                   {kUiWidth * 0.5f, 118.0f}, 45,
                   TextHorizontalAlignment::Center);
-        QueueText(*impl_->fontSystem, impl_->font, "RESTORE THE FLOW",
+        QueueText(*impl_->fontSystem, impl_->font, "血流を取り戻せ",
                   {kUiWidth * 0.5f, 180.0f}, 23,
                   TextHorizontalAlignment::Center);
         break;
@@ -562,13 +561,13 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
                   TextHorizontalAlignment::Center);
         break;
     case GameScreen::Paused:
-        QueueText(*impl_->fontSystem, impl_->font, "PAUSED",
+        QueueText(*impl_->fontSystem, impl_->font, "一時停止",
                   {kUiWidth * 0.5f, 100.0f}, 45,
                   TextHorizontalAlignment::Center);
         break;
     case GameScreen::Solved:
         if (solvedMenuReady) {
-            QueueText(*impl_->fontSystem, impl_->font, "FLOW RESTORED",
+            QueueText(*impl_->fontSystem, impl_->font, "血流回復",
                       {kUiWidth * 0.5f, 112.0f}, 41,
                       TextHorizontalAlignment::Center);
         }
@@ -613,7 +612,7 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         }
         if (screen == GameScreen::LevelSelect) {
             const std::string pageText =
-                "PAGE " + std::to_string(layout.levelPage + 1) + " / " +
+                "ページ " + std::to_string(layout.levelPage + 1) + " / " +
                 std::to_string(layout.levelPageCount);
             QueueText(*impl_->fontSystem, impl_->font, pageText,
                       {kUiWidth * 0.5f, 508.0f}, 17,
@@ -632,13 +631,13 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
                       TextVerticalAlignment::Middle);
             QueueText(
                 *impl_->fontSystem, impl_->font,
-                "W/S OR UP/DOWN - SELECT    ENTER/LEFT CLICK - CONFIRM",
+                "W/S または上下キー：選択    Enter/左クリック：決定",
                 {kUiWidth * 0.5f, 684.0f}, 17,
                 TextHorizontalAlignment::Center);
         } else {
             QueueText(
                 *impl_->fontSystem, impl_->font,
-                "W/S OR UP/DOWN - SELECT    ENTER/LEFT CLICK - CONFIRM",
+                "W/S または上下キー：選択    Enter/左クリック：決定",
                 {kUiWidth * 0.5f, 662.0f}, 17,
                 TextHorizontalAlignment::Center);
         }

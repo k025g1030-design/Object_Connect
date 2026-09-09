@@ -1,5 +1,5 @@
 instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
 heart,heart_root,,,,,,29,14,,,
-organ_01,organ_follow,,,,,,40,14,,,
-organ_02,organ_follow,,,,,,29,27,,,
+organ_01,organ_follow,,assets/textures/node/kidney.png,,,腎臓,40,14,,,
+organ_02,organ_follow,,assets/textures/node/stomach.png,,,胃,29,27,,,
 brain,brain_end,,,,,,40,27,,,

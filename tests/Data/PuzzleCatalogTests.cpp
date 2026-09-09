@@ -592,26 +592,6 @@ void TestBundledCatalogs(TestContext& context) {
     context.Expect(allInteractiveNodesAreThreeByThree,
                    "all bundled root, follow, and end nodes occupy exactly 3x3 tiles");
 
-    const auto isLowerEnglishDisplayName = [](const std::string_view text) {
-        for (const char character : text) {
-            const bool lowercaseLetter = character >= 'a' && character <= 'z';
-            const bool digit = character >= '0' && character <= '9';
-            if (!lowercaseLetter && !digit && character != ' ') {
-                return false;
-            }
-        }
-        return true;
-    };
-    bool nodeNamesAreLowerEnglish = true;
-    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
-        for (const NodeDefinition& node : puzzle.nodes) {
-            nodeNamesAreLowerEnglish = nodeNamesAreLowerEnglish &&
-                isLowerEnglishDisplayName(node.displayName);
-        }
-    }
-    context.Expect(nodeNamesAreLowerEnglish,
-                   "all resolved bundled node display names use lowercase English");
-
     const auto findNode = [](const PuzzleDefinition& puzzle,
                              const std::string_view id)
         -> const NodeDefinition* {
@@ -648,14 +628,40 @@ void TestBundledCatalogs(TestContext& context) {
     context.Expect(namedTextureOverridesMatch,
                    "bundled named organ nodes resolve their authored image overrides");
 
-    const PuzzleDefinition* const genericPuzzle = catalog.Find("stage_07");
-    const NodeDefinition* const genericOrgan = genericPuzzle != nullptr
-        ? findNode(*genericPuzzle, "organ_01")
-        : nullptr;
-    context.Expect(genericOrgan != nullptr &&
-                       genericOrgan->texturePath ==
-                           "assets/textures/node/organ.png",
-                   "generic ORGAN nodes inherit organ.png from their preset");
+    const auto expectedOrganName = [](const std::string_view texturePath)
+        -> std::string_view {
+        if (texturePath == "assets/textures/node/lung.png") {
+            return "肺";
+        }
+        if (texturePath == "assets/textures/node/liver.png") {
+            return "肝臓";
+        }
+        if (texturePath == "assets/textures/node/kidney.png") {
+            return "腎臓";
+        }
+        if (texturePath == "assets/textures/node/stomach.png") {
+            return "胃";
+        }
+        return {};
+    };
+    bool allFollowNodesUseNamedOrganVisuals = true;
+    std::size_t followNodeCount = 0;
+    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
+        for (const NodeDefinition& node : puzzle.nodes) {
+            if (node.type != NodeType::Follow) {
+                continue;
+            }
+            ++followNodeCount;
+            const std::string_view expectedName =
+                expectedOrganName(node.texturePath);
+            allFollowNodesUseNamedOrganVisuals =
+                allFollowNodesUseNamedOrganVisuals &&
+                !expectedName.empty() && node.displayName == expectedName;
+        }
+    }
+    context.Expect(followNodeCount == 90 &&
+                       allFollowNodesUseNamedOrganVisuals,
+                   "all bundled follow nodes use lung, liver, kidney, or stomach visuals with matching Japanese names");
 
     struct ExpectedDeadFingerprint final {
         std::size_t count;
