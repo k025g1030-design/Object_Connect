@@ -552,7 +552,7 @@ void TestBundledCatalogs(TestContext& context) {
                        catalog.GetPuzzles()[0].nodes.size() == 2 &&
                        catalog.GetPuzzles()[0].nodes.front().type == NodeType::Root &&
                        catalog.GetPuzzles()[0].nodes.front().texturePath ==
-                           "white1x1.png" &&
+                           "assets/textures/node/heart.png" &&
                        catalog.GetPuzzles()[0].nodes.front().maxOutgoing == 1 &&
                        NearlyEqual(
                            catalog.GetPuzzles()[0].nodes.front().maxOutgoingLength,
@@ -568,6 +568,105 @@ void TestBundledCatalogs(TestContext& context) {
                        catalog.GetPuzzles()[2].nodes[8].type == NodeType::Dead,
                    "clot_path migrates intermediate nodes and both old obstacles");
 
+    bool allInteractiveNodesAreThreeByThree = true;
+    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
+        for (const NodeDefinition& node : puzzle.nodes) {
+            if (node.type != NodeType::Dead) {
+                allInteractiveNodesAreThreeByThree =
+                    allInteractiveNodesAreThreeByThree &&
+                    node.widthTiles == 3 && node.heightTiles == 3;
+            }
+        }
+    }
+    context.Expect(allInteractiveNodesAreThreeByThree,
+                   "all bundled root, follow, and end nodes occupy exactly 3x3 tiles");
+
+    const auto findNode = [](const PuzzleDefinition& puzzle,
+                             const std::string_view id)
+        -> const NodeDefinition* {
+        for (const NodeDefinition& node : puzzle.nodes) {
+            if (node.id == id) {
+                return &node;
+            }
+        }
+        return nullptr;
+    };
+
+    struct ExpectedNodeTexture final {
+        std::string_view puzzleId;
+        std::string_view nodeId;
+        std::string_view texturePath;
+    };
+    constexpr std::array expectedNamedTextures = {
+        ExpectedNodeTexture{"around_block", "lung", "assets/textures/node/lung.png"},
+        ExpectedNodeTexture{"around_block", "liver", "assets/textures/node/liver.png"},
+        ExpectedNodeTexture{"clot_path", "lung", "assets/textures/node/lung.png"},
+        ExpectedNodeTexture{"clot_path", "kidney", "assets/textures/node/kidney.png"},
+        ExpectedNodeTexture{"clot_path", "liver", "assets/textures/node/liver.png"},
+        ExpectedNodeTexture{"clot_path", "stomach", "assets/textures/node/stomach.png"},
+        ExpectedNodeTexture{"clot_path", "lung_lower", "assets/textures/node/lung.png"},
+    };
+    bool namedTextureOverridesMatch = true;
+    for (const ExpectedNodeTexture& expected : expectedNamedTextures) {
+        const PuzzleDefinition* const puzzle = catalog.Find(expected.puzzleId);
+        const NodeDefinition* const node =
+            puzzle != nullptr ? findNode(*puzzle, expected.nodeId) : nullptr;
+        namedTextureOverridesMatch = namedTextureOverridesMatch &&
+            node != nullptr && node->texturePath == expected.texturePath;
+    }
+    context.Expect(namedTextureOverridesMatch,
+                   "bundled named organ nodes resolve their authored image overrides");
+
+    const PuzzleDefinition* const genericPuzzle = catalog.Find("test_01");
+    const NodeDefinition* const genericOrgan = genericPuzzle != nullptr
+        ? findNode(*genericPuzzle, "organ_follow_1")
+        : nullptr;
+    context.Expect(genericOrgan != nullptr &&
+                       genericOrgan->texturePath ==
+                           "assets/textures/node/organ.png",
+                   "generic ORGAN nodes inherit organ.png from their preset");
+
+    struct ExpectedDeadGeometry final {
+        std::string_view nodeId;
+        std::uint32_t widthTiles;
+        std::uint32_t heightTiles;
+        TilePosition tilePosition;
+    };
+    constexpr std::array expectedDeadGeometry = {
+        ExpectedDeadGeometry{"rib_cage", 14, 12, {33, 16}},
+        ExpectedDeadGeometry{"central_bone", 15, 12, {30, 16}},
+        ExpectedDeadGeometry{"right_bone", 12, 12, {48, 16}},
+        ExpectedDeadGeometry{"bone_dead_1", 5, 10, {18, 7}},
+        ExpectedDeadGeometry{"bone_dead_2", 3, 10, {32, 7}},
+    };
+    std::size_t bundledDeadCount = 0;
+    bool deadGeometryAndProceduralVisualMatch = true;
+    for (const PuzzleDefinition& puzzle : catalog.GetPuzzles()) {
+        for (const NodeDefinition& node : puzzle.nodes) {
+            if (node.type != NodeType::Dead) {
+                continue;
+            }
+            ++bundledDeadCount;
+            const ExpectedDeadGeometry* matched = nullptr;
+            for (const ExpectedDeadGeometry& expected : expectedDeadGeometry) {
+                if (node.id == expected.nodeId) {
+                    matched = &expected;
+                    break;
+                }
+            }
+            deadGeometryAndProceduralVisualMatch =
+                deadGeometryAndProceduralVisualMatch && matched != nullptr &&
+                node.texturePath.empty() &&
+                node.widthTiles == matched->widthTiles &&
+                node.heightTiles == matched->heightTiles &&
+                node.tilePosition.has_value() &&
+                *node.tilePosition == matched->tilePosition;
+        }
+    }
+    context.Expect(bundledDeadCount == 23 &&
+                       deadGeometryAndProceduralVisualMatch,
+                   "every bundled dead node keeps its authored collision rectangle and uses procedural visuals");
+
     NodePresetCatalog presets;
     context.Expect(NodePresetCatalogLoader::Load(
                        NodePresetDataPaths{},
@@ -576,6 +675,18 @@ void TestBundledCatalogs(TestContext& context) {
                    "the bundled runtime node presets also load independently for tools");
     context.Expect(error.empty() && presets.GetPresets().size() == 4,
                    "bundled presets cover root, follow, end, and dead authoring roles");
+    const NodePresetDefinition* const heart = presets.Find("heart_root");
+    const NodePresetDefinition* const organ = presets.Find("organ_follow");
+    const NodePresetDefinition* const brain = presets.Find("brain_end");
+    const NodePresetDefinition* const bone = presets.Find("bone_dead");
+    context.Expect(heart != nullptr && organ != nullptr && brain != nullptr &&
+                       bone != nullptr &&
+                       heart->texturePath == "assets/textures/node/heart.png" &&
+                       organ->texturePath == "assets/textures/node/organ.png" &&
+                       brain->texturePath == "assets/textures/node/brain.png" &&
+                       bone->texturePath.empty() && bone->widthTiles == 10 &&
+                       bone->heightTiles == 8,
+                   "bundled presets resolve organ textures while bone_dead stays procedural");
 }
 
 } // namespace

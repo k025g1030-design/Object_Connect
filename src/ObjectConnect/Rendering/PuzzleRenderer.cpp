@@ -47,6 +47,16 @@ constexpr std::size_t kVerticesPerOutlinedRectangle = 12;
 constexpr std::size_t kVerticesPerCircle =
     static_cast<std::size_t>(kCircleSegments) * 3;
 constexpr std::size_t kMaximumFleshSamplesPerSegment = 256;
+constexpr float kInactiveNodeTint = 0.55f;
+constexpr float kBoneSpotSize = 4.0f;
+constexpr Color kBoneAshFill{
+    98.0f / 255.0f, 95.0f / 255.0f, 88.0f / 255.0f, 1.0f};
+constexpr Color kBoneAshOutline{
+    48.0f / 255.0f, 46.0f / 255.0f, 44.0f / 255.0f, 1.0f};
+constexpr Color kBoneAshLight{
+    190.0f / 255.0f, 185.0f / 255.0f, 174.0f / 255.0f, 1.0f};
+constexpr Color kBoneAshDark{
+    65.0f / 255.0f, 62.0f / 255.0f, 59.0f / 255.0f, 1.0f};
 // Preparing a level is transactional, so old and new level textures coexist
 // until every replacement sprite has been created. Two maximum-sized levels,
 // plus the shared UI texture, must remain below the registry's 512-path cap.
@@ -188,8 +198,7 @@ struct NodePalette final {
         return {{0.44f, 0.24f, 0.49f, 1.0f},
                 {0.79f, 0.51f, 0.83f, 1.0f}};
     case NodeType::Dead:
-        return {{0.16f, 0.14f, 0.17f, 1.0f},
-                {0.43f, 0.37f, 0.42f, 1.0f}};
+        return {kBoneAshFill, kBoneAshOutline};
     }
     return {};
 }
@@ -227,6 +236,24 @@ void AddOutlinedRectangle(std::vector<RibbonVertex>& vertices,
     value *= 0x846CA68Bu;
     value ^= value >> 16u;
     return value;
+}
+
+[[nodiscard]] std::uint32_t StableNodeIdHash(
+    const std::string& nodeId) noexcept {
+    std::uint32_t hash = 2166136261u;
+    for (const char character : nodeId) {
+        hash ^= static_cast<std::uint8_t>(character);
+        hash *= 16777619u;
+    }
+    return MixBits(hash);
+}
+
+[[nodiscard]] std::uint32_t BoneTileHash(
+    const std::uint32_t nodeHash, const std::uint32_t tileX,
+    const std::uint32_t tileY) noexcept {
+    std::uint32_t hash = MixBits(nodeHash ^ (tileX + 0x9E3779B9u));
+    hash = MixBits(hash ^ (tileY + 0x85EBCA6Bu));
+    return hash;
 }
 
 [[nodiscard]] TentacleStyle MakeFleshCoreStyle(TentacleStyle style) noexcept {
@@ -669,6 +696,32 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
                  definition.backgroundColor);
     endList(listStart);
 
+    std::vector<std::size_t> proceduralDeadNodeIndices;
+    proceduralDeadNodeIndices.reserve(definition.nodes.size());
+    for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+        const NodeDefinition& node = definition.nodes[index];
+        if (index < snapshot.nodeStates.size() &&
+            snapshot.nodeStates[index].drawable &&
+            node.type == NodeType::Dead &&
+            !impl_->HasSprite(definition, index) &&
+            node.GetTopLeftPosition().has_value()) {
+            proceduralDeadNodeIndices.push_back(index);
+        }
+    }
+
+    // A blocker is gameplay-significant, so reserve every procedural dead
+    // node body before accepting optional tentacle projections. Bone speckles
+    // are intentionally not reserved and may be truncated independently.
+    if (proceduralDeadNodeIndices.size() >
+        (impl_->maxVertices - vertices.size()) /
+            kVerticesPerOutlinedRectangle) {
+        return;
+    }
+    const std::size_t deadBodyVertexReserve =
+        proceduralDeadNodeIndices.size() * kVerticesPerOutlinedRectangle;
+    const std::size_t projectionVertexLimit =
+        impl_->maxVertices - deadBodyVertexReserve;
+
     // A dark outer silhouette gives the procedural strip the chunky edge used by
     // pixel-art flesh. The inner crimson pass stays inside the gameplay width, so
     // obstacle clearance still matches the visible outer ribbon. Build every
@@ -697,7 +750,7 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
             projection.core = TranslateRibbon(coreStrip, translation);
             AddFleshPixels(projection.flesh, tentacle.points,
                            tentacle.style, translation);
-            if (!ReserveProjectionVertices(projection, impl_->maxVertices,
+            if (!ReserveProjectionVertices(projection, projectionVertexLimit,
                                            reservedVertexCount)) {
                 continue;
             }
@@ -737,27 +790,88 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
     // Dead nodes are the current map's solid blockers and deliberately cover
     // the vessel layer before interactive nodes are drawn above them.
     listStart = beginList();
-    for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+    for (const std::size_t index : proceduralDeadNodeIndices) {
         const NodeDefinition& node = definition.nodes[index];
-        if (index >= snapshot.nodeStates.size() ||
-            !snapshot.nodeStates[index].drawable ||
-            node.type != NodeType::Dead || impl_->HasSprite(definition, index)) {
-            continue;
-        }
         if (!HasVertexRoom(vertices, impl_->maxVertices,
                            kVerticesPerOutlinedRectangle)) {
-            break;
+            return;
         }
         const std::optional<Vec2> topLeft = node.GetTopLeftPosition();
-        if (!topLeft.has_value()) {
-            continue;
-        }
         const NodePalette palette = GetNodePalette(node.type);
         AddOutlinedRectangle(vertices, *topLeft, node.GetPixelSize(),
                              palette.fill, palette.outline);
     }
+
+    bool boneDecorationFull = false;
+    for (const std::size_t index : proceduralDeadNodeIndices) {
+        const NodeDefinition& node = definition.nodes[index];
+        const Vec2 topLeft = *node.GetTopLeftPosition();
+        const std::uint32_t nodeHash = StableNodeIdHash(node.id);
+        for (std::uint32_t tileY = 0;
+             tileY < node.heightTiles && !boneDecorationFull; ++tileY) {
+            for (std::uint32_t tileX = 0; tileX < node.widthTiles; ++tileX) {
+                const std::uint32_t hash = BoneTileHash(
+                    nodeHash, node.tilePosition->x + tileX,
+                    node.tilePosition->y + tileY);
+                if (hash % 100u >= 35u) {
+                    continue;
+                }
+                if (!HasVertexRoom(vertices, impl_->maxVertices,
+                                   kVerticesPerRectangle)) {
+                    boneDecorationFull = true;
+                    break;
+                }
+
+                constexpr float kSpotInset = 2.0f;
+                constexpr float kSpotStride = 4.0f;
+                const float spotX = topLeft.x +
+                    static_cast<float>(tileX) * kPuzzleTileSize + kSpotInset +
+                    static_cast<float>((hash >> 8u) % 3u) * kSpotStride;
+                const float spotY = topLeft.y +
+                    static_cast<float>(tileY) * kPuzzleTileSize + kSpotInset +
+                    static_cast<float>((hash >> 12u) % 3u) * kSpotStride;
+                const Color spotColor = (hash & 0x80000000u) != 0u
+                                            ? kBoneAshLight
+                                            : kBoneAshDark;
+                AddRectangle(vertices, spotX, spotY,
+                             kBoneSpotSize, kBoneSpotSize, spotColor);
+            }
+        }
+        if (boneDecorationFull) {
+            break;
+        }
+    }
     endList(listStart);
     const std::size_t deadBatchEnd = batches.size();
+
+    // Activation is persistent board state, independent from whether a node
+    // can currently start another line. Keep a quiet, fixed halo around every
+    // active interactive node; the stronger pulse below remains availability-
+    // driven and accelerates for the selected source.
+    listStart = beginList();
+    for (std::size_t index = 0; index < definition.nodes.size(); ++index) {
+        const NodeDefinition& node = definition.nodes[index];
+        if (index >= snapshot.nodeStates.size() ||
+            !snapshot.nodeStates[index].drawable ||
+            !snapshot.nodeStates[index].active ||
+            node.type == NodeType::Dead) {
+            continue;
+        }
+        if (!HasVertexRoom(vertices, impl_->maxVertices,
+                           kVerticesPerCircle)) {
+            break;
+        }
+        const std::optional<Vec2> center = node.GetCenterPosition();
+        if (!center.has_value()) {
+            continue;
+        }
+        const Vec2 size = node.GetPixelSize();
+        const float radius = (std::max)(size.x, size.y) * 0.62f + 2.0f;
+        const Color halo = WithAlpha(
+            ScaleRgb(GetNodePalette(node.type).outline, 1.15f), 0.22f);
+        AddCircle(vertices, *center, radius, halo);
+    }
+    endList(listStart);
 
     // Available sources pulse behind the authored root/follow/end rectangles.
     // Dormant nodes remain visible but dim until the board activates them.
@@ -812,8 +926,8 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
 
         NodePalette palette = GetNodePalette(node.type);
         if (!snapshot.nodeStates[index].active) {
-            palette.fill = Darkened(palette.fill, 0.34f);
-            palette.outline = Darkened(palette.outline, 0.42f);
+            palette.fill = Darkened(palette.fill, kInactiveNodeTint);
+            palette.outline = Darkened(palette.outline, kInactiveNodeTint);
         }
         if (snapshot.selectedSourceNodeIndex.has_value() &&
             *snapshot.selectedSourceNodeIndex == index) {
@@ -877,7 +991,7 @@ void PuzzleRenderer::Draw(const PuzzleDefinition& definition,
             }
 
             const bool dimmed = !isDead && !snapshot.nodeStates[index].active;
-            const float tint = dimmed ? 0.34f : 1.0f;
+            const float tint = dimmed ? kInactiveNodeTint : 1.0f;
             impl_->nodeSprites[index]->SetColor({tint, tint, tint, 1.0f});
             impl_->nodeSprites[index]->Draw();
         }

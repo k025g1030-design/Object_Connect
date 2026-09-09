@@ -30,6 +30,25 @@ namespace {
     return true;
 }
 
+[[nodiscard]] bool IsCursorInsideClient(const HWND window) noexcept {
+    if (window == nullptr || !::IsWindow(window)) {
+        return false;
+    }
+
+    POINT cursorPosition{};
+    RECT clientBounds{};
+    if (!::GetCursorPos(&cursorPosition) ||
+        !::ScreenToClient(window, &cursorPosition) ||
+        !::GetClientRect(window, &clientBounds)) {
+        return false;
+    }
+
+    // PtInRect deliberately treats the right and bottom edges as exclusive,
+    // matching Win32 client-coordinate bounds and preventing a custom cursor
+    // from being drawn over the resize border or another non-client region.
+    return ::PtInRect(&clientBounds, cursorPosition) != FALSE;
+}
+
 [[nodiscard]] Vec2 ToLogicalPosition(const Vec2 clientPosition,
                                      const AxisAlignedBox& bounds,
                                      const float clientWidth,
@@ -124,6 +143,7 @@ InputState InputSystem::Sample(const AxisAlignedBox& playfieldBounds,
     const HWND window = KamataEngine::WinApp::GetInstance()->GetHwnd();
     state.windowFocused = window != nullptr && ::GetForegroundWindow() == window &&
                           !::IsIconic(window);
+    state.mouse.insideClient = IsCursorInsideClient(window);
     state.focusLost = previousWindowFocused_ && !state.windowFocused;
     previousWindowFocused_ = state.windowFocused;
     if (!state.windowFocused) {

@@ -506,14 +506,31 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
     if (board != nullptr && currentPuzzleIndex.has_value() &&
         *currentPuzzleIndex < catalog.GetPuzzles().size()) {
         const PuzzleDefinition& puzzle = catalog.GetPuzzles()[*currentPuzzleIndex];
-        for (const NodeDefinition& node : puzzle.nodes) {
+        for (std::size_t nodeIndex = 0; nodeIndex < puzzle.nodes.size();
+             ++nodeIndex) {
+            const NodeDefinition& node = puzzle.nodes[nodeIndex];
             const std::optional<Vec2> center = node.GetCenterPosition();
             if (!center.has_value() || node.displayName.empty()) {
                 continue;
             }
+            const Vec2 nodeSize = node.GetPixelSize();
+            const Vec2 labelPosition{
+                center->x,
+                center->y + nodeSize.y * 0.5f + 4.0f,
+            };
+            const bool active = nodeIndex < board->nodeStates.size() &&
+                                board->nodeStates[nodeIndex].active;
+            constexpr Color kLabelShadow{0.10f, 0.04f, 0.05f, 0.92f};
+            constexpr Color kActiveLabel{1.0f, 0.93f, 0.82f, 1.0f};
+            constexpr Color kInactiveLabel{0.70f, 0.68f, 0.65f, 1.0f};
             QueueText(*impl_->fontSystem, impl_->font, node.displayName,
-                      *center, 18, TextHorizontalAlignment::Center,
-                      TextVerticalAlignment::Middle);
+                      {labelPosition.x + 1.0f, labelPosition.y + 1.0f}, 18,
+                      TextHorizontalAlignment::Center,
+                      TextVerticalAlignment::Top, kLabelShadow);
+            QueueText(*impl_->fontSystem, impl_->font, node.displayName,
+                      labelPosition, 18, TextHorizontalAlignment::Center,
+                      TextVerticalAlignment::Top,
+                      active ? kActiveLabel : kInactiveLabel);
         }
         const std::string remainingText =
             "REMAINING " + LengthText(board->remainingLength) + " / " +
@@ -753,6 +770,25 @@ std::optional<std::size_t> GameUiRenderer::HitTest(
         }
     }
     return std::nullopt;
+}
+
+bool GameUiRenderer::IsPointerOverAction(
+    const GameScreen screen, const UiPoint point,
+    const std::size_t puzzleCount, const bool hasNextPuzzle,
+    const bool solvedMenuReady) const noexcept {
+    if (HitTest(screen, point, puzzleCount, hasNextPuzzle, solvedMenuReady)
+            .has_value()) {
+        return true;
+    }
+    if (!impl_ || screen != GameScreen::LevelSelect) {
+        return false;
+    }
+
+    const std::size_t pageCount = GetLevelPageCount(puzzleCount);
+    const std::size_t page =
+        (std::min)(impl_->levelSelectPage, pageCount - 1);
+    return (page > 0 && kPreviousPageBounds.Contains(point)) ||
+           (page + 1 < pageCount && kNextPageBounds.Contains(point));
 }
 
 std::optional<std::size_t> GameUiRenderer::ApplyLevelSelectNavigation(

@@ -36,7 +36,7 @@ Object_Connect_CoreTests
 | 模組 | 擁有／負責 | 不負責 |
 | --- | --- | --- |
 | Core | KamataEngine lifetime、工作目錄、主迴圈、frame timing | 解謎規則或 draw data |
-| Audio | optional WAV 載入、BGM voice、關卡／節點選擇音效 | 引擎全域生命週期或遊戲事件判定 |
+| Audio | 四個 WAV 一次載入、intro→loop phase、line hold／relax、duck fade | 引擎全域生命週期或遊戲事件判定 |
 | Math | `Vec2`、`Color` 與小型數學 helper | engine adapter |
 | Data | CSV 語法、三層 schema、路徑／欄位驗證、catalog 暫存後提交 | Runtime connection 或渲染 |
 | Geometry | point／segment 對 AABB 的純函式 query | Verlet collision response 或 pathfinding |
@@ -265,19 +265,19 @@ background
 -> tentacle dark outlines
 -> tentacle crimson cores
 -> deterministic flesh pixels
--> dead node sprites or rectangle fallbacks
--> available-source pulse
+-> procedural bone-gray dead bodies and deterministic speckles
+-> active halo and available-source pulse
 -> root / follow / end sprites or rectangle fallbacks
 -> GameUiRenderer UTF-8 HUD / menu overlay
 ```
 
-Inactive node 使用灰暗 tint，active node 使用原貼圖／正常 fallback palette。`availableSource` 有脈動提示；目前拖曳的 selected source 使用更強的 pulse。沒有 placement 的 node 不畫。
+Bundled root／follow／end 固定為 3×3 tiles＝48×48px，但 loader 仍可處理其他尺寸。Inactive node 使用 55% 亮度，active node 使用原貼圖／正常 fallback palette 並有固定低透明度 halo。`availableSource` 另有脈動提示；目前拖曳的 selected source 使用更亮、更快的 pulse。halo 只依 `active`，不依 `availableSource`。沒有 placement 的 node 不畫。
 
 `Game::StartPuzzle` 在提交新 session 前呼叫 `PuzzleRenderer::PreparePuzzle`。Renderer 為當前關卡的每個 unique 非空 `texturePath` 建立一個 texture handle，依 node index 建立 sprite，並以 tile 尺寸與左上 placement 設定位置；切關時重建 sprite、沿用新舊關卡共有的 handle，並在舊 sprite 釋放後 release 舊關獨有的 handle。`PuzzleRenderer` 與 `GameUiRenderer` 共用 process-local 引用計數 registry，避免共享路徑被其中一方提早 unload。Registry 管理上限是 512 個 unique path，每關則限制為 255 個有 placement 的 unique node texture path；因此 old/new level 加 UI 能在 transactional prepare 期間同時存活，失敗時保留原 renderer 與 board。每幀 Draw 不做 Load/Create。空路徑使用 flat-color rectangle 加 outline；renderer finalize 會釋放仍屬於當前關卡的 sprite 與 handle。
 
-Dead 的 sprite／fallback 畫在血管之後，只能視覺遮住部分穿越，不能取代 particle collision。
+Dead 不使用 texture；先畫骨灰底 `#625F58` 與深灰輪廓 `#302E2C`，再以 node ID／tile 座標的固定 hash 在約 35% tiles 畫 4×4 灰白或深灰斑點。base body 優先保留，vertex 不足只截斷斑點。這些視覺不改 dead placement、尺寸、AABB、clearance 或阻擋判定，也不能取代 particle collision。
 
-UI 的 panel／card 仍使用 KamataEngine sprite，文字則全部 queue 到 `FontSystem`。`displayName` 空白或 node 沒有 placement 時不畫名稱；HUD 顯示 global remaining，不顯示每個 source 的 local remaining。Level Select 只使用既有 `white1x1.png` 染色疊出棕色框板、暖白關卡牌、左右箭頭與 BACK，不新增美術素材或鎖關狀態；正式標題改為 41px、畫面置中的 `ステージ選択`，其餘正式 UI 文案維持原樣。每頁固定顯示 5 欄×2 列，Draw 與 HitTest 共用同一份半開矩形 layout。箭頭／滾輪換頁後會把選取同步至新頁第一個 catalog index，箭頭本身不偽裝成關卡索引。
+UI 的 panel／card 仍使用 KamataEngine sprite，文字則全部 queue 到 `FontSystem`。`displayName` 空白或 node 沒有 placement 時不畫名稱；名稱放在 node 下緣 +4px，18px、置中／Top 對齊，以 1px 深色 shadow 分離貼圖；active 為暖白、inactive 為灰白。HUD 顯示 global remaining，不顯示每個 source 的 local remaining。Level Select 只使用既有 `white1x1.png` 染色疊出棕色框板、暖白關卡牌、左右箭頭與 BACK，不新增鎖關狀態；正式標題改為 41px、畫面置中的 `ステージ選択`。每頁固定顯示 5欄×2列，Draw、HitTest 與 cursor action hit 共用 layout；只有可翻頁方向的箭頭是有效 action。
 
 ### 11.1 FontSystem pipeline 與 ownership
 
@@ -303,7 +303,9 @@ Decoder 拒絕 overlong encoding、surrogate、超過 U+10FFFF 與截斷序列�
 
 實作只在一個 private translation unit 啟用 KamataEngine 隨附的 `imstb_truetype.h` 1.26 static implementation，不引入 FreeType、SDL_ttf、system font 或額外 DLL。TTF parser 的輸入邊界限定為遊戲打包、可信任的字型檔；不把玩家或網路提供的任意 TTF 視為安全輸入。目前只做簡單 glyph positioning，不支援 shaping、fallback font chain、IME、直書、Ruby 或 rich text。
 
-`GameAudio` 是 runtime-only 的 KamataEngine Audio adapter。它只從引擎實際使用的 `Resources/audio/` 預檢並載入三個 optional WAV：一個跨畫面持續的 loop BGM，以及關卡確認和來源節點成功開始拖曳的 one-shot。缺檔只停用該 cue；`GameFlow` 與 `PuzzleBoard` 不持有音訊資源，也不複製任何音訊專用判定。
+`GameAudio` 是 runtime-only 的 KamataEngine Audio adapter。它在初始化時一次載入 `bgm_start.wav`、`bgm_loop.wav`、`line_hold.wav`、`line_relax.wav`，以 `Stopped／Intro／Loop` 管理音樂 phase。intro 結束後 polling 切入 loop；缺 intro 直進 loop，缺 loop 則 intro 後靜音，失敗不逐 frame 重試。成功進過關卡後返回 Main Menu 才重啟 sequence，其他場景切換不影響音樂。drag false→true 播一次 hold；真正 release 才播 relax，強制 cancel 只淡出 hold。BGM attack duck 為 50ms／0.4 gain，release 為 250ms；hold fade 為 50ms。`GameFlow` 與 `PuzzleBoard` 不持有音訊資源。
+
+`MouseCursorRenderer` transactionally 載入三張 32×32 RGBA 圖。Playing drag 使用握拳，非 Playing 的有效 action 使用指向，其餘使用張手；hotspot 分別為中心、`(16,1)`、中心。只有 focused 且 pointer 位於 client 內才以成對 `ShowCursor` 呼叫隱藏 OS cursor，失焦、離開 client、初始化失敗與 Finalize 都恢復。cursor 在 `FontSystem::Flush` 後最後繪製。
 
 ## 12. GameFlow 與 session
 
@@ -317,7 +319,7 @@ Decoder 拒絕 overlong encoding、surrogate、超過 U+10FFFF 與截斷序列�
 | Paused | `RESUME`、`LEVEL SELECT`、`MAIN MENU`、`EXIT GAME` |
 | Solved | 有有效 next：`NEXT PUZZLE`、`LEVEL SELECT`、`RETRY`；否則只有後兩項 |
 
-`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、optional audio adapter、`FontSystem` 和兩個 renderer。Start／Retry 建立新 Board；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
+`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、audio adapter、`FontSystem` 和 puzzle／UI／cursor 三個 renderer。Start／Retry 建立新 Board；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
 
 ## 13. 初始化與每幀資料流
 
@@ -333,7 +335,8 @@ WinMain
        FontSystem::Initialize
        FontSystem::LoadFont(Resources/fonts/game.ttf)
        GameUiRenderer::Initialize
-       GameAudio::Initialize (optional cues; BGM loop starts once)
+       MouseCursorRenderer::Initialize (失敗時保留 OS cursor)
+       GameAudio::Initialize (intro 立即開始)
   -> frame loop
 ```
 
@@ -355,6 +358,7 @@ InputSystem::Sample
   -> GameUiRenderer::Draw (queue text only)
   -> KamataEngine Sprite::PostDraw
   -> FontSystem::Flush
+  -> MouseCursorRenderer::Draw
 ```
 
 只有穩定的 Playing frame 把 pointer input 交給 Board。Paused 不推進模擬；失焦先取消 preview 再暫停。文字延後至所有 KamataEngine sprite 結束後 flush，確保 HUD 位於最上層，也避免 FontSystem 與 Sprite 在同一段 draw 中互相覆蓋 descriptor heap。`Flush` 只把 copy／barrier／draw 記錄到目前的 command list；`Game` 在 `DirectXCommon::PostDraw` 提交並完成該 frame 後，才可能 unload 或 finalize font GPU resources。
@@ -377,7 +381,7 @@ InputSystem::Sample
 - Fake rasterizer／atlas seam 下的跨 frame glyph cache、font／size 隔離、layout hit、單次 upload、missing glyph 與 atlas failure。
 - Monotonic font ID 在 registry lifetime 之間不重用，且耗盡時不 wrap。
 
-另一個 headless lifecycle test 會連結 runtime，但不建立視窗或 D3D12 resources；它驗證未初始化／invalid handle、安全失敗、statistics 不被污染和重複 `Finalize`。Headless tests 仍不能驗證 GPU 畫面、實際音訊輸出、拖曳手感、dead 遮擋和 HUD 排版。已載入 font 的 stale handle、相同路徑引用計數與 GPU unload lifetime 由 runtime integration review 負責。實機驗收須確認 `game.ttf` 涵蓋所需日文字形、`ステージ選択` 沒有 tofu 且置中，首幀後相同文字不再增加 rasterization／upload statistics，並在 DirectX 12 debug layer 下檢查 resource-state error 與結束時 live-object leak。
+另一個 headless lifecycle test 會連結 runtime，但不建立視窗或 D3D12 resources；它驗證未初始化／invalid handle、安全失敗、statistics 不被污染和重複 `Finalize`。獨立 fake-audio test 驗證 intro→loop、缺檔 fallback、restart、hold／release／cancel 與 duck fade；core test 驗證五種 screen 的 cursor priority、失焦與 client 外 visibility gate。Headless tests 仍不能驗證 GPU 畫面、實際音訊輸出、32×32 hotspot、雙 cursor、拖曳手感、dead 遮擋和 HUD 排版。實機驗收須確認 48×48 清晰度、名稱間距、halo、骨灰斑點、原 dead 解法與音訊 clipping，並在 DirectX 12 debug layer 下檢查 resource-state error 與 live-object leak。
 
 ## 15. 擴充界線
 
@@ -388,7 +392,7 @@ InputSystem::Sample
 - Dead 對 Verlet particles 的 collision、繞障礙或 pathfinding。
 - 器官分數與直接路線彩蛋計分。
 - 出血／血壓倒數。
-- 存檔、解鎖、音訊設定／動態混音、hot reload、翻譯／locale 切換或完整物理。
+- 存檔、解鎖、音訊設定、hot reload、翻譯／locale 切換或完整物理。
 - Font shaping、fallback font chain、IME、直書、Ruby 與 rich text。
 
 新增真正的 obstacle collision 不只是 renderer 改圖層：必須先定義 collision shape、preview 行為、constraint solver 穩定性和長度語意。Texture 載入與 sprite lifecycle 應繼續留在 Rendering；不要讓 `PuzzleBoard` 持有 GPU asset。

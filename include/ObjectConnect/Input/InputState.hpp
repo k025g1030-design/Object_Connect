@@ -20,6 +20,7 @@ struct MouseState final {
     float positionY = 0.0f;
     std::optional<Vec2> unwrappedPosition;
     std::int32_t wheelDelta = 0;
+    bool insideClient = false;
     bool leftHeld = false;
     bool leftPressed = false;
     bool leftReleased = false;

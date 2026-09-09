@@ -158,6 +158,20 @@ set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/first_link.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/around_block.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/maps/clot_path.csv"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/mouse/mouse_icon_01.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/mouse/mouse_icon_02.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/mouse/mouse_icon_03.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/node/heart.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/node/lung.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/node/liver.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/node/kidney.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/node/brain.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/node/stomach.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/node/organ.png"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/audio/bgm_start.wav"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/audio/bgm_loop.wav"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/audio/line_hold.wav"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/audio/line_relax.wav"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.obj"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.mtl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/axis/axis.jpg"
@@ -248,6 +262,7 @@ set(OBJECT_CONNECT_RUNTIME_SOURCES
     src/ObjectConnect/Game/Game.cpp
     src/ObjectConnect/Input/InputSystem.cpp
     src/ObjectConnect/Rendering/GameUiRenderer.cpp
+    src/ObjectConnect/Rendering/MouseCursorRenderer.cpp
     src/ObjectConnect/Rendering/PuzzleRenderer.cpp
     src/ObjectConnect/Rendering/TextureHandleRegistry.cpp
     src/ObjectConnect/Text/FontSystem.cpp
@@ -331,7 +346,9 @@ if(BUILD_TESTING)
         tests/TestSupport.hpp
         tests/Data/PuzzleCatalogTests.cpp
         tests/Game/GameFlowTests.cpp
+        tests/Game/MusicSequencePolicyTests.cpp
         tests/Geometry/Geometry2DTests.cpp
+        tests/Input/MouseCursorStateTests.cpp
         tests/Puzzle/PuzzleBoardTests.cpp
         tests/Tentacle/BloodTentacleTests.cpp
         tests/Tentacle/RibbonStripTests.cpp
@@ -370,6 +387,26 @@ if(BUILD_TESTING)
     )
     add_test(NAME Object_Connect.FontSystemLifecycle
              COMMAND Object_Connect_FontSystemLifecycleTests)
+
+    add_executable(Object_Connect_GameAudioTests
+        tests/TestSupport.hpp
+        tests/Audio/GameAudioTests.cpp
+    )
+    target_include_directories(Object_Connect_GameAudioTests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+    target_link_libraries(Object_Connect_GameAudioTests
+        PRIVATE ObjectConnect::Runtime
+    )
+    target_compile_definitions(Object_Connect_GameAudioTests PRIVATE
+        UNICODE _UNICODE NOMINMAX
+    )
+    configure_object_connect_target(Object_Connect_GameAudioTests)
+    set_target_properties(Object_Connect_GameAudioTests PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+    )
+    add_test(NAME Object_Connect.GameAudio
+             COMMAND Object_Connect_GameAudioTests)
 endif()
 
 add_custom_target(run

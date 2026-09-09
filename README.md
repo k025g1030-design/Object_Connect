@@ -48,7 +48,7 @@ MAIN MENU
 - `Esc`：プレイ中は一時停止します。一時停止中はゲームに戻ります。レベル選択画面ではメインメニューへ、クリア画面ではレベル選択へ戻ります。
 - `R`：プレイ中または一時停止中に、現在のレベルを最初からやり直します。
 
-マウスカーソルは常に表示され、ウィンドウ内に固定されません。ウィンドウがフォーカスを失うと、ドラッグ中の仮の線はすぐにキャンセルされ、ゲームは自動で一時停止します。もう一度フォーカスを得ても、自動では再開しません。
+ゲームの client 領域内では 32×32 のカスタムカーソルを使います。通常は開いた手、メニュー／有効なページ矢印の上では指差し、血管を掴んでいる間は握り拳になります。OS カーソルを隠すのはウィンドウにフォーカスがあり、ポインターが client 内にある間だけです。外へ出る、フォーカスを失う、またはカスタムカーソルの初期化に失敗した場合は OS カーソルへ戻ります。フォーカスを失うと、ドラッグ中の仮の線はすぐにキャンセルされ、ゲームは自動で一時停止します。もう一度フォーカスを得ても、自動では再開しません。
 
 ## ノードと動的な接続
 
@@ -116,6 +116,8 @@ HUD には `REMAINING n / total` を表示します。通常の操作状態で�
 
 `dead` を回り込む道を作りたい場合は、途中に `follow` ノードを置いて中継点として使います。
 
+`dead` は画像を使わず、骨灰色の面と濃い輪郭、ID と tile 座標から決まる灰白色／濃灰色の斑点で描画します。斑点はアニメーションせず、見た目を変えても位置、幅、高さ、AABB、clearance、阻害判定は一切変わりません。
+
 将来、本当に骨をよける動き、粒子の衝突、経路探索を追加する場合は、別の計算処理を設計する必要があります。これらはまだ実装していません。
 
 ## 3 層の CSV データ
@@ -157,6 +159,8 @@ preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,max_incom
 
 `NodePresetCatalogLoader` を使うと、このファイルだけを読み込めます。ゲーム開始時に使う `PuzzleCatalogLoader` もこのファイルを読み、マップ上のノードの初期値として使います。
 
+同梱する `root`／`follow`／`end` はすべて 3×3 tiles、つまり 48×48 論理ピクセルです。heart、lung、liver、kidney、brain、stomach と generic organ の 48×48 RGBA 素材を使います。loader 自体は引き続き別サイズを扱えます。`dead` の既存サイズは変更しません。
+
 マップの行に `source_preset_id` がある場合、読み込み処理は最初にそのひな形をコピーし、その後、マップで「空ではない」項目を上書きします。よく使う器官は `nodes.csv` で一度だけ管理しながら、レベルごとにサイズ、名前、画像、接続数を変えられます。
 
 ### レベルごとのマップ CSV
@@ -187,13 +191,13 @@ CSV のヘッダー名と順番は、定義と完全に同じにしてくださ�
 ```text
 背景
 -> 血管の暗い外側 / 深い赤色の中心 / 自動生成する肉らしいピクセル
--> dead の画像または代わりの長方形
--> source の脈動表示
+-> 骨灰色の dead と固定斑点
+-> active halo と source の脈動表示
 -> root / follow / end の画像または代わりの長方形
 -> UTF-8 HUD / メニュー overlay
 ```
 
-休止中（まだ接続されていない）のノードは暗く表示します。有効なノードは通常の色で表示し、血管を伸ばせる接続元には脈動する目印を表示します。配置位置がないノードは描きません。`display_name` が空の場合は文字を描きません。
+休止中（まだ接続されていない）のノードは 55% の明るさで表示します。有効なノードは原色と固定 halo で表示し、血管を伸ばせる接続元には追加の脈動を表示します。現在掴んでいる source は、より明るく速い脈動になります。配置位置がないノードは描きません。`display_name` が空の場合は文字を描きません。名前はノード下端から 4px 下、18px、中央揃えで、貼り絵と重ならない位置に描画します。
 
 レベルに入るとき、描画処理は最終的な `texture_path` を読み込み、ノードのスプライトを作ります。そして、`width_tiles × height_tiles` と配置位置に合わせて表示します。同じレベル内で同じパスを使う場合は、画像のハンドルを共有します。レベルを切り替えるときは、両方のレベルで使うハンドルをそのまま利用し、古いレベルだけで使っていたハンドルを解放します。そのため、毎フレームの描画で同じ画像を読み直すことはなく、以前のレベルの画像がディスクリプターを使い続けることもありません。
 
@@ -217,18 +221,19 @@ Glyph は `{font, pixel size, code point}` ごとに初回だけ rasterize し�
 
 これらのマップに接続はあらかじめ設定されていません。実際の経路は、すべてプレイヤーがゲーム中に決めます。
 
-## 任意の音声素材
+## 音声素材とミックス
 
-runtime の `GameAudio` は KamataEngine の Audio を薄く包み、`Resources/audio/`
-にある `bgm.wav`（ループ）、`level_select.wav`、`node_select.wav` を個別に
-読み込みます。これらはすべて任意で、ファイルがない場合は該当する音だけを
-無効にして起動を続けます。存在する WAV の読み込みで例外が発生した場合は、
-呼び出し側が渡した起動警告一覧へ追記できます。素材と仮音量の TODO は
-`NoviceResources/audio/README.md` にまとめています。
+runtime の `GameAudio` は `Resources/audio/` の `bgm_start.wav`、`bgm_loop.wav`、
+`line_hold.wav`、`line_relax.wav` を初期化時に一度だけ読み込みます。起動直後に intro を
+0.9 で一度再生し、終了を polling した次の update で 0.4 の loop へ移ります。実際に一度
+レベルへ入った後で MAIN MENU に戻ったときだけ、この sequence を intro から再開します。
+LEVEL SELECT を見て戻るだけでは再開しません。個別 clip の読み込みに失敗した場合は、
+毎 frame 再試行せず安全に無音へ fallback します。
 
-`level_select.wav` はレベルが正常に開始したときだけ、`node_select.wav` は操作可能な
-接続元ノードからドラッグを開始できたときだけ 1 回再生します。hover、ページ切替、
-押し続け、無効なノードでは再生しません。
+有効な source からドラッグを始めると `line_hold` を 0.65 の one-shot で一度再生し、BGM を
+50ms で基準音量の 40% へ下げます。実際の mouse release では hold を 50ms で止め、
+`line_relax` を 2.0 で一度再生して BGM を 250ms で戻します。Esc、失焦、Retry、切り替えなどの
+強制 cancel は hold を止めますが relax は鳴らしません。
 
 ## ビルドと実行
 
@@ -260,7 +265,7 @@ ctest --test-dir build/vs2026-x64 -C Debug --output-on-failure
 ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 ```
 
-`Object_Connect_CoreTests` はウィンドウを作らず、GPU も必要ありません。コアテストでは、CSV、3 層データの決まり、AABB の形状判定、動的な接続元／接続先、接続数と 2 つの長さ制限、重複／循環／`dead` の直線判定、仮の線を戻したときの長さの返却、`BloodTentacle`、`RibbonStrip`、`GameFlow` を確認します。
+`Object_Connect_CoreTests` はウィンドウを作らず、GPU も必要ありません。コアテストでは、CSV、同梱 node の 3×3／texture 解決、既存 `dead` の寸法、AABB の形状判定、動的な接続元／接続先、接続数と 2 つの長さ制限、重複／循環／`dead` の直線判定、仮の線を戻したときの長さの返却、`BloodTentacle`、`RibbonStrip`、`GameFlow` と純粋な cursor 状態解決を確認します。別の fake-backend test は BGM phase、欠損 fallback、hold／release／cancel と duck fade を確認します。
 
 文字まわりの headless tests は、ASCII と 2／3／4-byte UTF-8、日本語の混在、overlong／surrogate／範囲外／途中で切れた不正列の U+FFFD 置換、CR／LF／CRLF、複数行の baseline と alignment を確認します。さらに、production と共通の lazy-residency／atlas seam を fake work で駆動し、同じ glyph が frame をまたいで一度だけ rasterize／upload されること、font と pixel size の cache 分離、layout cache hit、LRU eviction、missing glyph、atlas 作成失敗、font ID の非再利用と安全な枯渇を検証します。CSV の日本語 `level_name`／`display_name` も round-trip の対象です。別の headless lifecycle test は未初期化／invalid handle と複数回の `Finalize` を検証します。実際にロードした font の stale handle、同じパスの参照カウント、GPU unload lifetime は runtime integration review の対象です。
 
@@ -283,6 +288,8 @@ include/ObjectConnect/         公開 API；object_connect 名前空間
 src/ObjectConnect/             include と同じ構成の実装
 tests/                         engine に依存しない core tests
 NoviceResources/data/          levels、presets、レベルごとの maps
+NoviceResources/assets/        32×32 cursor と 48×48 node textures
+NoviceResources/audio/         intro／loop BGM と line hold／relax WAV
 NoviceResources/fonts/         必須の信頼済み game.ttf
 NoviceResources/shaders/       flat-color 2D shaders
 Docs/Architecture.md           担当範囲、データの流れ、機能追加の境界

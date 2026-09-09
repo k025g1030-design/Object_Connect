@@ -3,10 +3,12 @@
 #include "ObjectConnect/Audio/GameAudio.hpp"
 #include "ObjectConnect/Data/PuzzleCatalogLoader.hpp"
 #include "ObjectConnect/Game/GameFlow.hpp"
+#include "ObjectConnect/Game/MusicSequencePolicy.hpp"
 #include "ObjectConnect/Input/InputState.hpp"
 #include "ObjectConnect/Input/InputSystem.hpp"
 #include "ObjectConnect/Puzzle/PuzzleBoard.hpp"
 #include "ObjectConnect/Rendering/GameUiRenderer.hpp"
+#include "ObjectConnect/Rendering/MouseCursorRenderer.hpp"
 #include "ObjectConnect/Rendering/PuzzleRenderer.hpp"
 #include "ObjectConnect/Text/FontSystem.hpp"
 
@@ -92,7 +94,9 @@ struct Game::Impl final {
     FontSystem fontSystem;
     FontHandle uiFont{};
     GameUiRenderer ui;
+    MouseCursorRenderer mouseCursor;
     GameFlow flow;
+    MusicSequencePolicy musicSequencePolicy;
     std::unique_ptr<PuzzleBoard> board;
     std::optional<std::size_t> currentPuzzleIndex;
     AxisAlignedBox playfieldBounds{};
@@ -140,11 +144,13 @@ struct Game::Impl final {
         if (!puzzleRenderer.PreparePuzzle(definition, error)) {
             return false;
         }
+        audio.EndLineHold(LineHoldEndReason::Cancelled);
         board = std::move(nextBoard);
         input.ResetPointerWrap();
         currentPuzzleIndex = index;
         solvedElapsedSeconds = 0.0f;
         flow.EnterPlaying();
+        musicSequencePolicy.RecordPuzzleEntered();
         return true;
     }
 
@@ -156,6 +162,7 @@ struct Game::Impl final {
     }
 
     void LeavePuzzleForLevelSelect() noexcept {
+        audio.EndLineHold(LineHoldEndReason::Cancelled);
         input.ResetPointerWrap();
         board.reset();
         currentPuzzleIndex.reset();
@@ -164,11 +171,29 @@ struct Game::Impl final {
     }
 
     void LeavePuzzleForMainMenu() noexcept {
+        audio.EndLineHold(LineHoldEndReason::Cancelled);
         input.ResetPointerWrap();
         board.reset();
         currentPuzzleIndex.reset();
         solvedElapsedSeconds = 0.0f;
         flow.ReturnToMainMenu();
+        if (musicSequencePolicy.OnScreenEntered(GameScreen::MainMenu)) {
+            audio.RestartMusicSequence();
+        }
+    }
+
+    void FinishFrame(const InputState& state, const float deltaSeconds) noexcept {
+        audio.Update(deltaSeconds);
+
+        const GameScreen screen = flow.GetScreen();
+        const bool isDragging = board && board->IsDragging();
+        const bool pointerOverAction = ui.IsPointerOverAction(
+            screen, {state.mouse.positionX, state.mouse.positionY},
+            catalog.GetPuzzles().size(), HasNextPuzzle(),
+            solvedElapsedSeconds >= kSolvedMenuDelaySeconds);
+        const MouseCursorIcon icon = ResolveMouseCursorIcon(
+            screen, isDragging, pointerOverAction);
+        mouseCursor.Update(state, icon);
     }
 
     void ApplyCommand(const GameFlowResult& result) {
@@ -183,7 +208,6 @@ struct Game::Impl final {
                 throw std::runtime_error("GameFlow omitted the selected puzzle index.");
             }
             RequireStartPuzzle(*result.puzzleIndex);
-            audio.PlayLevelSelected();
             break;
         case GameCommand::RetryPuzzle:
             if (!currentPuzzleIndex.has_value()) {
@@ -205,6 +229,7 @@ struct Game::Impl final {
             LeavePuzzleForMainMenu();
             break;
         case GameCommand::QuitGame:
+            audio.EndLineHold(LineHoldEndReason::Cancelled);
             shouldQuit = true;
             break;
         }
@@ -223,12 +248,17 @@ struct Game::Impl final {
                       screenBeforeInput == GameScreen::Paused) &&
             state.keyboard.retryPressed) {
             RequireStartPuzzle(*currentPuzzleIndex);
+            FinishFrame(state, deltaSeconds);
             return;
         }
 
         if (board && screenBeforeInput == GameScreen::Playing &&
             (state.keyboard.escapePressed || state.focusLost)) {
+            const bool wasDragging = board->IsDragging();
             board->CancelDrag(true);
+            if (wasDragging) {
+                audio.EndLineHold(LineHoldEndReason::Cancelled);
+            }
         }
 
         const bool solvedMenuReady = solvedElapsedSeconds >= kSolvedMenuDelaySeconds;
@@ -283,7 +313,11 @@ struct Game::Impl final {
             const bool wasDragging = board->IsDragging();
             board->Update(boardInput, deltaSeconds);
             if (!wasDragging && board->IsDragging()) {
-                audio.PlayNodeSelected();
+                audio.BeginLineHold();
+            } else if (wasDragging && !board->IsDragging()) {
+                audio.EndLineHold(state.mouse.leftReleased
+                                      ? LineHoldEndReason::Released
+                                      : LineHoldEndReason::Cancelled);
             }
             if (board->IsSolved()) {
                 flow.EnterSolved();
@@ -302,6 +336,7 @@ struct Game::Impl final {
             !board->IsDragging()) {
             input.ResetPointerWrap();
         }
+        FinishFrame(state, deltaSeconds);
     }
 
     void Draw() {
@@ -316,6 +351,7 @@ struct Game::Impl final {
                 HasNextPuzzle(),
                 solvedElapsedSeconds >= kSolvedMenuDelaySeconds);
         static_cast<void>(fontSystem.Flush());
+        mouseCursor.Draw();
     }
 };
 
@@ -375,6 +411,13 @@ bool Game::Initialize(const GameConfig& config, std::string& error) {
     if (!next->ui.Initialize(next->fontSystem, next->uiFont, error)) {
         return false;
     }
+    std::string cursorError;
+    if (!next->mouseCursor.Initialize(cursorError)) {
+        next->startupWarnings.push_back(
+            cursorError.empty()
+                ? "The custom mouse cursor could not be initialized; the system cursor will remain visible."
+                : std::move(cursorError));
+    }
     next->audio.Initialize(&next->startupWarnings);
     impl_ = std::move(next);
     return true;
@@ -394,6 +437,7 @@ void Game::Draw() {
 
 void Game::Finalize() noexcept {
     if (impl_) {
+        impl_->mouseCursor.Finalize();
         impl_->audio.Finalize();
         impl_->ui.Finalize();
         impl_->fontSystem.UnloadFont(impl_->uiFont);

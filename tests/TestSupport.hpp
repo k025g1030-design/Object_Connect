@@ -48,6 +48,8 @@ private:
 void RunPuzzleCatalogTests(TestContext& context);
 void RunGameFlowTests(TestContext& context);
 void RunGeometry2DTests(TestContext& context);
+void RunMouseCursorStateTests(TestContext& context);
+void RunMusicSequencePolicyTests(TestContext& context);
 void RunPuzzleBoardTests(TestContext& context);
 void RunBloodTentacleTests(TestContext& context);
 void RunRibbonStripTests(TestContext& context);
