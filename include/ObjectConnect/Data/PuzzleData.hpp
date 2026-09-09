@@ -13,6 +13,7 @@
 namespace object_connect {
 
 inline constexpr float kPuzzleTileSize = 16.0f;
+inline constexpr std::string_view kFinalResultsTargetId{"final_results"};
 
 enum class NodeType : std::uint8_t {
     Root,

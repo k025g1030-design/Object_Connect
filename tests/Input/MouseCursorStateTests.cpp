@@ -13,6 +13,7 @@ void TestScreenPriority(TestContext& context) {
         GameScreen::LevelSelect,
         GameScreen::Paused,
         GameScreen::Solved,
+        GameScreen::FinalResults,
     };
     for (const GameScreen screen : kNonPlayingScreens) {
         context.Expect(
@@ -50,6 +51,10 @@ void TestScreenPriority(TestContext& context) {
         ResolveMouseCursorIcon(GameScreen::Solved, false, true) ==
             MouseCursorIcon::Interactive,
         "the solved menu becomes interactive after its delay");
+    context.Expect(
+        ResolveMouseCursorIcon(GameScreen::FinalResults, false, true) ==
+            MouseCursorIcon::Interactive,
+        "a final-results button uses the interactive cursor");
 }
 
 void TestVisibilityGate(TestContext& context) {

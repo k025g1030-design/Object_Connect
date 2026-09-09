@@ -46,6 +46,7 @@ private:
 }
 
 void RunPuzzleCatalogTests(TestContext& context);
+void RunFinalResultsTests(TestContext& context);
 void RunGameFlowTests(TestContext& context);
 void RunGeometry2DTests(TestContext& context);
 void RunMouseCursorStateTests(TestContext& context);

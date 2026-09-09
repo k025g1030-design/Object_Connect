@@ -16,8 +16,9 @@ void RunMusicSequencePolicyTests(TestContext& context) {
     policy.RecordPuzzleEntered();
     context.Expect(!policy.OnScreenEntered(GameScreen::Paused) &&
                        !policy.OnScreenEntered(GameScreen::Solved) &&
+                       !policy.OnScreenEntered(GameScreen::FinalResults) &&
                        !policy.OnScreenEntered(GameScreen::LevelSelect),
-                   "pause, solved, and level-select transitions keep music scene-independent");
+                   "pause, solved, final-results, and level-select transitions keep music scene-independent");
     context.Expect(policy.OnScreenEntered(GameScreen::MainMenu),
                    "returning to main after play restarts the intro once");
     context.Expect(!policy.OnScreenEntered(GameScreen::MainMenu),

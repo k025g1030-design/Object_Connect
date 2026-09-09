@@ -2,6 +2,7 @@
 
 #include "ObjectConnect/Audio/GameAudio.hpp"
 #include "ObjectConnect/Data/PuzzleCatalogLoader.hpp"
+#include "ObjectConnect/Game/FinalResults.hpp"
 #include "ObjectConnect/Game/GameFlow.hpp"
 #include "ObjectConnect/Game/MusicSequencePolicy.hpp"
 #include "ObjectConnect/Input/InputState.hpp"
@@ -13,6 +14,8 @@
 #include "ObjectConnect/Text/FontSystem.hpp"
 
 #include <base/DirectXCommon.h>
+
+#include <Windows.h>
 
 #include <cmath>
 #include <cstddef>
@@ -35,6 +38,18 @@ constexpr std::size_t kRendererVertexCapacity = 65536;
 
 [[nodiscard]] float NormalizeDelta(const float deltaSeconds) noexcept {
     return std::isfinite(deltaSeconds) && deltaSeconds > 0.0f ? deltaSeconds : 0.0f;
+}
+
+void LogRuntimeWarning(const std::string_view message) noexcept {
+    try {
+        std::string output{"[Object_Connect] warning: "};
+        output.append(message);
+        output.push_back('\n');
+        ::OutputDebugStringA(output.c_str());
+    } catch (...) {
+        ::OutputDebugStringA(
+            "[Object_Connect] warning: diagnostic formatting failed.\n");
+    }
 }
 
 [[nodiscard]] std::filesystem::path Utf8Path(
@@ -97,6 +112,8 @@ struct Game::Impl final {
     MouseCursorRenderer mouseCursor;
     GameFlow flow;
     MusicSequencePolicy musicSequencePolicy;
+    RunCompletionTracker completionTracker;
+    FinalResultsSummary finalResultsSummary;
     std::unique_ptr<PuzzleBoard> board;
     std::optional<std::size_t> currentPuzzleIndex;
     AxisAlignedBox playfieldBounds{};
@@ -104,22 +121,29 @@ struct Game::Impl final {
     bool shouldQuit = false;
     float elapsedSeconds = 0.0f;
     float solvedElapsedSeconds = 0.0f;
+    bool currentStageResultRecorded = false;
 
-    [[nodiscard]] std::optional<std::size_t> GetNextPuzzleIndex() const noexcept {
+    [[nodiscard]] const PuzzleDefinition* GetCurrentPuzzle() const noexcept {
         if (!currentPuzzleIndex.has_value() ||
             *currentPuzzleIndex >= catalog.GetPuzzles().size()) {
+            return nullptr;
+        }
+        return &catalog.GetPuzzles()[*currentPuzzleIndex];
+    }
+
+    [[nodiscard]] std::optional<std::size_t> GetNextPuzzleIndex() const noexcept {
+        const PuzzleDefinition* const current = GetCurrentPuzzle();
+        if (current == nullptr) {
             return std::nullopt;
         }
-
-        const PuzzleDefinition& current =
-            catalog.GetPuzzles()[*currentPuzzleIndex];
-        if (!current.nextLevelId.has_value() || current.nextLevelId->empty()) {
+        if (!current->nextLevelId.has_value() || current->nextLevelId->empty() ||
+            IsFinalResultsTarget(*current)) {
             return std::nullopt;
         }
 
         const std::vector<PuzzleDefinition>& puzzles = catalog.GetPuzzles();
         for (std::size_t index = 0; index < puzzles.size(); ++index) {
-            if (puzzles[index].id == *current.nextLevelId) {
+            if (puzzles[index].id == *current->nextLevelId) {
                 return index;
             }
         }
@@ -149,6 +173,7 @@ struct Game::Impl final {
         input.ResetPointerWrap();
         currentPuzzleIndex = index;
         solvedElapsedSeconds = 0.0f;
+        currentStageResultRecorded = false;
         flow.EnterPlaying();
         musicSequencePolicy.RecordPuzzleEntered();
         return true;
@@ -161,12 +186,32 @@ struct Game::Impl final {
         }
     }
 
+    void ResetCompletionRun() noexcept {
+        completionTracker.Reset();
+        finalResultsSummary = {};
+        currentStageResultRecorded = false;
+        ui.ClearFinalResults();
+    }
+
+    void EnterFinalResults() {
+        finalResultsSummary = completionTracker.BuildSummary();
+        std::string prepareError;
+        if (!ui.PrepareFinalResults(finalResultsSummary, prepareError) &&
+            !prepareError.empty()) {
+            LogRuntimeWarning(
+                "Final-results organ icons are unavailable: " + prepareError);
+        }
+        solvedElapsedSeconds = 0.0f;
+        flow.EnterFinalResults();
+    }
+
     void LeavePuzzleForLevelSelect() noexcept {
         audio.EndLineHold(LineHoldEndReason::Cancelled);
         input.ResetPointerWrap();
         board.reset();
         currentPuzzleIndex.reset();
         solvedElapsedSeconds = 0.0f;
+        ResetCompletionRun();
         flow.EnterLevelSelect();
     }
 
@@ -176,6 +221,7 @@ struct Game::Impl final {
         board.reset();
         currentPuzzleIndex.reset();
         solvedElapsedSeconds = 0.0f;
+        ResetCompletionRun();
         flow.ReturnToMainMenu();
         if (musicSequencePolicy.OnScreenEntered(GameScreen::MainMenu)) {
             audio.RestartMusicSequence();
@@ -208,12 +254,25 @@ struct Game::Impl final {
                 throw std::runtime_error("GameFlow omitted the selected puzzle index.");
             }
             RequireStartPuzzle(*result.puzzleIndex);
+            ResetCompletionRun();
             break;
         case GameCommand::RetryPuzzle:
             if (!currentPuzzleIndex.has_value()) {
                 throw std::runtime_error("Retry was requested without an active puzzle.");
             }
-            RequireStartPuzzle(*currentPuzzleIndex);
+            {
+                const std::size_t retryIndex = *currentPuzzleIndex;
+                const std::string retryPuzzleId =
+                    catalog.GetPuzzles()[retryIndex].id;
+                const bool discardRecordedResult = currentStageResultRecorded;
+                RequireStartPuzzle(retryIndex);
+                if (discardRecordedResult &&
+                    !completionTracker.RemoveLastCompletedStage(retryPuzzleId)) {
+                    // A stale completion is worse than losing the earlier
+                    // summary if a future branch violates the tail invariant.
+                    completionTracker.Reset();
+                }
+            }
             break;
         case GameCommand::NextPuzzle:
             if (!currentPuzzleIndex.has_value()) {
@@ -271,18 +330,25 @@ struct Game::Impl final {
                 pointerPosition, state.mouse.leftPressed,
                 state.mouse.wheelDelta, keyboardNavigated,
                 activationRequested, screenBeforeInput);
+        const bool finalResultsPageChanged =
+            ui.ApplyFinalResultsNavigation(
+                pointerPosition, state.mouse.leftPressed,
+                state.mouse.wheelDelta, keyboardNavigated,
+                activationRequested, screenBeforeInput);
+        const bool pageNavigationHandled =
+            pageSelection.has_value() || finalResultsPageChanged;
 
         GameFlowInput flowInput{};
         flowInput.previousPressed =
-            state.keyboard.previousPressed && !pageSelection.has_value();
+            state.keyboard.previousPressed && !pageNavigationHandled;
         flowInput.nextPressed =
-            state.keyboard.nextPressed && !pageSelection.has_value();
+            state.keyboard.nextPressed && !pageNavigationHandled;
         flowInput.confirmPressed =
-            state.keyboard.enterPressed && !pageSelection.has_value();
+            state.keyboard.enterPressed && !pageNavigationHandled;
         flowInput.escapePressed = state.keyboard.escapePressed;
         flowInput.focusLost = state.focusLost;
         flowInput.mousePrimaryPressed =
-            state.mouse.leftPressed && !pageSelection.has_value();
+            state.mouse.leftPressed && !pageNavigationHandled;
         flowInput.hoveredItem = pageSelection.has_value()
                                     ? pageSelection
                                     : hoveredItem;
@@ -311,9 +377,17 @@ struct Game::Impl final {
                                       ? LineHoldEndReason::Released
                                       : LineHoldEndReason::Cancelled);
             }
-            if (board->IsSolved()) {
-                flow.EnterSolved();
+            if (board->IsSolved() && !currentStageResultRecorded) {
+                const PuzzleBoardSnapshot solvedSnapshot = board->MakeSnapshot();
+                completionTracker.RecordCompletedStage(
+                    board->GetDefinition(), solvedSnapshot);
+                currentStageResultRecorded = true;
                 solvedElapsedSeconds = 0.0f;
+                if (IsFinalResultsTarget(board->GetDefinition())) {
+                    EnterFinalResults();
+                } else {
+                    flow.EnterSolved();
+                }
             }
         } else if (board && flow.GetScreen() == GameScreen::Solved) {
             board->Update({}, deltaSeconds);
@@ -334,12 +408,15 @@ struct Game::Impl final {
     void Draw() {
         fontSystem.BeginFrame();
         std::optional<PuzzleBoardSnapshot> snapshot;
-        if (board) {
+        if (board && flow.GetScreen() != GameScreen::FinalResults) {
             snapshot = board->MakeSnapshot();
             puzzleRenderer.Draw(board->GetDefinition(), *snapshot, elapsedSeconds);
         }
         ui.Draw(flow.GetScreen(), flow.GetSelectedItem(), catalog,
                 currentPuzzleIndex, snapshot ? &*snapshot : nullptr,
+                flow.GetScreen() == GameScreen::FinalResults
+                    ? &finalResultsSummary
+                    : nullptr,
                 HasNextPuzzle(),
                 solvedElapsedSeconds >= kSolvedMenuDelaySeconds);
         static_cast<void>(fontSystem.Flush());

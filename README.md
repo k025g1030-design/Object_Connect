@@ -34,19 +34,28 @@
                                                                     次のステージ（有効な next_level_id）
                                                                     ステージ選択
                                                                     リトライ
+                               |
+                               +-- next_level_id = final_results -> 最終結果
+                                                                        ステージ選択
+                                                                        メインメニュー
 ```
 
-レベル選択の並び順は、`levels.csv` の行の順番と同じです。画面は 5 列×2 行の 10 レベル単位で表示し、左右の矢印またはマウスホイールでページを切り替えます。`次のステージ` は行の順番には依存しません。現在のレベルにある `next_level_id` を読み、catalog の中から同じ ID を探します。この項目が空、または ID が見つからない場合は、この項目を表示しません。
+レベル選択の並び順は、`levels.csv` の行の順番と同じです。画面は 5 列×2 行の 10 レベル単位で表示し、左右の矢印またはマウスホイールでページを切り替えます。`次のステージ` は行の順番には依存しません。現在のレベルにある `next_level_id` を読み、catalog の中から同じ ID を探します。この項目が空、または ID が見つからない場合は、この項目を表示しません。予約値 `final_results` の場合は通常のクリアメニューを経由せず、今回のプレイでレベル選択から始めて実際にクリアしたステージだけを、通過した順番の結果カードとして最終結果に表示します。
 
-レベルを切り替える、レベルから出る、またはリトライすると、`PuzzleBoard` を作り直します。そのため、ノードの状態、接続、残りの長さはすべて初期状態に戻ります。クリア後は、約 0.6 秒たってからクリアメニューを操作できます。
+各結果カードの集計対象は、そのステージに配置位置がある `root`、`follow`、`end` です。runtime で `active` になった数を C、対象ノードの総数を T として `【臓器 C/T】` と表示します。`dead` と、`tile_x`／`tile_y` がなく画面に配置されていない hidden node は集計しません。特別な heart／brain も対象に含め、カードのアイコンはノード固有の画像ではなく `assets/textures/node/organ.png` に統一します。カードの色は C/T の割合を表し、すべて接続したカードだけ金色の枠を付けます。メダルや S／A／B のような階級はありません。
+
+最終結果は 1 ページに 10 カードを表示し、最初に開いたときは今回のプレイの最後のページを表示します。有効な左右の矢印またはマウスホイールでページを切り替えます。この記録は現在のプレイ中だけ保持し、保存ファイルには書きません。`次のステージ` ではそれまでの結果を残し、クリア済みステージの `リトライ` はそのステージの古い結果を取り除いてから再記録します。ステージ選択またはメインメニューへ戻ると今回の記録を消去します。
+
+レベルを切り替える、レベルから出る、またはリトライすると、`PuzzleBoard` を作り直します。そのため、ノードの状態、接続、残りの長さはすべて初期状態に戻ります。通常のクリア画面は、約 0.6 秒たってから操作できます。
 
 ## 操作方法
 
 - `W`／`↑`、`S`／`↓`：メニューの項目を上／下に移動します。
 - `Enter` またはマウス左ボタン：選んだメニュー項目を決定します。
 - レベル選択中の左右の矢印またはマウスホイール：10 レベル単位でページを切り替えます。
+- 最終結果の左右の矢印またはマウスホイール：今回の結果カードを 10 枚単位で切り替えます。
 - 光っている接続元ノードの上でマウス左ボタンを押し、そのまま接続できるノードまでドラッグして、ボタンを離します。
-- `Esc`：プレイ中は一時停止します。一時停止中はゲームに戻ります。レベル選択画面ではメインメニューへ、クリア画面ではレベル選択へ戻ります。
+- `Esc`：プレイ中は一時停止します。一時停止中はゲームに戻ります。レベル選択画面ではメインメニューへ、クリア画面と最終結果ではレベル選択へ戻ります。
 - 一時停止メニューの `リトライ`：現在のレベルを最初からやり直します。
 
 ゲームの client 領域内では 32×32 のカスタムカーソルを使います。通常は開いた手、メニュー／有効なページ矢印の上では指差し、血管を掴んでいる間は握り拳になります。OS カーソルを隠すのはウィンドウにフォーカスがあり、ポインターが client 内にある間だけです。外へ出る、フォーカスを失う、またはカスタムカーソルの初期化に失敗した場合は OS カーソルへ戻ります。フォーカスを失うと、ドラッグ中の仮の線はすぐにキャンセルされ、ゲームは自動で一時停止します。もう一度フォーカスを得ても、自動では再開しません。
@@ -146,7 +155,7 @@ level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,back
 - 同梱レベルの `level_id` は `stage_01`～`stage_20`、`level_name` は `stage 01`～`stage 20` に統一します。どちらも小文字の英語と数字だけを使います。
 - マップ名は level ID と一致させ、`stage_01` なら `data/maps/stage_01.csv` を使います。
 - `map_path` は `Resources/` からの安全な相対パスです。
-- `next_level_id` は空にできます。ゲームは、指定した ID が本当に存在するときだけ Next を表示します。
+- `next_level_id` は空にできます。ゲームは、指定した ID が本当に存在するときだけ Next を表示します。予約値 `final_results` を指定すると、そのステージのクリア直後に最終結果へ移動します。この値は `level_id` には使用できません。
 - `total_length` は、レベル全体で使える長さです。
 - `minimum_slack_ratio` が空の場合は、初期値 1.05 を使います。
 - 色は `#RRGGBB` または `#RRGGBBAA` で指定します。
@@ -271,7 +280,7 @@ ctest --test-dir build/vs2026-x64 -C Debug --output-on-failure
 ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 ```
 
-`Object_Connect_CoreTests` はウィンドウを作らず、GPU も必要ありません。コアテストでは、CSV、同梱 node の 3×3／texture 解決、既存 `dead` の寸法、AABB の形状判定、動的な接続元／接続先、接続数と 2 つの長さ制限、重複／循環／`dead` の直線判定、仮の線を戻したときの長さの返却、`BloodTentacle`、`RibbonStrip`、`GameFlow` と純粋な cursor 状態解決を確認します。別の fake-backend test は BGM phase、欠損 fallback、hold／release／cancel と duck fade を確認します。
+`Object_Connect_CoreTests` はウィンドウを作らず、GPU も必要ありません。コアテストでは、CSV、最終結果の経路と器官集計、同梱 node の 3×3／texture 解決、既存 `dead` の寸法、AABB の形状判定、動的な接続元／接続先、接続数と 2 つの長さ制限、重複／循環／`dead` の直線判定、仮の線を戻したときの長さの返却、`BloodTentacle`、`RibbonStrip`、`GameFlow` と純粋な cursor 状態解決を確認します。別の fake-backend test は BGM phase、欠損 fallback、hold／release／cancel と duck fade を確認します。
 
 文字まわりの headless tests は、ASCII と 2／3／4-byte UTF-8、日本語の混在、overlong／surrogate／範囲外／途中で切れた不正列の U+FFFD 置換、CR／LF／CRLF、複数行の baseline と alignment を確認します。さらに、production と共通の lazy-residency／atlas seam を fake work で駆動し、同じ glyph が frame をまたいで一度だけ rasterize／upload されること、font と pixel size の cache 分離、layout cache hit、LRU eviction、missing glyph、atlas 作成失敗、font ID の非再利用と安全な枯渇を検証します。CSV の日本語 `level_name`／`display_name` も round-trip の対象です。別の headless lifecycle test は未初期化／invalid handle と複数回の `Finalize` を検証します。実際にロードした font の stale handle、同じパスの参照カウント、GPU unload lifetime は runtime integration review の対象です。
 

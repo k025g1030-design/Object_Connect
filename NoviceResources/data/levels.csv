@@ -18,4 +18,4 @@ stage_16,stage 16,data/maps/stage_16.csv,stage_17,4000,,,,,,,1
 stage_17,stage 17,data/maps/stage_17.csv,stage_18,4000,,,,,,,1
 stage_18,stage 18,data/maps/stage_18.csv,stage_19,2500,,,,,,,1
 stage_19,stage 19,data/maps/stage_19.csv,stage_20,3700,,,,,,,1
-stage_20,stage 20,data/maps/stage_20.csv,,5000,,,,,,,1
+stage_20,stage 20,data/maps/stage_20.csv,final_results,5000,,,,,,,1

@@ -254,6 +254,7 @@ endfunction()
 set(OBJECT_CONNECT_CORE_SOURCES
     src/ObjectConnect/Data/Csv.cpp
     src/ObjectConnect/Data/PuzzleCatalogLoader.cpp
+    src/ObjectConnect/Game/FinalResults.cpp
     src/ObjectConnect/Game/GameFlow.cpp
     src/ObjectConnect/Geometry/Geometry2D.cpp
     src/ObjectConnect/Puzzle/PuzzleBoard.cpp
@@ -359,6 +360,7 @@ if(BUILD_TESTING)
         tests/TestMain.cpp
         tests/TestSupport.hpp
         tests/Data/PuzzleCatalogTests.cpp
+        tests/Game/FinalResultsTests.cpp
         tests/Game/GameFlowTests.cpp
         tests/Game/MusicSequencePolicyTests.cpp
         tests/Geometry/Geometry2DTests.cpp

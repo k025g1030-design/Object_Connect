@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ObjectConnect/Data/PuzzleData.hpp"
+#include "ObjectConnect/Game/FinalResults.hpp"
 #include "ObjectConnect/Game/GameFlow.hpp"
 #include "ObjectConnect/Puzzle/PuzzleBoard.hpp"
 
@@ -29,10 +30,14 @@ public:
 
     [[nodiscard]] bool Initialize(FontSystem& fontSystem, FontHandle font,
                                   std::string& error);
+    [[nodiscard]] bool PrepareFinalResults(
+        const FinalResultsSummary& summary, std::string& error);
+    void ClearFinalResults() noexcept;
     void Draw(GameScreen screen, std::size_t selectedItem,
               const PuzzleCatalog& catalog,
               std::optional<std::size_t> currentPuzzleIndex,
               const PuzzleBoardSnapshot* board,
+              const FinalResultsSummary* finalResults,
               bool hasNextPuzzle,
               bool solvedMenuReady);
     [[nodiscard]] std::optional<std::size_t> HitTest(
@@ -46,6 +51,12 @@ public:
     // page changes, the first absolute puzzle index on that page is returned
     // so GameFlow can update its selection through its normal input path.
     [[nodiscard]] std::optional<std::size_t> ApplyLevelSelectNavigation(
+        UiPoint point, bool mousePrimaryPressed, int wheelDelta,
+        bool keyboardNavigated, bool activationRequested,
+        GameScreen screen) noexcept;
+    // Final-result pages are presentation-only and never become GameFlow menu
+    // indices. Returns true only when the requested input changes the page.
+    [[nodiscard]] bool ApplyFinalResultsNavigation(
         UiPoint point, bool mousePrimaryPressed, int wheelDelta,
         bool keyboardNavigated, bool activationRequested,
         GameScreen screen) noexcept;

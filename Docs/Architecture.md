@@ -43,7 +43,7 @@ Object_Connect_CoreTests
 | Tentacle/BloodTentacle | 一條模擬段落的粒子、fixed-step Verlet、tip mode、root pull output | 節點容量與長度預算 |
 | Tentacle/RibbonStrip | 中心點到 ribbon triangle-strip 頂點 | GPU buffer 或 draw call |
 | Puzzle/PuzzleBoard | Active node、dynamic connection、preview、commit、容量、雙層預算、solved | 選單、檔案 I/O、D3D、分數 |
-| Game/GameFlow | MainMenu／LevelSelect／Playing／Paused／Solved 的輸入語意 | Board simulation 與繪製 |
+| Game/GameFlow | MainMenu／LevelSelect／Playing／Paused／Solved／FinalResults 的輸入語意 | Board simulation 與繪製 |
 | Input | 鍵盤、滑鼠與 focus edge | 解釋拖曳或選單 command |
 | Rendering | Flat-color 血管／背景、快取節點 sprite、fallback、HUD、overlay、menu hit-test | 修改 Board 或 Flow |
 | Text/FontSystem | strict UTF-8 decode、TTF metrics、layout、glyph／atlas cache、queue 與 generic quad draw | 翻譯、IME、fallback chain 或複雜 shaping |
@@ -67,11 +67,17 @@ maps/<level_id>.csv
 level_id,level_name,map_path,next_level_id,total_length,minimum_slack_ratio,background_color,vessel_color,base_width,tip_width,width_variation,wrap_edges
 ```
 
-每列建立一個 `PuzzleDefinition`。列順序保留並直接成為 Level Select 順序。`map_path` 指向該關的 instance map；`next_level_id` 是 optional ID，不表示下一列。
+每列建立一個 `PuzzleDefinition`。列順序保留並直接成為 Level Select 順序。`map_path` 指向該關的 instance map；`next_level_id` 是 optional ID，不表示下一列。保留值 `final_results` 代表該關通過後直接進入最終結算，不能作為真正的 `level_id`。
 
 `wrap_edges` 使用 `0`／`1`，空值或缺少欄位時預設為關閉；非法值會產生一次性啟動警告並以關閉處理。為相容既有資料，Loader 同時接受末尾沒有 `wrap_edges` 的舊 11 欄 header；其他欄位名稱或順序仍採嚴格驗證。
 
-Loader 不要求 `next_level_id` 一定存在。`Game` 顯示 Solved 選單時會呼叫 `PuzzleCatalog::Find`；只有非空且確實存在的 ID 才產生 `次のステージ`，並依該 ID 啟動關卡。未知 ID 和空值都視為沒有下一關。
+Loader 不要求一般的 `next_level_id` 一定存在。`Game` 顯示 Solved 選單時會呼叫 `PuzzleCatalog::Find`；只有非空且確實存在的 ID 才產生 `次のステージ`，並依該 ID 啟動關卡。未知 ID 和空值都視為沒有下一關；精確值 `final_results` 則走獨立的最終結算流程，不會被當成地圖 ID。
+
+最終結算只保留本輪實際通過的關卡，並依通關順序建立逐關結果卡。從 Level Select 啟動關卡會清空舊路線；經 `次のステージ` 前進會保留已完成關卡。每關在 solved 當下複製所有「有 placement 且 type 為 `root`、`follow` 或 `end`」的 node 狀態；runtime `active` 數量為 C，該卡納入的 node 總數為 T，顯示為 `【臓器 C/T】`。`dead` 與沒有 placement 的 hidden node 排除，heart／brain 也納入；所有結果卡統一使用 `assets/textures/node/organ.png`，不依個別 node texture 建立結算圖示。
+
+結果頁每頁固定 10 張卡，進入時預設顯示本輪最後一頁；左右箭頭與滑鼠滾輪負責翻頁，首尾不存在的方向保持 disabled。卡片以 C/T 比例決定狀態色，只有 C=T 的全滿卡顯示金色邊框；不計算或顯示獎牌、S／A／B 等級。結果只存在目前 runtime session，不寫入 save 或跨次啟動持久化。
+
+`final_results`、Next、Retry 與 reset 的既有語意不變：精確的 `next_level_id=final_results` 在該關記錄完成結果後直接進 FinalResults；Next 保留路線並繼續累計；Retry 移除 tracker 尾端的當前關舊結果，重新通關後再寫入；Level Select 或 Main Menu 會清空整輪結果。
 
 ### 4.2 Node preset catalog
 
@@ -318,8 +324,9 @@ Decoder 拒絕 overlong encoding、surrogate、超過 U+10FFFF 與截斷序列�
 | Playing | Board input；Esc／失焦進 Paused |
 | Paused | `再開`、`リトライ`、`ステージ選択`、`メインメニュー`、`ゲーム終了` |
 | Solved | 有有效 next：`次のステージ`、`ステージ選択`、`リトライ`；否則只有後兩項 |
+| FinalResults | 以 10 張／頁顯示本輪逐關結果卡，預設最後頁並支援箭頭／滾輪；`ステージ選択`、`メインメニュー`，Esc 回 LevelSelect |
 
-`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、audio adapter、`FontSystem` 和 puzzle／UI／cursor 三個 renderer。Start／Retry 建立新 Board；遊戲中的重開入口位於 Paused 選單；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
+`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、本次路線的完成紀錄、Input、audio adapter、`FontSystem` 和 puzzle／UI／cursor 三個 renderer。Start／Retry 建立新 Board；遊戲中的重開入口位於 Paused 選單；回選關／主選單銷毀 Board；普通 Solved 保留畫面約 0.6 秒後才接受完成選單輸入，`final_results` 則在 solved 當幀直接進 FinalResults。
 
 ## 13. 初始化與每幀資料流
 
@@ -374,7 +381,7 @@ InputSystem::Sample
 - Global/local budget、monotonic reserve、commit、refund、dead LOS 和 solved。
 - BloodTentacle constraint、follow、attachment、pull output。
 - Ribbon vertex contract 與 degenerate safety。
-- MainMenu／LevelSelect／Pause／Solved，以及 `hasNextPuzzle` 選單差異。
+- MainMenu／LevelSelect／Pause／Solved／FinalResults，以及 `hasNextPuzzle` 選單差異；逐關結果需驗證完成順序、Root／Follow／End active/total、排除 Dead／hidden、10 張分頁、最後頁預設與 reset。
 - UTF-8 ASCII／2／3／4-byte 與日文混排，以及非法 continuation、overlong、surrogate、超範圍和截斷輸入的 U+FFFD 行為。
 - Synthetic font metrics 下的 advance、bearing、kerning、baseline、line height、空字串、CR／LF／CRLF、trailing newline 和 alignment。
 - CSV 日文 `level_name`／`display_name` round-trip。
@@ -390,7 +397,7 @@ InputSystem::Sample
 - Sprite atlas 的 frame selection，以及 preset/map 的編輯器或回寫工具。
 - Canvas bounds、node overlap 與整關可完成性 preflight。
 - Dead 對 Verlet particles 的 collision、繞障礙或 pathfinding。
-- 器官分數與直接路線彩蛋計分。
+- 結算卡以外的器官分數、獎牌階級與直接路線彩蛋計分。
 - 出血／血壓倒數。
 - 存檔、解鎖、音訊設定、hot reload、翻譯／locale 切換或完整物理。
 - Font shaping、fallback font chain、IME、直書、Ruby 與 rich text。

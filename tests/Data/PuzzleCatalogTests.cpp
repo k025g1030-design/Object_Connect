@@ -379,6 +379,12 @@ void TestStructuralAndScalarErrors(TestContext& context) {
     ExpectCatalogRejected(context, badLevelId, maps, "lower_snake_case",
                           "level IDs use lower_snake_case");
 
+    const std::string reservedLevelId = ReplaceOnce(
+        levels, "alpha,ALPHA", "final_results,ALPHA");
+    ExpectCatalogRejected(context, reservedLevelId, maps,
+                          "reserved for next_level_id",
+                          "the final-results route keyword cannot be a level ID");
+
     const std::string unsafeMapPath =
         ReplaceOnce(levels, "data/maps/alpha.csv", "../alpha.csv");
     ExpectCatalogRejected(context, unsafeMapPath, maps, "remain within",
@@ -556,6 +562,18 @@ void TestBundledCatalogs(TestContext& context) {
     }
     context.Expect(levelMetadataMatches,
                    "bundled level IDs, lowercase names, map paths, order, and wrap flags match levels.csv");
+
+    bool completionRouteMatches = true;
+    for (std::size_t index = 0; index + 1 < expectedIds.size(); ++index) {
+        completionRouteMatches = completionRouteMatches &&
+            catalog.GetPuzzles()[index].nextLevelId ==
+                std::optional<std::string>{expectedIds[index + 1]};
+    }
+    completionRouteMatches = completionRouteMatches &&
+        catalog.GetPuzzles().back().nextLevelId ==
+            std::optional<std::string>{kFinalResultsTargetId};
+    context.Expect(completionRouteMatches,
+                   "bundled levels follow their authored chain and stage_20 routes to final results");
 
     context.Expect(catalog.GetPuzzles()[0].id == "stage_01" &&
                        catalog.GetPuzzles()[0].nodes.size() == 2 &&

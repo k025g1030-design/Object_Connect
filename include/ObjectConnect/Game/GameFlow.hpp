@@ -11,6 +11,7 @@ enum class GameScreen {
     Playing,
     Paused,
     Solved,
+    FinalResults,
 };
 
 enum class GameCommand {
@@ -50,6 +51,7 @@ public:
     void EnterPlaying() noexcept;
     void EnterPaused() noexcept;
     void EnterSolved() noexcept;
+    void EnterFinalResults() noexcept;
     void ReturnToMainMenu() noexcept;
 
     [[nodiscard]] GameScreen GetScreen() const noexcept { return screen_; }

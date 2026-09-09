@@ -22,7 +22,9 @@ GameFlowResult GameFlow::Update(const GameFlowInput& input,
         return {GameCommand::ReturnToMainMenu, std::nullopt, false, false};
     }
 
-    if (screen_ == GameScreen::Solved && input.escapePressed) {
+    if ((screen_ == GameScreen::Solved ||
+         screen_ == GameScreen::FinalResults) &&
+        input.escapePressed) {
         return {GameCommand::OpenLevelSelect, std::nullopt, false, false};
     }
 
@@ -61,6 +63,11 @@ void GameFlow::EnterSolved() noexcept {
     selectedItem_ = 0;
 }
 
+void GameFlow::EnterFinalResults() noexcept {
+    screen_ = GameScreen::FinalResults;
+    selectedItem_ = 0;
+}
+
 void GameFlow::ReturnToMainMenu() noexcept {
     screen_ = GameScreen::MainMenu;
     selectedItem_ = 0;
@@ -79,6 +86,8 @@ std::size_t GameFlow::GetItemCount(const std::size_t puzzleCount,
         return 5;
     case GameScreen::Solved:
         return hasNextPuzzle ? 3 : 2;
+    case GameScreen::FinalResults:
+        return 2;
     }
     return 0;
 }
@@ -157,6 +166,13 @@ GameFlowResult GameFlow::ActivateSelected(const std::size_t puzzleCount,
         default:
             return {};
         }
+
+    case GameScreen::FinalResults:
+        return selectedItem_ == 0
+                   ? GameFlowResult{GameCommand::OpenLevelSelect,
+                                    std::nullopt, false, false}
+                   : GameFlowResult{GameCommand::ReturnToMainMenu,
+                                    std::nullopt, false, false};
     }
     return {};
 }

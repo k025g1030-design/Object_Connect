@@ -180,6 +180,35 @@ void TestSelectionTracksDynamicMenus(TestContext& context) {
                    "opposing navigation inputs cancel each other");
 }
 
+void TestFinalResultsMenu(TestContext& context) {
+    GameFlow flow;
+    flow.EnterFinalResults();
+    context.Expect(flow.GetScreen() == GameScreen::FinalResults,
+                   "caller can enter the final-results screen");
+    context.Expect(flow.GetItemCount(kPuzzleCount, true) == 2 &&
+                       flow.GetItemCount(kPuzzleCount, false) == 2,
+                   "final results always contains level select and main menu");
+
+    const GameFlowResult levelSelect = ClickItem(flow, 0, true);
+    context.Expect(levelSelect.command == GameCommand::OpenLevelSelect &&
+                       !levelSelect.simulatePuzzle,
+                   "final results can open level select without simulating the puzzle");
+
+    flow.EnterFinalResults();
+    const GameFlowResult mainMenu = ClickItem(flow, 1, false);
+    context.Expect(mainMenu.command == GameCommand::ReturnToMainMenu &&
+                       !mainMenu.simulatePuzzle,
+                   "final results can return to the main menu without simulating the puzzle");
+
+    flow.EnterFinalResults();
+    GameFlowInput escape{};
+    escape.escapePressed = true;
+    const GameFlowResult escaped = flow.Update(escape, kPuzzleCount, false);
+    context.Expect(escaped.command == GameCommand::OpenLevelSelect &&
+                       !escaped.simulatePuzzle,
+                   "escape opens level select from final results");
+}
+
 void TestLargeLevelSelectUsesLogicalPuzzleIndices(TestContext& context) {
     constexpr std::size_t kLargePuzzleCount = 31;
     GameFlow flow;
@@ -224,6 +253,7 @@ void RunGameFlowTests(TestContext& context) {
     TestLevelSelect(context);
     TestPlayingAndPause(context);
     TestSolvedMenus(context);
+    TestFinalResultsMenu(context);
     TestSelectionTracksDynamicMenus(context);
     TestLargeLevelSelectUsesLogicalPuzzleIndices(context);
 }

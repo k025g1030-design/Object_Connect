@@ -15,8 +15,10 @@
 #include <exception>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Windows.h aliases DrawText to DrawTextW. FontSystem deliberately uses the
@@ -84,6 +86,19 @@ constexpr UiRect kPreviousPageBounds{126.0f, 284.0f, 88.0f, 88.0f};
 constexpr UiRect kNextPageBounds{1066.0f, 284.0f, 88.0f, 88.0f};
 constexpr float kUiWidth = 1280.0f;
 constexpr std::int64_t kWheelDeltaPerPage = 120;
+constexpr std::string_view kFinalResultsOrganTexturePath =
+    "assets/textures/node/organ.png";
+constexpr std::array<float, 2> kFinalResultsCardLefts = {132.0f, 696.0f};
+constexpr float kFinalResultsCardTop = 142.0f;
+constexpr float kFinalResultsCardWidth = 452.0f;
+constexpr float kFinalResultsCardHeight = 58.0f;
+constexpr float kFinalResultsCardGap = 8.0f;
+constexpr float kFinalResultsCardInset = 3.0f;
+constexpr float kFinalResultsIconSize = 48.0f;
+constexpr UiRect kFinalResultsPreviousPageBounds{42.0f, 278.0f, 64.0f,
+                                                 82.0f};
+constexpr UiRect kFinalResultsNextPageBounds{1174.0f, 278.0f, 64.0f,
+                                             82.0f};
 
 struct UiColor final {
     float red = 1.0f;
@@ -229,6 +244,13 @@ void AddVerticalEntries(MenuLayout& layout,
         AddVerticalEntries(layout, labels, 280.0f);
         break;
     }
+    case GameScreen::FinalResults: {
+        constexpr std::array labels = {
+            std::string_view{"ステージ選択"},
+            std::string_view{"メインメニュー"}};
+        AddVerticalEntries(layout, labels, 548.0f);
+        break;
+    }
     case GameScreen::Playing:
         break;
     }
@@ -278,9 +300,79 @@ void QueueText(
     return (std::max)(1u, static_cast<std::uint32_t>(std::floor(scaledSize)));
 }
 
+[[nodiscard]] UiRect GetFinalResultsCardBounds(
+    const std::size_t visibleSlot) noexcept {
+    const std::size_t column = visibleSlot % 2;
+    const std::size_t row = visibleSlot / 2;
+    return {
+        kFinalResultsCardLefts[column],
+        kFinalResultsCardTop +
+            static_cast<float>(row) *
+                (kFinalResultsCardHeight + kFinalResultsCardGap),
+        kFinalResultsCardWidth,
+        kFinalResultsCardHeight,
+    };
+}
+
+[[nodiscard]] float GetFinalResultsFillRatio(
+    const std::size_t connectedCount,
+    const std::size_t totalCount) noexcept {
+    if (totalCount == 0) {
+        return 0.0f;
+    }
+    return (std::min)(
+        1.0f, static_cast<float>(connectedCount) /
+                  static_cast<float>(totalCount));
+}
+
 } // namespace
 
 struct GameUiRenderer::Impl final {
+    struct FinalResultsResources final {
+        std::string organTexturePath;
+        std::uint32_t organTextureHandle = 0;
+        bool ownsOrganTexture = false;
+        std::array<std::unique_ptr<KamataEngine::Sprite>,
+                   kFinalResultsStagesPerPage>
+            borders;
+        std::array<std::unique_ptr<KamataEngine::Sprite>,
+                   kFinalResultsStagesPerPage>
+            cards;
+        std::array<std::unique_ptr<KamataEngine::Sprite>,
+                   kFinalResultsStagesPerPage>
+            fills;
+        std::array<std::unique_ptr<KamataEngine::Sprite>,
+                   kFinalResultsStagesPerPage>
+            icons;
+
+        FinalResultsResources() noexcept = default;
+        FinalResultsResources(const FinalResultsResources&) = delete;
+        FinalResultsResources& operator=(const FinalResultsResources&) = delete;
+
+        ~FinalResultsResources() { Reset(); }
+
+        void Reset() noexcept {
+            for (auto& sprite : icons) {
+                sprite.reset();
+            }
+            for (auto& sprite : fills) {
+                sprite.reset();
+            }
+            for (auto& sprite : cards) {
+                sprite.reset();
+            }
+            for (auto& sprite : borders) {
+                sprite.reset();
+            }
+            if (ownsOrganTexture) {
+                rendering_detail::TextureHandleRegistry::Release(
+                    organTexturePath);
+                ownsOrganTexture = false;
+            }
+            organTextureHandle = 0;
+        }
+    };
+
     FontSystem* fontSystem = nullptr;
     FontHandle font{};
     std::unique_ptr<KamataEngine::Sprite> background;
@@ -299,7 +391,9 @@ struct GameUiRenderer::Impl final {
         levelPageBackdrops;
     std::unique_ptr<KamataEngine::Sprite> hudWarning;
     std::unique_ptr<KamataEngine::Sprite> messageWarning;
+    std::unique_ptr<FinalResultsResources> finalResultsResources;
     std::string texturePath;
+    std::uint32_t textureHandle = 0;
     bool ownsTexture = false;
     std::size_t levelSelectPage = 0;
     std::size_t lastLevelSelectPuzzleCount = 0;
@@ -307,10 +401,21 @@ struct GameUiRenderer::Impl final {
     std::optional<GameScreen> lastDrawnScreen;
     bool manualLevelPageChange = false;
     std::int64_t levelPageWheelRemainder = 0;
+    std::size_t finalResultsPage = 0;
+    std::size_t finalResultsStageCount = 0;
+    std::int64_t finalResultsPageWheelRemainder = 0;
+
+    void ClearFinalResults() noexcept {
+        finalResultsResources.reset();
+        finalResultsPage = 0;
+        finalResultsStageCount = 0;
+        finalResultsPageWheelRemainder = 0;
+    }
 
     ~Impl() {
         // Sprites must release their descriptor references before the shared
         // registry is allowed to unload the underlying texture.
+        ClearFinalResults();
         messageWarning.reset();
         hudWarning.reset();
         for (auto& sprite : levelPageBackdrops) {
@@ -358,9 +463,10 @@ bool GameUiRenderer::Initialize(FontSystem& fontSystem, const FontHandle font,
         next->fontSystem = &fontSystem;
         next->font = font;
         next->texturePath = "white1x1.png";
-        const std::uint32_t white =
+        next->textureHandle =
             rendering_detail::TextureHandleRegistry::Acquire(next->texturePath);
         next->ownsTexture = true;
+        const std::uint32_t white = next->textureHandle;
         next->background.reset(KamataEngine::Sprite::Create(
             white, {0.0f, 0.0f}, {0.03f, 0.01f, 0.02f, 0.94f}));
         next->selection.reset(KamataEngine::Sprite::Create(
@@ -425,10 +531,76 @@ bool GameUiRenderer::Initialize(FontSystem& fontSystem, const FontHandle font,
     return false;
 }
 
+bool GameUiRenderer::PrepareFinalResults(
+    const FinalResultsSummary& summary, std::string& error) {
+    error.clear();
+    if (!impl_) {
+        error =
+            "GameUiRenderer must be initialized before preparing final results.";
+        return false;
+    }
+
+    impl_->finalResultsStageCount = summary.stages.size();
+    impl_->finalResultsPage =
+        GetFinalResultsPageCount(impl_->finalResultsStageCount) - 1;
+    impl_->finalResultsPageWheelRemainder = 0;
+
+    try {
+        auto next = std::make_unique<Impl::FinalResultsResources>();
+        next->organTexturePath = std::string{kFinalResultsOrganTexturePath};
+        next->organTextureHandle =
+            rendering_detail::TextureHandleRegistry::Acquire(
+                next->organTexturePath);
+        next->ownsOrganTexture = true;
+
+        for (std::size_t slot = 0; slot < kFinalResultsStagesPerPage;
+             ++slot) {
+            next->borders[slot].reset(KamataEngine::Sprite::Create(
+                impl_->textureHandle, {0.0f, 0.0f},
+                {1.0f, 1.0f, 1.0f, 1.0f}));
+            next->cards[slot].reset(KamataEngine::Sprite::Create(
+                impl_->textureHandle, {0.0f, 0.0f},
+                {1.0f, 1.0f, 1.0f, 1.0f}));
+            next->fills[slot].reset(KamataEngine::Sprite::Create(
+                impl_->textureHandle, {0.0f, 0.0f},
+                {1.0f, 1.0f, 1.0f, 1.0f}));
+            next->icons[slot].reset(KamataEngine::Sprite::Create(
+                next->organTextureHandle, {0.0f, 0.0f},
+                {1.0f, 1.0f, 1.0f, 1.0f}));
+            if (!next->borders[slot] || !next->cards[slot] ||
+                !next->fills[slot] || !next->icons[slot]) {
+                throw std::runtime_error(
+                    "KamataEngine failed to create final-result card "
+                    "resources.");
+            }
+        }
+
+        // Commit only after the generic texture and every per-slot sprite are
+        // ready. If preparation throws, the temporary resource set releases
+        // itself and the renderer keeps its previous usable set.
+        impl_->finalResultsResources = std::move(next);
+        return true;
+    } catch (const std::exception& exception) {
+        error = "Failed to prepare final-result card resources: ";
+        error += exception.what();
+    } catch (...) {
+        error = "Failed to prepare final-result card resources because of an "
+                "unknown error.";
+    }
+    return false;
+}
+
+void GameUiRenderer::ClearFinalResults() noexcept {
+    if (impl_) {
+        impl_->ClearFinalResults();
+    }
+}
+
 void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedItem,
                           const PuzzleCatalog& catalog,
                           const std::optional<std::size_t> currentPuzzleIndex,
                           const PuzzleBoardSnapshot* const board,
+                          const FinalResultsSummary* const finalResults,
                           const bool hasNextPuzzle,
                           const bool solvedMenuReady) {
     if (!impl_) {
@@ -467,17 +639,39 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         impl_->manualLevelPageChange = false;
         impl_->levelPageWheelRemainder = 0;
     }
+
+    if (screen == GameScreen::FinalResults) {
+        const std::size_t stageCount =
+            finalResults != nullptr ? finalResults->stages.size() : 0;
+        const bool enteringFinalResults =
+            !impl_->lastDrawnScreen.has_value() ||
+            *impl_->lastDrawnScreen != GameScreen::FinalResults;
+        impl_->finalResultsStageCount = stageCount;
+        if (enteringFinalResults) {
+            impl_->finalResultsPage =
+                GetFinalResultsPageCount(stageCount) - 1;
+            impl_->finalResultsPageWheelRemainder = 0;
+        } else {
+            impl_->finalResultsPage =
+                ClampFinalResultsPage(impl_->finalResultsPage, stageCount);
+        }
+    } else {
+        impl_->finalResultsPageWheelRemainder = 0;
+    }
     impl_->lastDrawnScreen = screen;
 
     const MenuLayout layout = MakeMenuLayout(
         screen, puzzleCount, hasNextPuzzle,
         impl_->levelSelectPage);
     const bool showFullBackground = screen == GameScreen::MainMenu ||
-                                    screen == GameScreen::LevelSelect;
+                                    screen == GameScreen::LevelSelect ||
+                                    screen == GameScreen::FinalResults;
     const bool showOverlay = screen == GameScreen::Paused ||
                              (screen == GameScreen::Solved && solvedMenuReady);
     if (screen == GameScreen::LevelSelect) {
         impl_->background->SetColor({0.24f, 0.20f, 0.18f, 1.0f});
+    } else if (screen == GameScreen::FinalResults) {
+        impl_->background->SetColor({0.03f, 0.01f, 0.02f, 1.0f});
     } else if (showFullBackground) {
         impl_->background->SetColor({0.03f, 0.01f, 0.02f, 0.96f});
     } else if (showOverlay) {
@@ -486,8 +680,9 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
 
     const bool menuVisible = screen != GameScreen::Playing &&
                              (screen != GameScreen::Solved || solvedMenuReady);
-    const bool showLengthWarning = board != nullptr && board->lengthExhausted &&
-                                   !board->solved;
+    const bool showLengthWarning = screen != GameScreen::FinalResults &&
+                                   board != nullptr &&
+                                   board->lengthExhausted && !board->solved;
     const auto selectedEntry = std::find_if(
         layout.entries.begin(), layout.entries.end(),
         [selectedItem](const MenuLayout::Entry& entry) {
@@ -505,7 +700,8 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
             {bounds.width + border * 2.0f, bounds.height + border * 2.0f});
     }
 
-    if (board != nullptr && currentPuzzleIndex.has_value() &&
+    if (screen != GameScreen::FinalResults && board != nullptr &&
+        currentPuzzleIndex.has_value() &&
         *currentPuzzleIndex < catalog.GetPuzzles().size()) {
         const PuzzleDefinition& puzzle = catalog.GetPuzzles()[*currentPuzzleIndex];
         for (std::size_t nodeIndex = 0; nodeIndex < puzzle.nodes.size();
@@ -572,6 +768,86 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
                       TextHorizontalAlignment::Center);
         }
         break;
+    case GameScreen::FinalResults: {
+        QueueText(*impl_->fontSystem, impl_->font, "最終結果",
+                  {kUiWidth * 0.5f, 18.0f}, 38,
+                  TextHorizontalAlignment::Center);
+        QueueText(*impl_->fontSystem, impl_->font,
+                  "目標：すべての臓器をつなぐ",
+                  {kUiWidth * 0.5f, 64.0f}, 19,
+                  TextHorizontalAlignment::Center);
+        const std::size_t completedStageCount = finalResults != nullptr
+                                                    ? finalResults->stages.size()
+                                                    : 0;
+        const std::string completedText =
+            "クリアステージ " + std::to_string(completedStageCount);
+        QueueText(*impl_->fontSystem, impl_->font, completedText,
+                  {kUiWidth * 0.5f, 96.0f}, 24,
+                  TextHorizontalAlignment::Center);
+
+        const std::size_t pageCount =
+            GetFinalResultsPageCount(completedStageCount);
+        const std::size_t page = ClampFinalResultsPage(
+            impl_->finalResultsPage, completedStageCount);
+        const std::size_t firstStage =
+            page * kFinalResultsStagesPerPage;
+        const std::size_t visibleStageCount =
+            firstStage < completedStageCount
+                ? (std::min)(kFinalResultsStagesPerPage,
+                             completedStageCount - firstStage)
+                : 0;
+        for (std::size_t slot = 0; slot < visibleStageCount; ++slot) {
+            const StageResultEntry& stage =
+                finalResults->stages[firstStage + slot];
+            const UiRect bounds = GetFinalResultsCardBounds(slot);
+            const std::string_view title = stage.stageTitle.empty()
+                                               ? stage.puzzleId
+                                               : stage.stageTitle;
+            QueueText(*impl_->fontSystem, impl_->font, title,
+                      {bounds.left + 68.0f,
+                       bounds.top + bounds.height * 0.5f},
+                      21, TextHorizontalAlignment::Left,
+                      TextVerticalAlignment::Middle);
+            const std::string ratioText =
+                "【臓器 " + std::to_string(stage.connectedOrganCount) +
+                "/" + std::to_string(stage.totalOrganCount) + "】";
+            QueueText(*impl_->fontSystem, impl_->font, ratioText,
+                      {bounds.left + bounds.width - 12.0f,
+                       bounds.top + bounds.height * 0.5f},
+                      20, TextHorizontalAlignment::Right,
+                      TextVerticalAlignment::Middle);
+        }
+
+        const std::string pageText =
+            "ページ " + std::to_string(page + 1) + " / " +
+            std::to_string(pageCount);
+        QueueText(*impl_->fontSystem, impl_->font, pageText,
+                  {kUiWidth * 0.5f, 494.0f}, 17,
+                  TextHorizontalAlignment::Center);
+        const bool canGoToPreviousPage = page > 0;
+        const bool canGoToNextPage = page + 1 < pageCount;
+        const Color previousColor = canGoToPreviousPage
+                                        ? Color{}
+                                        : Color{0.50f, 0.50f, 0.50f, 1.0f};
+        const Color nextColor = canGoToNextPage
+                                    ? Color{}
+                                    : Color{0.50f, 0.50f, 0.50f, 1.0f};
+        QueueText(*impl_->fontSystem, impl_->font, "<",
+                  {kFinalResultsPreviousPageBounds.left +
+                       kFinalResultsPreviousPageBounds.width * 0.5f,
+                   kFinalResultsPreviousPageBounds.top +
+                       kFinalResultsPreviousPageBounds.height * 0.5f},
+                  38, TextHorizontalAlignment::Center,
+                  TextVerticalAlignment::Middle, previousColor);
+        QueueText(*impl_->fontSystem, impl_->font, ">",
+                  {kFinalResultsNextPageBounds.left +
+                       kFinalResultsNextPageBounds.width * 0.5f,
+                   kFinalResultsNextPageBounds.top +
+                       kFinalResultsNextPageBounds.height * 0.5f},
+                  38, TextHorizontalAlignment::Center,
+                  TextVerticalAlignment::Middle, nextColor);
+        break;
+    }
     case GameScreen::Playing:
         break;
     }
@@ -634,7 +910,7 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
                 "W/S または上下キー：選択    Enter/左クリック：決定",
                 {kUiWidth * 0.5f, 684.0f}, 17,
                 TextHorizontalAlignment::Center);
-        } else {
+        } else if (screen != GameScreen::FinalResults) {
             QueueText(
                 *impl_->fontSystem, impl_->font,
                 "W/S または上下キー：選択    Enter/左クリック：決定",
@@ -648,6 +924,76 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         KamataEngine::Sprite::BlendMode::kNormal);
     if (showFullBackground || showOverlay) {
         impl_->background->Draw();
+    }
+    if (screen == GameScreen::FinalResults && finalResults != nullptr &&
+        impl_->finalResultsResources) {
+        const std::size_t stageCount = finalResults->stages.size();
+        const std::size_t page = ClampFinalResultsPage(
+            impl_->finalResultsPage, stageCount);
+        const std::size_t firstStage =
+            page * kFinalResultsStagesPerPage;
+        const std::size_t visibleStageCount =
+            firstStage < stageCount
+                ? (std::min)(kFinalResultsStagesPerPage,
+                             stageCount - firstStage)
+                : 0;
+        Impl::FinalResultsResources& resources =
+            *impl_->finalResultsResources;
+        for (std::size_t slot = 0; slot < visibleStageCount; ++slot) {
+            const StageResultEntry& stage =
+                finalResults->stages[firstStage + slot];
+            const UiRect bounds = GetFinalResultsCardBounds(slot);
+            const float fillRatio = GetFinalResultsFillRatio(
+                stage.connectedOrganCount, stage.totalOrganCount);
+            const bool complete = stage.totalOrganCount > 0 &&
+                                  stage.connectedOrganCount >=
+                                      stage.totalOrganCount;
+
+            KamataEngine::Sprite& border = *resources.borders[slot];
+            border.SetColor(complete
+                                ? KamataEngine::Vector4{
+                                      0.86f, 0.63f, 0.24f, 1.0f}
+                                : KamataEngine::Vector4{
+                                      0.40f, 0.24f, 0.24f, 1.0f});
+            border.SetPosition({bounds.left, bounds.top});
+            border.SetSize({bounds.width, bounds.height});
+            border.Draw();
+
+            const float innerLeft = bounds.left + kFinalResultsCardInset;
+            const float innerTop = bounds.top + kFinalResultsCardInset;
+            const float innerWidth =
+                bounds.width - kFinalResultsCardInset * 2.0f;
+            const float innerHeight =
+                bounds.height - kFinalResultsCardInset * 2.0f;
+            KamataEngine::Sprite& card = *resources.cards[slot];
+            card.SetColor({0.12f, 0.055f, 0.065f, 0.96f});
+            card.SetPosition({innerLeft, innerTop});
+            card.SetSize({innerWidth, innerHeight});
+            card.Draw();
+
+            if (fillRatio > 0.0f) {
+                KamataEngine::Sprite& fill = *resources.fills[slot];
+                fill.SetColor(complete
+                                  ? KamataEngine::Vector4{
+                                        0.78f, 0.49f, 0.13f, 0.38f}
+                                  : KamataEngine::Vector4{
+                                        0.58f, 0.18f, 0.20f, 0.34f});
+                fill.SetPosition({innerLeft, innerTop});
+                fill.SetSize({innerWidth * fillRatio, innerHeight});
+                fill.Draw();
+            }
+
+            KamataEngine::Sprite& icon = *resources.icons[slot];
+            icon.SetColor({1.0f, 1.0f, 1.0f, 1.0f});
+            icon.SetPosition({
+                bounds.left + 8.0f,
+                bounds.top +
+                    (bounds.height - kFinalResultsIconSize) * 0.5f,
+            });
+            icon.SetSize(
+                {kFinalResultsIconSize, kFinalResultsIconSize});
+            icon.Draw();
+        }
     }
     if (screen == GameScreen::LevelSelect) {
         // The level selector is built entirely from the shared white sprite:
@@ -740,6 +1086,38 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         drawPageButton(0, *layout.previousPage, canGoToPreviousPage);
         drawPageButton(1, *layout.nextPage, canGoToNextPage);
     }
+    if (screen == GameScreen::FinalResults) {
+        const std::size_t pageCount =
+            GetFinalResultsPageCount(impl_->finalResultsStageCount);
+        const std::size_t page = ClampFinalResultsPage(
+            impl_->finalResultsPage, impl_->finalResultsStageCount);
+        const auto drawPageButton =
+            [this](const std::size_t index, const UiRect bounds,
+                   const bool enabled) {
+                const float brightness = enabled ? 0.92f : 0.38f;
+                KamataEngine::Sprite& tile =
+                    *impl_->levelPageTiles[index];
+                KamataEngine::Sprite& backdrop =
+                    *impl_->levelPageBackdrops[index];
+                tile.SetColor(
+                    {0.86f * brightness, 0.63f * brightness,
+                     0.42f * brightness, 1.0f});
+                tile.SetPosition({bounds.left, bounds.top});
+                tile.SetSize({bounds.width, bounds.height});
+                tile.Draw();
+                backdrop.SetColor(
+                    {0.29f * brightness, 0.11f * brightness,
+                     0.13f * brightness, 1.0f});
+                backdrop.SetPosition(
+                    {bounds.left + 7.0f, bounds.top + 9.0f});
+                backdrop.SetSize(
+                    {bounds.width - 14.0f, bounds.height - 18.0f});
+                backdrop.Draw();
+            };
+        drawPageButton(0, kFinalResultsPreviousPageBounds, page > 0);
+        drawPageButton(1, kFinalResultsNextPageBounds,
+                       page + 1 < pageCount);
+    }
     if (hasSelection &&
         selectedEntry->visual == MenuLayout::EntryVisual::Standard) {
         impl_->selection->Draw();
@@ -779,7 +1157,21 @@ bool GameUiRenderer::IsPointerOverAction(
             .has_value()) {
         return true;
     }
-    if (!impl_ || screen != GameScreen::LevelSelect) {
+    if (!impl_) {
+        return false;
+    }
+
+    if (screen == GameScreen::FinalResults) {
+        const std::size_t pageCount =
+            GetFinalResultsPageCount(impl_->finalResultsStageCount);
+        const std::size_t page = ClampFinalResultsPage(
+            impl_->finalResultsPage, impl_->finalResultsStageCount);
+        return (page > 0 &&
+                kFinalResultsPreviousPageBounds.Contains(point)) ||
+               (page + 1 < pageCount &&
+                kFinalResultsNextPageBounds.Contains(point));
+    }
+    if (screen != GameScreen::LevelSelect) {
         return false;
     }
 
@@ -867,6 +1259,65 @@ std::optional<std::size_t> GameUiRenderer::ApplyLevelSelectNavigation(
     }
     impl_->manualLevelPageChange = true;
     return impl_->levelSelectPage * kLevelsPerPage;
+}
+
+bool GameUiRenderer::ApplyFinalResultsNavigation(
+    const UiPoint point, const bool mousePrimaryPressed, const int wheelDelta,
+    const bool keyboardNavigated, const bool activationRequested,
+    const GameScreen screen) noexcept {
+    if (!impl_ || screen != GameScreen::FinalResults ||
+        !impl_->lastDrawnScreen.has_value() ||
+        *impl_->lastDrawnScreen != GameScreen::FinalResults) {
+        return false;
+    }
+
+    impl_->finalResultsPage = ClampFinalResultsPage(
+        impl_->finalResultsPage, impl_->finalResultsStageCount);
+    const std::size_t previousPage = impl_->finalResultsPage;
+
+    if (keyboardNavigated || activationRequested) {
+        impl_->finalResultsPageWheelRemainder = 0;
+        return false;
+    }
+
+    bool pageButtonClicked = false;
+    std::ptrdiff_t pageButtonDelta = 0;
+    if (mousePrimaryPressed) {
+        if (kFinalResultsPreviousPageBounds.Contains(point)) {
+            pageButtonClicked = true;
+            pageButtonDelta = -1;
+        } else if (kFinalResultsNextPageBounds.Contains(point)) {
+            pageButtonClicked = true;
+            pageButtonDelta = 1;
+        }
+    }
+
+    if (pageButtonClicked) {
+        impl_->finalResultsPageWheelRemainder = 0;
+        impl_->finalResultsPage = MoveFinalResultsPage(
+            impl_->finalResultsPage, pageButtonDelta,
+            impl_->finalResultsStageCount);
+    } else if (wheelDelta != 0) {
+        impl_->finalResultsPageWheelRemainder +=
+            static_cast<std::int64_t>(wheelDelta);
+        const std::int64_t wheelPageDelta =
+            impl_->finalResultsPageWheelRemainder / kWheelDeltaPerPage;
+        impl_->finalResultsPageWheelRemainder %= kWheelDeltaPerPage;
+        if (wheelPageDelta > 0) {
+            impl_->finalResultsPage = MoveFinalResultsPage(
+                impl_->finalResultsPage,
+                -static_cast<std::ptrdiff_t>(wheelPageDelta),
+                impl_->finalResultsStageCount);
+        } else if (wheelPageDelta < 0) {
+            const std::ptrdiff_t magnitude =
+                static_cast<std::ptrdiff_t>(-(wheelPageDelta + 1)) + 1;
+            impl_->finalResultsPage = MoveFinalResultsPage(
+                impl_->finalResultsPage, magnitude,
+                impl_->finalResultsStageCount);
+        }
+    }
+
+    return impl_->finalResultsPage != previousPage;
 }
 
 void GameUiRenderer::Finalize() noexcept { impl_.reset(); }

@@ -1,6 +1,6 @@
 instance_id,source_preset_id,node_type,texture_path,width_tiles,height_tiles,display_name,tile_x,tile_y,max_incoming,max_outgoing,max_outgoing_length
-heart,heart_root,,,,,heart,12,21,,1,500
+heart,heart_root,,,,,心臓,12,21,,1,500
 lung,organ_follow,,assets/textures/node/lung.png,,,肺,28,8,2,2,450
 liver,organ_follow,,assets/textures/node/liver.png,,,肝臓,48,8,2,2,450
-brain,brain_end,,,,,,65,21,2,,
+brain,brain_end,,,,,脳,65,21,2,,
 rib_cage,bone_dead,,,14,12,,33,16,,,

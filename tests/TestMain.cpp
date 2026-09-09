@@ -16,8 +16,9 @@ struct TestSuite {
 
 int main() {
     object_connect::tests::TestContext context;
-    constexpr std::array<TestSuite, 11> suites = {{
+    constexpr std::array<TestSuite, 12> suites = {{
         {"Data.PuzzleCatalog", object_connect::tests::RunPuzzleCatalogTests},
+        {"Game.FinalResults", object_connect::tests::RunFinalResultsTests},
         {"Game.Flow", object_connect::tests::RunGameFlowTests},
         {"Game.MusicSequencePolicy", object_connect::tests::RunMusicSequencePolicyTests},
         {"Geometry.2D", object_connect::tests::RunGeometry2DTests},

@@ -517,6 +517,11 @@ struct ParsedLevel final {
         definition.id = ParseDefinitionId(
             record.fields[0], kLevelsCatalogName, record.lineNumber,
             kLevelsHeader[0], kLevelsHeader);
+        if (definition.id == kFinalResultsTargetId) {
+            ThrowFieldError(kLevelsCatalogName, record.lineNumber,
+                            kLevelsHeader[0], kLevelsHeader,
+                            "'final_results' is reserved for next_level_id");
+        }
         if (!ids.insert(definition.id).second) {
             ThrowFieldError(kLevelsCatalogName, record.lineNumber,
                             kLevelsHeader[0], kLevelsHeader,
