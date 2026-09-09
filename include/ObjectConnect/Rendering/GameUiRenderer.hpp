@@ -11,6 +11,9 @@
 
 namespace object_connect {
 
+class FontSystem;
+struct FontHandle;
+
 struct UiPoint final {
     float x = 0.0f;
     float y = 0.0f;
@@ -24,7 +27,8 @@ public:
     GameUiRenderer(const GameUiRenderer&) = delete;
     GameUiRenderer& operator=(const GameUiRenderer&) = delete;
 
-    [[nodiscard]] bool Initialize(std::string& error);
+    [[nodiscard]] bool Initialize(FontSystem& fontSystem, FontHandle font,
+                                  std::string& error);
     void Draw(GameScreen screen, std::size_t selectedItem,
               const PuzzleCatalog& catalog,
               std::optional<std::size_t> currentPuzzleIndex,

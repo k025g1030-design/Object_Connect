@@ -162,6 +162,22 @@ void TestCsvReader(TestContext& context) {
     context.Expect(!wrongWidth.document.has_value() &&
                        wrongWidth.error.find("expected 2") != std::string::npos,
                    "shared CSV reader rejects a structurally short row");
+
+    const data::CsvParseResult unicode = data::Csv::Parse(
+        "level_name,display_name\n"
+        "\xE8\xA1\x80\xE7\xAE\xA1\xE6\x8E\xA5\xE7\xB6\x9A,"
+        "\xE3\x81\xA4\xE3\x81\xAA\xE3\x81\x90\n");
+    context.Expect(unicode.document.has_value(),
+                   "shared CSV reader accepts UTF-8 Japanese display text");
+    if (unicode.document.has_value()) {
+        context.Expect(
+            unicode.document->records.size() == 1 &&
+                unicode.document->records[0].fields[0] ==
+                    "\xE8\xA1\x80\xE7\xAE\xA1\xE6\x8E\xA5\xE7\xB6\x9A" &&
+                unicode.document->records[0].fields[1] ==
+                    "\xE3\x81\xA4\xE3\x81\xAA\xE3\x81\x90",
+            "CSV level and node display names round-trip without changing UTF-8 bytes");
+    }
 }
 
 void TestValidCatalogAndDefaults(TestContext& context) {
@@ -234,6 +250,37 @@ void TestValidCatalogAndDefaults(TestContext& context) {
     context.Expect(beta.nodes[0].tilePosition ==
                        std::optional<TilePosition>{{999999, 999999}},
                    "the data loader does not impose canvas bounds");
+}
+
+void TestUnicodeCatalogRoundTrip(TestContext& context) {
+    constexpr std::string_view japaneseTitle =
+        "\xE8\xA1\x80\xE7\xAE\xA1\xE6\x8E\xA5\xE7\xB6\x9A";
+    constexpr std::string_view japaneseDisplayName =
+        "\xE3\x81\xA4\xE3\x81\xAA\xE3\x81\x90";
+    const std::string levels = std::string{kLevelsHeader} +
+        "unicode," + std::string{japaneseTitle} +
+        ",data/maps/unicode.csv,,100,,,,,,\n";
+    const std::string nodes{kNodePresetsHeader};
+    const std::string map = std::string{kMapHeader} +
+        "heart,,root,,1,1," + std::string{japaneseDisplayName} +
+        ",0,0,,1,100\n";
+    const std::array<PuzzleMapCsvSource, 1> maps{{
+        {"data/maps/unicode.csv", map},
+    }};
+
+    PuzzleCatalog catalog;
+    std::string error;
+    context.Expect(
+        PuzzleCatalogLoader::Parse(
+            {levels, nodes, std::span<const PuzzleMapCsvSource>{maps}},
+            catalog, error),
+        "puzzle catalog accepts UTF-8 Japanese title and node display name");
+    context.Expect(
+        error.empty() && catalog.GetPuzzles().size() == 1 &&
+            catalog.GetPuzzles()[0].title == japaneseTitle &&
+            catalog.GetPuzzles()[0].nodes.size() == 1 &&
+            catalog.GetPuzzles()[0].nodes[0].displayName == japaneseDisplayName,
+        "Japanese title and display name bytes round-trip through runtime catalog data");
 }
 
 void TestLevelWrapCompatibilityAndWarnings(TestContext& context) {
@@ -536,6 +583,7 @@ void TestBundledCatalogs(TestContext& context) {
 void RunPuzzleCatalogTests(TestContext& context) {
     TestCsvReader(context);
     TestValidCatalogAndDefaults(context);
+    TestUnicodeCatalogRoundTrip(context);
     TestLevelWrapCompatibilityAndWarnings(context);
     TestStructuralAndScalarErrors(context);
     TestNodePresetCatalog(context);

@@ -16,13 +16,16 @@ struct TestSuite {
 
 int main() {
     object_connect::tests::TestContext context;
-    constexpr std::array<TestSuite, 6> suites = {{
+    constexpr std::array<TestSuite, 9> suites = {{
         {"Data.PuzzleCatalog", object_connect::tests::RunPuzzleCatalogTests},
         {"Game.Flow", object_connect::tests::RunGameFlowTests},
         {"Geometry.2D", object_connect::tests::RunGeometry2DTests},
         {"Puzzle.Board", object_connect::tests::RunPuzzleBoardTests},
         {"Tentacle.Simulation", object_connect::tests::RunBloodTentacleTests},
         {"Tentacle.Ribbon", object_connect::tests::RunRibbonStripTests},
+        {"Text.LazyGlyph", object_connect::tests::RunLazyGlyphTests},
+        {"Text.Layout", object_connect::tests::RunTextLayoutTests},
+        {"Text.Utf8", object_connect::tests::RunUtf8Tests},
     }};
 
     for (const TestSuite& suite : suites) {

@@ -1,8 +1,9 @@
 #include "ObjectConnect/Rendering/GameUiRenderer.hpp"
 
+#include "ObjectConnect/Text/FontSystem.hpp"
+
 #include "TextureHandleRegistry.hpp"
 
-#include <2d/DebugText.h>
 #include <2d/Sprite.h>
 #include <base/DirectXCommon.h>
 
@@ -17,6 +18,12 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+// Windows.h aliases DrawText to DrawTextW. FontSystem deliberately uses the
+// engine-facing DrawText name, so keep the Win32 macro out of this unit.
+#ifdef DrawText
+#undef DrawText
+#endif
 
 namespace object_connect {
 namespace {
@@ -59,7 +66,7 @@ constexpr float kMenuLeft = 390.0f;
 constexpr float kMenuWidth = 500.0f;
 constexpr float kItemHeight = 54.0f;
 constexpr float kItemGap = 16.0f;
-constexpr float kTextScale = 1.55f;
+constexpr std::uint32_t kMenuTextPixelSize = 28;
 constexpr std::size_t kLevelGridColumns = 5;
 constexpr std::size_t kLevelGridRows = 2;
 constexpr std::size_t kLevelsPerPage =
@@ -72,7 +79,7 @@ constexpr float kLevelBackLeft = 596.0f;
 constexpr float kLevelBackTop = 558.0f;
 constexpr float kLevelNumberBackdropWidth = 72.0f;
 constexpr float kLevelNumberBackdropHeight = 68.0f;
-constexpr float kLevelNumberMaximumScale = 1.8f;
+constexpr std::uint32_t kLevelNumberMaximumPixelSize = 32;
 constexpr UiRect kPreviousPageBounds{126.0f, 284.0f, 88.0f, 88.0f};
 constexpr UiRect kNextPageBounds{1066.0f, 284.0f, 88.0f, 88.0f};
 constexpr float kUiWidth = 1280.0f;
@@ -226,9 +233,24 @@ void AddVerticalEntries(MenuLayout& layout,
     return layout;
 }
 
-void Print(KamataEngine::DebugText& debugText, const std::string_view text,
-           const float x, const float y, const float scale) {
-    debugText.Print(std::string{text}, x, y, scale);
+void QueueText(
+    FontSystem& fontSystem, const FontHandle font,
+    const std::string_view text, const Vec2 position,
+    const std::uint32_t pixelSize,
+    const TextHorizontalAlignment horizontalAlignment =
+        TextHorizontalAlignment::Left,
+    const TextVerticalAlignment verticalAlignment =
+        TextVerticalAlignment::Top,
+    const Color color = {}) {
+    static_cast<void>(fontSystem.DrawText(
+        font, text,
+        {
+            .position = position,
+            .pixelSize = pixelSize,
+            .color = color,
+            .horizontalAlignment = horizontalAlignment,
+            .verticalAlignment = verticalAlignment,
+        }));
 }
 
 [[nodiscard]] std::string LengthText(const float value) {
@@ -236,21 +258,29 @@ void Print(KamataEngine::DebugText& debugText, const std::string_view text,
     return std::to_string(rounded);
 }
 
-[[nodiscard]] float GetLevelNumberScale(const std::string_view label) noexcept {
+[[nodiscard]] std::uint32_t GetLevelNumberPixelSize(
+    FontSystem& fontSystem, const FontHandle font,
+    const std::string_view label) {
     if (label.empty()) {
-        return kLevelNumberMaximumScale;
+        return kLevelNumberMaximumPixelSize;
     }
     constexpr float kMaximumTextWidth = kLevelNumberBackdropWidth - 10.0f;
-    const float unscaledWidth = static_cast<float>(label.size()) *
-                                KamataEngine::DebugText::kFontWidth;
-    return (std::min)(kLevelNumberMaximumScale,
-                      kMaximumTextWidth / unscaledWidth);
+    const TextMetrics metrics = fontSystem.MeasureText(
+        font, kLevelNumberMaximumPixelSize, label);
+    if (!(metrics.width > kMaximumTextWidth)) {
+        return kLevelNumberMaximumPixelSize;
+    }
+    const float scaledSize =
+        static_cast<float>(kLevelNumberMaximumPixelSize) *
+        kMaximumTextWidth / metrics.width;
+    return (std::max)(1u, static_cast<std::uint32_t>(std::floor(scaledSize)));
 }
 
 } // namespace
 
 struct GameUiRenderer::Impl final {
-    KamataEngine::DebugText* debugText = nullptr;
+    FontSystem* fontSystem = nullptr;
+    FontHandle font{};
     std::unique_ptr<KamataEngine::Sprite> background;
     std::unique_ptr<KamataEngine::Sprite> selection;
     std::array<std::unique_ptr<KamataEngine::Sprite>,
@@ -309,12 +339,22 @@ struct GameUiRenderer::Impl final {
 GameUiRenderer::GameUiRenderer() noexcept = default;
 GameUiRenderer::~GameUiRenderer() { Finalize(); }
 
-bool GameUiRenderer::Initialize(std::string& error) {
+bool GameUiRenderer::Initialize(FontSystem& fontSystem, const FontHandle font,
+                                std::string& error) {
     Finalize();
     error.clear();
+    if (!fontSystem.IsInitialized()) {
+        error = "GameUiRenderer requires an initialized FontSystem.";
+        return false;
+    }
+    if (!font) {
+        error = "GameUiRenderer requires a valid UI font handle.";
+        return false;
+    }
     try {
         auto next = std::make_unique<Impl>();
-        next->debugText = KamataEngine::DebugText::GetInstance();
+        next->fontSystem = &fontSystem;
+        next->font = font;
         next->texturePath = "white1x1.png";
         const std::uint32_t white =
             rendering_detail::TextureHandleRegistry::Acquire(next->texturePath);
@@ -356,7 +396,7 @@ bool GameUiRenderer::Initialize(std::string& error) {
                 sprites.begin(), sprites.end(),
                 [](const auto& sprite) { return sprite != nullptr; });
         };
-        if (next->debugText == nullptr || !next->background || !next->selection ||
+        if (!next->background || !next->selection ||
             !allSpritesCreated(next->levelDecorations) ||
             !allSpritesCreated(next->levelTiles) ||
             !allSpritesCreated(next->levelNumberBackdrops) ||
@@ -471,37 +511,49 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
             if (!center.has_value() || node.displayName.empty()) {
                 continue;
             }
-            const float labelWidth = static_cast<float>(node.displayName.size()) *
-                                     KamataEngine::DebugText::kFontWidth;
-            Print(*impl_->debugText, node.displayName,
-                  center->x - labelWidth * 0.5f,
-                  center->y - KamataEngine::DebugText::kFontHeight * 0.5f,
-                  1.0f);
+            QueueText(*impl_->fontSystem, impl_->font, node.displayName,
+                      *center, 18, TextHorizontalAlignment::Center,
+                      TextVerticalAlignment::Middle);
         }
-        Print(*impl_->debugText,
-              "REMAINING " + LengthText(board->remainingLength) + " / " +
-                  LengthText(board->totalLength),
-              28.0f, 24.0f, 1.35f);
-        Print(*impl_->debugText, "R - RETRY", 1060.0f, 28.0f, 1.0f);
+        const std::string remainingText =
+            "REMAINING " + LengthText(board->remainingLength) + " / " +
+            LengthText(board->totalLength);
+        QueueText(*impl_->fontSystem, impl_->font, remainingText,
+                  {28.0f, 24.0f}, 24);
+        QueueText(*impl_->fontSystem, impl_->font, "R - RETRY",
+                  {1252.0f, 28.0f}, 18,
+                  TextHorizontalAlignment::Right);
         if (board->lengthExhausted && !board->solved) {
-            Print(*impl_->debugText, "NOT ENOUGH LENGTH", 500.0f, 74.0f, 1.4f);
+            QueueText(*impl_->fontSystem, impl_->font, "NOT ENOUGH LENGTH",
+                      {kUiWidth * 0.5f, 74.0f}, 25,
+                      TextHorizontalAlignment::Center);
         }
     }
 
     switch (screen) {
     case GameScreen::MainMenu:
-        Print(*impl_->debugText, "OBJECT CONNECT", 442.0f, 118.0f, 2.5f);
-        Print(*impl_->debugText, "RESTORE THE FLOW", 484.0f, 180.0f, 1.3f);
+        QueueText(*impl_->fontSystem, impl_->font, "OBJECT CONNECT",
+                  {kUiWidth * 0.5f, 118.0f}, 45,
+                  TextHorizontalAlignment::Center);
+        QueueText(*impl_->fontSystem, impl_->font, "RESTORE THE FLOW",
+                  {kUiWidth * 0.5f, 180.0f}, 23,
+                  TextHorizontalAlignment::Center);
         break;
     case GameScreen::LevelSelect:
-        Print(*impl_->debugText, "LEVEL SELECT", 532.0f, 78.0f, 2.25f);
+        QueueText(*impl_->fontSystem, impl_->font, "ステージ選択",
+                  {kUiWidth * 0.5f, 78.0f}, 41,
+                  TextHorizontalAlignment::Center);
         break;
     case GameScreen::Paused:
-        Print(*impl_->debugText, "PAUSED", 535.0f, 100.0f, 2.5f);
+        QueueText(*impl_->fontSystem, impl_->font, "PAUSED",
+                  {kUiWidth * 0.5f, 100.0f}, 45,
+                  TextHorizontalAlignment::Center);
         break;
     case GameScreen::Solved:
         if (solvedMenuReady) {
-            Print(*impl_->debugText, "FLOW RESTORED", 455.0f, 112.0f, 2.3f);
+            QueueText(*impl_->fontSystem, impl_->font, "FLOW RESTORED",
+                      {kUiWidth * 0.5f, 112.0f}, 41,
+                      TextHorizontalAlignment::Center);
         }
         break;
     case GameScreen::Playing:
@@ -512,55 +564,66 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         for (const MenuLayout::Entry& entry : layout.entries) {
             const UiRect& bounds = entry.bounds;
             if (entry.visual == MenuLayout::EntryVisual::LevelTile) {
-                const float scale = GetLevelNumberScale(entry.label);
-                const float width = static_cast<float>(entry.label.size()) *
-                                    KamataEngine::DebugText::kFontWidth * scale;
-                const float height =
-                    KamataEngine::DebugText::kFontHeight * scale;
-                Print(*impl_->debugText, entry.label,
-                      bounds.left + (bounds.width - width) * 0.5f,
-                      bounds.top + (bounds.height - height) * 0.5f, scale);
+                const std::uint32_t pixelSize = GetLevelNumberPixelSize(
+                    *impl_->fontSystem, impl_->font, entry.label);
+                QueueText(*impl_->fontSystem, impl_->font, entry.label,
+                          {bounds.left + bounds.width * 0.5f,
+                           bounds.top + bounds.height * 0.5f},
+                          pixelSize, TextHorizontalAlignment::Center,
+                          TextVerticalAlignment::Middle);
                 continue;
             }
             if (entry.visual == MenuLayout::EntryVisual::LevelBack) {
-                constexpr float kBackScale = 1.05f;
-                const float width = static_cast<float>(entry.label.size()) *
-                                    KamataEngine::DebugText::kFontWidth *
-                                    kBackScale;
-                const float height = KamataEngine::DebugText::kFontHeight *
-                                     kBackScale;
-                Print(*impl_->debugText, entry.label,
-                      bounds.left + (bounds.width - width) * 0.5f,
-                      bounds.top + (bounds.height - height) * 0.5f,
-                      kBackScale);
+                QueueText(*impl_->fontSystem, impl_->font, entry.label,
+                          {bounds.left + bounds.width * 0.5f,
+                           bounds.top + bounds.height * 0.5f},
+                          19, TextHorizontalAlignment::Center,
+                          TextVerticalAlignment::Middle);
                 continue;
             }
             if (entry.logicalItemIndex == selectedItem) {
-                Print(*impl_->debugText, ">", bounds.left + 18.0f,
-                      bounds.top + 10.0f, kTextScale);
+                QueueText(*impl_->fontSystem, impl_->font, ">",
+                          {bounds.left + 18.0f,
+                           bounds.top + bounds.height * 0.5f},
+                          kMenuTextPixelSize, TextHorizontalAlignment::Left,
+                          TextVerticalAlignment::Middle);
             }
-            Print(*impl_->debugText, entry.label, bounds.left + 58.0f,
-                  bounds.top + 10.0f, kTextScale);
+            QueueText(*impl_->fontSystem, impl_->font, entry.label,
+                      {bounds.left + 58.0f,
+                       bounds.top + bounds.height * 0.5f},
+                      kMenuTextPixelSize, TextHorizontalAlignment::Left,
+                      TextVerticalAlignment::Middle);
         }
         if (screen == GameScreen::LevelSelect) {
             const std::string pageText =
                 "PAGE " + std::to_string(layout.levelPage + 1) + " / " +
                 std::to_string(layout.levelPageCount);
-            constexpr float kPageScale = 0.95f;
-            const float pageWidth = static_cast<float>(pageText.size()) *
-                                    KamataEngine::DebugText::kFontWidth *
-                                    kPageScale;
-            Print(*impl_->debugText, pageText,
-                  (kUiWidth - pageWidth) * 0.5f, 508.0f, kPageScale);
-            Print(*impl_->debugText, "<", 156.0f, 306.0f, 2.3f);
-            Print(*impl_->debugText, ">", 1096.0f, 306.0f, 2.3f);
-            Print(*impl_->debugText,
-                  "W/S OR UP/DOWN - SELECT    ENTER/LEFT CLICK - CONFIRM",
-                  300.0f, 684.0f, 0.95f);
+            QueueText(*impl_->fontSystem, impl_->font, pageText,
+                      {kUiWidth * 0.5f, 508.0f}, 17,
+                      TextHorizontalAlignment::Center);
+            QueueText(*impl_->fontSystem, impl_->font, "<",
+                      {kPreviousPageBounds.left +
+                           kPreviousPageBounds.width * 0.5f,
+                       kPreviousPageBounds.top +
+                           kPreviousPageBounds.height * 0.5f},
+                      41, TextHorizontalAlignment::Center,
+                      TextVerticalAlignment::Middle);
+            QueueText(*impl_->fontSystem, impl_->font, ">",
+                      {kNextPageBounds.left + kNextPageBounds.width * 0.5f,
+                       kNextPageBounds.top + kNextPageBounds.height * 0.5f},
+                      41, TextHorizontalAlignment::Center,
+                      TextVerticalAlignment::Middle);
+            QueueText(
+                *impl_->fontSystem, impl_->font,
+                "W/S OR UP/DOWN - SELECT    ENTER/LEFT CLICK - CONFIRM",
+                {kUiWidth * 0.5f, 684.0f}, 17,
+                TextHorizontalAlignment::Center);
         } else {
-            Print(*impl_->debugText,
-                  "W/S OR UP/DOWN - SELECT    ENTER/LEFT CLICK - CONFIRM",
-                  300.0f, 662.0f, 0.95f);
+            QueueText(
+                *impl_->fontSystem, impl_->font,
+                "W/S OR UP/DOWN - SELECT    ENTER/LEFT CLICK - CONFIRM",
+                {kUiWidth * 0.5f, 662.0f}, 17,
+                TextHorizontalAlignment::Center);
         }
     }
 
@@ -669,7 +732,6 @@ void GameUiRenderer::Draw(const GameScreen screen, const std::size_t selectedIte
         impl_->hudWarning->Draw();
         impl_->messageWarning->Draw();
     }
-    impl_->debugText->DrawAll();
     KamataEngine::Sprite::PostDraw();
     impl_->manualLevelPageChange = false;
 }

@@ -11,8 +11,8 @@
 namespace object_connect::rendering_detail {
 namespace {
 
-// Keep half of KamataEngine's 1024 descriptors available for DebugText, ImGui,
-// bootstrap resources, and future runtime systems.
+// Keep half of KamataEngine's 1024 descriptors available for ImGui, bootstrap
+// resources, and future runtime systems.
 constexpr std::size_t kMaximumManagedTextures = 512;
 
 struct TextureEntry final {
@@ -26,7 +26,7 @@ struct TextureEntry final {
 }
 
 [[nodiscard]] bool IsEngineOwnedTexture(const std::string_view path) noexcept {
-    return path == "white1x1.png" || path == "debugfont.png";
+    return path == "white1x1.png";
 }
 
 } // namespace

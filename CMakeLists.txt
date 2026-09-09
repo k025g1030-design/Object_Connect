@@ -60,6 +60,7 @@ set(_required_engine_paths
     "${KAMATA_INCLUDE_DIR}/KamataEngine.h"
     "${DIRECTXTEX_INCLUDE_DIR}"
     "${IMGUI_INCLUDE_DIR}/imgui.h"
+    "${IMGUI_INCLUDE_DIR}/imstb_truetype.h"
     "${KAMATA_ENGINE_ROOT}/External/KamataEngine/lib/Debug/KamataEngine.lib"
     "${KAMATA_ENGINE_ROOT}/External/KamataEngine/lib/Release/KamataEngine.lib"
     "${KAMATA_ENGINE_ROOT}/External/DirectXTex/lib/Debug/DirectXTex.lib"
@@ -151,7 +152,6 @@ endforeach()
 
 set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/white1x1.png"
-    "${OBJECT_CONNECT_RESOURCE_DIR}/debugfont.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/kamata.ico"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/nodes.csv"
@@ -177,6 +177,9 @@ set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/SpriteVS.hlsl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/SpritePS.hlsl"
     "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/SpriteSRGBOutputPS.hlsl"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/Text.hlsli"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/TextVS.hlsl"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/shaders/TextPS.hlsl"
 )
 foreach(_required_path IN LISTS _required_project_resources)
     if(NOT EXISTS "${_required_path}")
@@ -234,6 +237,8 @@ set(OBJECT_CONNECT_CORE_SOURCES
     src/ObjectConnect/Puzzle/PuzzleBoard.cpp
     src/ObjectConnect/Tentacle/BloodTentacle.cpp
     src/ObjectConnect/Tentacle/RibbonStrip.cpp
+    src/ObjectConnect/Text/TextLayout.cpp
+    src/ObjectConnect/Text/Utf8.cpp
 )
 
 set(OBJECT_CONNECT_RUNTIME_SOURCES
@@ -245,6 +250,7 @@ set(OBJECT_CONNECT_RUNTIME_SOURCES
     src/ObjectConnect/Rendering/GameUiRenderer.cpp
     src/ObjectConnect/Rendering/PuzzleRenderer.cpp
     src/ObjectConnect/Rendering/TextureHandleRegistry.cpp
+    src/ObjectConnect/Text/FontSystem.cpp
 )
 
 set(OBJECT_CONNECT_ENTRY_SOURCE src/main.cpp)
@@ -269,8 +275,8 @@ add_library(ObjectConnect::Core ALIAS object_connect_core)
 add_library(object_connect_runtime STATIC ${OBJECT_CONNECT_RUNTIME_SOURCES})
 target_include_directories(object_connect_runtime
     PUBLIC "${OBJECT_CONNECT_INCLUDE_DIR}"
-    PRIVATE "$<$<CONFIG:Debug>:${IMGUI_INCLUDE_DIR}>"
 )
+target_include_directories(object_connect_runtime SYSTEM PRIVATE "${IMGUI_INCLUDE_DIR}")
 target_link_libraries(object_connect_runtime
     PUBLIC ObjectConnect::Core
     PRIVATE KamataEngine::KamataEngine DirectXTex::DirectXTex d3d12 d3dcompiler dxgi
@@ -329,6 +335,9 @@ if(BUILD_TESTING)
         tests/Puzzle/PuzzleBoardTests.cpp
         tests/Tentacle/BloodTentacleTests.cpp
         tests/Tentacle/RibbonStripTests.cpp
+        tests/Text/LazyGlyphTests.cpp
+        tests/Text/TextLayoutTests.cpp
+        tests/Text/Utf8Tests.cpp
     )
     target_include_directories(Object_Connect_CoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     target_link_libraries(Object_Connect_CoreTests PRIVATE ObjectConnect::Core)
@@ -341,6 +350,26 @@ if(BUILD_TESTING)
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
     )
     add_test(NAME Object_Connect.Core COMMAND Object_Connect_CoreTests)
+
+    add_executable(Object_Connect_FontSystemLifecycleTests
+        tests/TestSupport.hpp
+        tests/Text/FontSystemLifecycleTests.cpp
+    )
+    target_include_directories(Object_Connect_FontSystemLifecycleTests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+    target_link_libraries(Object_Connect_FontSystemLifecycleTests
+        PRIVATE ObjectConnect::Runtime
+    )
+    target_compile_definitions(Object_Connect_FontSystemLifecycleTests PRIVATE
+        UNICODE _UNICODE NOMINMAX
+    )
+    configure_object_connect_target(Object_Connect_FontSystemLifecycleTests)
+    set_target_properties(Object_Connect_FontSystemLifecycleTests PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+    )
+    add_test(NAME Object_Connect.FontSystemLifecycle
+             COMMAND Object_Connect_FontSystemLifecycleTests)
 endif()
 
 add_custom_target(run

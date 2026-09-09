@@ -2,13 +2,14 @@
 
 ## 1. 設計目標
 
-`Object_Connect` 是固定 1280×720 的 2D Game Jam 解謎 MVP。目前架構集中處理五件事：
+`Object_Connect` 是固定 1280×720 的 2D Game Jam 解謎 MVP。目前架構集中處理六件事：
 
 1. 從三層 CSV 載入關卡與節點資料。
 2. 在 runtime 依玩家拖曳建立連線；資料只描述節點，不預先列出 edge。
 3. 管理多個 root／follow／end／dead 節點、容量和雙層長度預算。
 4. 用 engine-independent Verlet 粒子鏈模擬每條已提交或預覽中的血管。
 5. 用 KamataEngine／DirectX 12 把唯讀 snapshot 畫成簡單的 2D 畫面。
+6. 將 UTF-8 UI 文字 layout 成 glyph，lazy rasterize 至 atlas 後以 DirectX 12 quad 繪製。
 
 容易閱讀比高度泛化重要。專案沒有 ECS、service locator、scene graph、script VM 或通用 serialization framework。公開 API 位於 `include/ObjectConnect/`，實作固定放在對稱的 `src/ObjectConnect/`。平台與 GPU 細節只留在 runtime target。
 
@@ -17,7 +18,7 @@
 ```text
 Object_Connect executable
   -> object_connect_runtime
-       -> Application / Audio / Input / Game / UI / PuzzleRenderer
+       -> Application / Audio / Input / Game / UI / PuzzleRenderer / FontSystem
        -> KamataEngine / DirectX 12
        -> object_connect_core
             -> Math / CSV + Data / Geometry
@@ -45,6 +46,7 @@ Object_Connect_CoreTests
 | Game/GameFlow | MainMenu／LevelSelect／Playing／Paused／Solved 的輸入語意 | Board simulation 與繪製 |
 | Input | 鍵盤、滑鼠與 focus edge | 解釋拖曳或選單 command |
 | Rendering | Flat-color 血管／背景、快取節點 sprite、fallback、HUD、overlay、menu hit-test | 修改 Board 或 Flow |
+| Text/FontSystem | strict UTF-8 decode、TTF metrics、layout、glyph／atlas cache、queue 與 generic quad draw | 翻譯、IME、fallback chain 或複雜 shaping |
 | Game | Catalog、session、flow、next-level ID 與 renderer 的高層協調 | 低層 constraint 或 CSV parsing |
 
 ## 4. 三層資料模型
@@ -266,7 +268,7 @@ background
 -> dead node sprites or rectangle fallbacks
 -> available-source pulse
 -> root / follow / end sprites or rectangle fallbacks
--> GameUiRenderer ASCII HUD / menu overlay
+-> GameUiRenderer UTF-8 HUD / menu overlay
 ```
 
 Inactive node 使用灰暗 tint，active node 使用原貼圖／正常 fallback palette。`availableSource` 有脈動提示；目前拖曳的 selected source 使用更強的 pulse。沒有 placement 的 node 不畫。
@@ -275,7 +277,31 @@ Inactive node 使用灰暗 tint，active node 使用原貼圖／正常 fallback 
 
 Dead 的 sprite／fallback 畫在血管之後，只能視覺遮住部分穿越，不能取代 particle collision。
 
-UI 使用 KamataEngine sprite 和 debug text。`displayName` 空白或 node 沒有 placement 時不畫名稱；HUD 顯示 global remaining，不顯示每個 source 的 local remaining。Level Select 只使用既有 `white1x1.png` 染色疊出棕色框板、暖白關卡牌、左右箭頭與 BACK，不新增美術素材或鎖關狀態；每頁固定顯示 5 欄×2 列，Draw 與 HitTest 共用同一份半開矩形 layout。箭頭／滾輪換頁後會把選取同步至新頁第一個 catalog index，箭頭本身不偽裝成關卡索引。
+UI 的 panel／card 仍使用 KamataEngine sprite，文字則全部 queue 到 `FontSystem`。`displayName` 空白或 node 沒有 placement 時不畫名稱；HUD 顯示 global remaining，不顯示每個 source 的 local remaining。Level Select 只使用既有 `white1x1.png` 染色疊出棕色框板、暖白關卡牌、左右箭頭與 BACK，不新增美術素材或鎖關狀態；正式標題改為 41px、畫面置中的 `ステージ選択`，其餘正式 UI 文案維持原樣。每頁固定顯示 5 欄×2 列，Draw 與 HitTest 共用同一份半開矩形 layout。箭頭／滾輪換頁後會把選取同步至新頁第一個 catalog index，箭頭本身不偽裝成關卡索引。
+
+### 11.1 FontSystem pipeline 與 ownership
+
+文字資料流固定如下，generic quad backend 不知道 UTF-8、TTF 或 glyph 的語意：
+
+```text
+UTF-8 bytes
+-> strict decoder
+-> Unicode scalar values
+-> layout cache
+-> glyph cache lookup
+-> stb_truetype metrics / rasterization
+-> R8_UNORM atlas region
+-> generic textured quads
+-> DirectX 12
+```
+
+Decoder 拒絕 overlong encoding、surrogate、超過 U+10FFFF 與截斷序列，依 maximal-subpart 規則產生 U+FFFD 且保證前進；newline 接受 LF、CRLF 和 bare CR。Layout 使用 font ascent、descent、line gap、advance、bearing 與簡單 kerning；空白只移動 pen，不配置 atlas。找不到 code point 時先使用 U+FFFD，該字型也沒有 U+FFFD 時才退到 glyph 0，並以 `{font, pixelSize, codePoint}` 為單位只警告一次。
+
+每個 font record 擁有自己的 glyph cache 與一組 1024×1024 `R8_UNORM` atlas page。第一頁在 load 時建立，以便立即回報 GPU resource failure；後續頁面只在舊頁填滿時 lazy 建立。Shelf packing 在 glyph 周圍保留 1px 透明 padding；已配置的 rect 永不搬移或覆寫。每頁使用持續 mapped、依 `GetCopyableFootprints` 配置的 upload buffer，只在 glyph 首次出現時提交 dirty-region copy。完整 layout 使用 256-entry LRU，queue 每 frame 上限 4096 glyph；statistics 分別追蹤 decode、layout hit／miss、rasterization、atlas upload 與 missing glyph，讓 cache 行為可被驗收。
+
+`FontHandle` 只代表字型檔，pixel size 留在 Measure／Draw。相同正規化路徑共用 record 並增加引用計數；ID 不重用，invalid／stale handle 會安全失敗。最後一個 unload 釋放該 font 的 glyph cache、atlas texture、upload buffer 和 descriptor heap；`Finalize` 可重複呼叫。這也使字型資源壽命不會滲入 `PuzzleBoard` 或 `GameFlow`。
+
+實作只在一個 private translation unit 啟用 KamataEngine 隨附的 `imstb_truetype.h` 1.26 static implementation，不引入 FreeType、SDL_ttf、system font 或額外 DLL。TTF parser 的輸入邊界限定為遊戲打包、可信任的字型檔；不把玩家或網路提供的任意 TTF 視為安全輸入。目前只做簡單 glyph positioning，不支援 shaping、fallback font chain、IME、直書、Ruby 或 rich text。
 
 `GameAudio` 是 runtime-only 的 KamataEngine Audio adapter。它只從引擎實際使用的 `Resources/audio/` 預檢並載入三個 optional WAV：一個跨畫面持續的 loop BGM，以及關卡確認和來源節點成功開始拖曳的 one-shot。缺檔只停用該 cue；`GameFlow` 與 `PuzzleBoard` 不持有音訊資源，也不複製任何音訊專用判定。
 
@@ -291,7 +317,7 @@ UI 使用 KamataEngine sprite 和 debug text。`displayName` 空白或 node 沒�
 | Paused | `RESUME`、`LEVEL SELECT`、`MAIN MENU`、`EXIT GAME` |
 | Solved | 有有效 next：`NEXT PUZZLE`、`LEVEL SELECT`、`RETRY`；否則只有後兩項 |
 
-`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、optional audio adapter 和兩個 renderer。Start／Retry 建立新 Board；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
+`Game` 是唯一高層組裝點。它擁有只讀 catalog、flow、optional current puzzle index、active `PuzzleBoard`、Input、optional audio adapter、`FontSystem` 和兩個 renderer。Start／Retry 建立新 Board；回選關／主選單銷毀 Board；Solved 保留畫面約 0.6 秒後才接受完成選單輸入。
 
 ## 13. 初始化與每幀資料流
 
@@ -304,14 +330,19 @@ WinMain
        PuzzleCatalogLoader::Load(levels + referenced maps)
        InputSystem::Initialize
        PuzzleRenderer::Initialize
+       FontSystem::Initialize
+       FontSystem::LoadFont(Resources/fonts/game.ttf)
        GameUiRenderer::Initialize
        GameAudio::Initialize (optional cues; BGM loop starts once)
   -> frame loop
 ```
 
+`GameConfig::uiFontPath` 預設為 `fonts/game.ttf`，相對於 runtime `Resources/` 解決。它是必要資產：檔案缺失或 TTF 無效時，`Game::Initialize` 失敗，診斷包含解決後的完整路徑。建置系統只負責把 `NoviceResources/fonts/game.ttf` 隨其他資源部署，不把它變成 configure-time 必要檔。
+
 Playing frame：
 
 ```text
+FontSystem::BeginFrame
 InputSystem::Sample
   -> Retry / focus / Esc / GameFlow
   -> BoardPointerInput
@@ -321,10 +352,12 @@ InputSystem::Sample
        update node state and solved
   -> MakeSnapshot
   -> PuzzleRenderer::Draw
-  -> GameUiRenderer::Draw
+  -> GameUiRenderer::Draw (queue text only)
+  -> KamataEngine Sprite::PostDraw
+  -> FontSystem::Flush
 ```
 
-只有穩定的 Playing frame 把 pointer input 交給 Board。Paused 不推進模擬；失焦先取消 preview 再暫停。
+只有穩定的 Playing frame 把 pointer input 交給 Board。Paused 不推進模擬；失焦先取消 preview 再暫停。文字延後至所有 KamataEngine sprite 結束後 flush，確保 HUD 位於最上層，也避免 FontSystem 與 Sprite 在同一段 draw 中互相覆蓋 descriptor heap。`Flush` 只把 copy／barrier／draw 記錄到目前的 command list；`Game` 在 `DirectXCommon::PostDraw` 提交並完成該 frame 後，才可能 unload 或 finalize font GPU resources。
 
 ## 14. 測試界線
 
@@ -338,8 +371,13 @@ InputSystem::Sample
 - BloodTentacle constraint、follow、attachment、pull output。
 - Ribbon vertex contract 與 degenerate safety。
 - MainMenu／LevelSelect／Pause／Solved，以及 `hasNextPuzzle` 選單差異。
+- UTF-8 ASCII／2／3／4-byte 與日文混排，以及非法 continuation、overlong、surrogate、超範圍和截斷輸入的 U+FFFD 行為。
+- Synthetic font metrics 下的 advance、bearing、kerning、baseline、line height、空字串、CR／LF／CRLF、trailing newline 和 alignment。
+- CSV 日文 `level_name`／`display_name` round-trip。
+- Fake rasterizer／atlas seam 下的跨 frame glyph cache、font／size 隔離、layout hit、單次 upload、missing glyph 與 atlas failure。
+- Monotonic font ID 在 registry lifetime 之間不重用，且耗盡時不 wrap。
 
-Headless tests 不能驗證 GPU 畫面、實際音訊輸出、拖曳手感、dead 遮擋和 HUD 排版，這些仍需人工回歸。
+另一個 headless lifecycle test 會連結 runtime，但不建立視窗或 D3D12 resources；它驗證未初始化／invalid handle、安全失敗、statistics 不被污染和重複 `Finalize`。Headless tests 仍不能驗證 GPU 畫面、實際音訊輸出、拖曳手感、dead 遮擋和 HUD 排版。已載入 font 的 stale handle、相同路徑引用計數與 GPU unload lifetime 由 runtime integration review 負責。實機驗收須確認 `game.ttf` 涵蓋所需日文字形、`ステージ選択` 沒有 tofu 且置中，首幀後相同文字不再增加 rasterization／upload statistics，並在 DirectX 12 debug layer 下檢查 resource-state error 與結束時 live-object leak。
 
 ## 15. 擴充界線
 
@@ -350,6 +388,7 @@ Headless tests 不能驗證 GPU 畫面、實際音訊輸出、拖曳手感、dea
 - Dead 對 Verlet particles 的 collision、繞障礙或 pathfinding。
 - 器官分數與直接路線彩蛋計分。
 - 出血／血壓倒數。
-- 存檔、解鎖、音訊設定／動態混音、hot reload、localization 或完整物理。
+- 存檔、解鎖、音訊設定／動態混音、hot reload、翻譯／locale 切換或完整物理。
+- Font shaping、fallback font chain、IME、直書、Ruby 與 rich text。
 
 新增真正的 obstacle collision 不只是 renderer 改圖層：必須先定義 collision shape、preview 行為、constraint solver 穩定性和長度語意。Texture 載入與 sprite lifecycle 應繼續留在 Rendering；不要讓 `PuzzleBoard` 持有 GPU asset。

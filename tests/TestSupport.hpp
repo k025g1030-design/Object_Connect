@@ -51,5 +51,8 @@ void RunGeometry2DTests(TestContext& context);
 void RunPuzzleBoardTests(TestContext& context);
 void RunBloodTentacleTests(TestContext& context);
 void RunRibbonStripTests(TestContext& context);
+void RunLazyGlyphTests(TestContext& context);
+void RunTextLayoutTests(TestContext& context);
+void RunUtf8Tests(TestContext& context);
 
 } // namespace object_connect::tests

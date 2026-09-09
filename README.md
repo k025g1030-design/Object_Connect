@@ -190,7 +190,7 @@ CSV のヘッダー名と順番は、定義と完全に同じにしてくださ�
 -> dead の画像または代わりの長方形
 -> source の脈動表示
 -> root / follow / end の画像または代わりの長方形
--> ASCII HUD / メニュー overlay
+-> UTF-8 HUD / メニュー overlay
 ```
 
 休止中（まだ接続されていない）のノードは暗く表示します。有効なノードは通常の色で表示し、血管を伸ばせる接続元には脈動する目印を表示します。配置位置がないノードは描きません。`display_name` が空の場合は文字を描きません。
@@ -198,6 +198,16 @@ CSV のヘッダー名と順番は、定義と完全に同じにしてくださ�
 レベルに入るとき、描画処理は最終的な `texture_path` を読み込み、ノードのスプライトを作ります。そして、`width_tiles × height_tiles` と配置位置に合わせて表示します。同じレベル内で同じパスを使う場合は、画像のハンドルを共有します。レベルを切り替えるときは、両方のレベルで使うハンドルをそのまま利用し、古いレベルだけで使っていたハンドルを解放します。そのため、毎フレームの描画で同じ画像を読み直すことはなく、以前のレベルの画像がディスクリプターを使い続けることもありません。
 
 UI とレベルの描画処理は、同じ参照カウント付きの一覧を通して画像のハンドルを共有し、片方が早く解放しないようにしています。配置済みノードが使う `texture_path` の種類は、1 レベルにつき最大 255 個です。これにより、512 パス分の一覧の中で、古いレベルと新しいレベルを切り替え中に同時に持つことができ、失敗した場合も元のレベルをそのまま残せます。パスが空の場合だけ、ノードの種類ごとの色を使った代わりの長方形を表示します。`dead` の画像と代わりの長方形は、どちらも血管より手前に描きます。
+
+## Unicode フォントと文字表示
+
+HUD とメニューの文字は KamataEngine の固定 ASCII `DebugText` ではなく、runtime の `FontSystem` が描画します。入力は UTF-8 として厳密にデコードされ、Unicode scalar value、glyph layout、glyph cache、`R8_UNORM` atlas、文字に依存しない textured quad、DirectX 12 draw call の順に処理されます。ASCII、日本語、改行を同じ API で扱い、幅と baseline は TTF の advance、bearing、kerning、ascent、descent、line gap から計算します。Level Select の正式な見出しは、41px で画面中央に配置する `ステージ選択` です。ほかの正式な UI 文言は変更していません。
+
+フォントファイルは `NoviceResources/fonts/game.ttf` に置いてください。ビルド後の必須 runtime asset は `Resources/fonts/game.ttf` で、`GameConfig::uiFontPath` の初期値 `fonts/game.ttf` から解決されます。ファイルがない、または有効な TTF として読み込めない場合は、解決後のフルパスを含むエラーでゲームの初期化に失敗します。この TTF はゲームに同梱した信頼できるファイルだけを使用してください。FontSystem は KamataEngine に付属する `imstb_truetype.h` 1.26 を private 実装として使い、FreeType、SDL_ttf、OS のシステムフォント、追加 DLL には依存しません。
+
+Glyph は `{font, pixel size, code point}` ごとに初回だけ rasterize し、1px の透明 padding を付けて 1024×1024 の atlas page へ順に格納します。最初の page は font load 時に GPU resource failure を検出するため作成し、満杯になった後の page は必要時にだけ増やします。既存の領域は移動も上書きもしません。同じフォントパスを複数回ロードした場合は参照カウント付きの font record を共有し、最後の unload で atlas、upload buffer、descriptor と glyph cache をまとめて解放します。layout は 256 件の LRU cache を使い、1 frame に queue できる glyph は最大 4096 個です。欠けている文字は U+FFFD、さらに存在しなければ glyph 0 へ安全に置き換えます。
+
+現在は単純な左から右への glyph 配置です。複雑な shaping、fallback font chain、IME、縦書き、ルビ、rich text は実装していません。FontSystem が Unicode を描画できることと、翻訳や locale 切替を備えた localization system があることは別です。
 
 ## 付属のレベルデータ
 
@@ -237,7 +247,7 @@ $env:KAMATA_ENGINE = "D:\path\to\KamataEngine"
 .\Build.ps1 -Configuration Debug -KamataEngineRoot "D:\your\KamataEngine"
 ```
 
-実行ファイルは `target/<Configuration>/Object_Connect.exe` に作られます。ビルド時に `NoviceResources/` を、実行ファイルと同じ場所にある `Resources/` へコピーします。プログラムの開始時に、作業フォルダーを実行ファイルのある場所へ設定します。
+実行ファイルは `target/<Configuration>/Object_Connect.exe` に作られます。ビルド時に `NoviceResources/` を、実行ファイルと同じ場所にある `Resources/` へコピーします。必須の `NoviceResources/fonts/game.ttf` も、この処理で `Resources/fonts/game.ttf` になります。プログラムの開始時に、作業フォルダーを実行ファイルのある場所へ設定します。
 
 Debug の DirectX debug layer が必要とする `dxcompiler.dll` と `dxil.dll` も、CMake が Windows SDK の x64 Redist から実行ファイルと同じ場所へコピーします。出力を構成に依存せず自己完結させるため、2 つの DLL は Debug／Release の両方へ配置します。この処理は Visual Studio と CLion／Ninja で共通です。SDK を標準外の場所に置く場合は、CMake の `OBJECT_CONNECT_DXC_REDIST_DIR` に 2 つの DLL があるディレクトリを指定してください。
 
@@ -252,7 +262,9 @@ ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 
 `Object_Connect_CoreTests` はウィンドウを作らず、GPU も必要ありません。コアテストでは、CSV、3 層データの決まり、AABB の形状判定、動的な接続元／接続先、接続数と 2 つの長さ制限、重複／循環／`dead` の直線判定、仮の線を戻したときの長さの返却、`BloodTentacle`、`RibbonStrip`、`GameFlow` を確認します。
 
-GPU を使った画面、ドラッグの感触、重なり方、HUD の配置は、人の目と操作で確認する必要があります。
+文字まわりの headless tests は、ASCII と 2／3／4-byte UTF-8、日本語の混在、overlong／surrogate／範囲外／途中で切れた不正列の U+FFFD 置換、CR／LF／CRLF、複数行の baseline と alignment を確認します。さらに、production と共通の lazy-residency／atlas seam を fake work で駆動し、同じ glyph が frame をまたいで一度だけ rasterize／upload されること、font と pixel size の cache 分離、layout cache hit、LRU eviction、missing glyph、atlas 作成失敗、font ID の非再利用と安全な枯渇を検証します。CSV の日本語 `level_name`／`display_name` も round-trip の対象です。別の headless lifecycle test は未初期化／invalid handle と複数回の `Finalize` を検証します。実際にロードした font の stale handle、同じパスの参照カウント、GPU unload lifetime は runtime integration review の対象です。
+
+GPU を使った画面、ドラッグの感触、重なり方、HUD の配置は、人の目と操作で確認する必要があります。特に `game.ttf` が必要な日本語 glyph を含むこと、`ステージ選択` が tofu にならず中央に配置されること、DirectX 12 debug layer に resource-state error や終了時の live-object leak がないことは実機で確認します。`Flush` は現在の command list に draw を記録する処理なので、最後に使用した frame の `DirectXCommon::PostDraw` が完了してから font を unload／finalize します。
 
 ## プログラムの構成
 
@@ -267,9 +279,11 @@ include/ObjectConnect/         公開 API；object_connect 名前空間
   Puzzle/                      PuzzleBoard と描画用 Snapshot
   Rendering/                   DirectX／KamataEngine との橋渡し
   Tentacle/                    Verlet シミュレーションと帯形状の作成
+  Text/                        UTF-8 layout、TTF glyph cache、FontSystem
 src/ObjectConnect/             include と同じ構成の実装
 tests/                         engine に依存しない core tests
 NoviceResources/data/          levels、presets、レベルごとの maps
+NoviceResources/fonts/         必須の信頼済み game.ttf
 NoviceResources/shaders/       flat-color 2D shaders
 Docs/Architecture.md           担当範囲、データの流れ、機能追加の境界
 ```
@@ -283,7 +297,8 @@ Docs/Architecture.md           担当範囲、データの流れ、機能追加�
 3. `PuzzleCatalogLoader.cpp` を見て、ひな形の引き継ぎ、マップの上書き、ゲーム用データの組み立て方を確認します。
 4. `PuzzleBoard.hpp/.cpp` を見て、有効なノード、動的な接続の確定、2 つの長さ制限を追います。
 5. `BloodTentacle.hpp/.cpp` と `RibbonStrip.hpp/.cpp` を見ます。
-6. 最後に `Game.cpp` を見て、プレイ中の状態、`nextLevelId`、描画処理の組み立て方を確認します。
+6. `FontSystem.hpp/.cpp` を見て、UTF-8 decode、layout、glyph／atlas cache と quad 描画の境界を確認します。
+7. 最後に `Game.cpp` を見て、プレイ中の状態、`nextLevelId`、描画処理の組み立て方を確認します。
 
 描画処理は Snapshot を読むだけです。`PuzzleBoard` の内容を書き換えないでください。新しいレベルを追加するときは、通常、`levels.csv` に 1 行追加し、新しいマップ CSV を 1 つ作るだけです。`Game.cpp` にレベル固有の内容を直接書かないでください。
 
@@ -292,4 +307,4 @@ Docs/Architecture.md           担当範囲、データの流れ、機能追加�
 - Dead と Verlet 粒子の衝突、血管が障害物をよける動き、経路探索。
 - データ内の形状をすべて確認する事前検査と、ひな形／マップの編集ツールまたは書き戻しツール。
 - 器官のスコア、出血／血圧のカウントダウン、セーブ、アンロックの進行状況。
-- 音声、ホットリロード、多言語対応、ECS、完全な物理処理、クリーチャー制御。
+- Font shaping、fallback font chain、IME、翻訳／locale 切替、ホットリロード、ECS、完全な物理処理、クリーチャー制御。

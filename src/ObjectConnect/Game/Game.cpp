@@ -8,15 +8,20 @@
 #include "ObjectConnect/Puzzle/PuzzleBoard.hpp"
 #include "ObjectConnect/Rendering/GameUiRenderer.hpp"
 #include "ObjectConnect/Rendering/PuzzleRenderer.hpp"
+#include "ObjectConnect/Text/FontSystem.hpp"
 
 #include <base/DirectXCommon.h>
 
 #include <cmath>
 #include <cstddef>
+#include <exception>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -30,6 +35,53 @@ constexpr std::size_t kRendererVertexCapacity = 65536;
     return std::isfinite(deltaSeconds) && deltaSeconds > 0.0f ? deltaSeconds : 0.0f;
 }
 
+[[nodiscard]] std::filesystem::path Utf8Path(
+    const std::string_view utf8Path) {
+    if (utf8Path.empty()) {
+        return {};
+    }
+    const auto* const bytes =
+        reinterpret_cast<const char8_t*>(utf8Path.data());
+    return std::filesystem::path{
+        std::u8string{bytes, bytes + utf8Path.size()}};
+}
+
+[[nodiscard]] std::string ToUtf8String(
+    const std::filesystem::path& path) {
+    const std::u8string utf8 = path.generic_u8string();
+    return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
+}
+
+[[nodiscard]] bool ResolveUiFontPath(const GameConfig& config,
+                                     std::string& utf8Path,
+                                     std::string& error) {
+    if (config.uiFontPath.empty()) {
+        error = "The UI font path must not be empty.";
+        return false;
+    }
+    try {
+        std::filesystem::path path = Utf8Path(config.uiFontPath);
+        if (path.is_relative()) {
+            path = Utf8Path(config.resourceRoot) / path;
+        }
+        std::error_code pathError;
+        path = std::filesystem::absolute(path, pathError).lexically_normal();
+        if (pathError) {
+            error = "Unable to resolve the UI font path: ";
+            error += pathError.message();
+            return false;
+        }
+        utf8Path = ToUtf8String(path);
+        return true;
+    } catch (const std::exception& exception) {
+        error = "Unable to resolve the UI font path: ";
+        error += exception.what();
+    } catch (...) {
+        error = "Unable to resolve the UI font path because of an unknown error.";
+    }
+    return false;
+}
+
 } // namespace
 
 struct Game::Impl final {
@@ -37,6 +89,8 @@ struct Game::Impl final {
     InputSystem input;
     GameAudio audio;
     PuzzleRenderer puzzleRenderer;
+    FontSystem fontSystem;
+    FontHandle uiFont{};
     GameUiRenderer ui;
     GameFlow flow;
     std::unique_ptr<PuzzleBoard> board;
@@ -251,6 +305,7 @@ struct Game::Impl final {
     }
 
     void Draw() {
+        fontSystem.BeginFrame();
         std::optional<PuzzleBoardSnapshot> snapshot;
         if (board) {
             snapshot = board->MakeSnapshot();
@@ -260,6 +315,7 @@ struct Game::Impl final {
                 currentPuzzleIndex, snapshot ? &*snapshot : nullptr,
                 HasNextPuzzle(),
                 solvedElapsedSeconds >= kSolvedMenuDelaySeconds);
+        static_cast<void>(fontSystem.Flush());
     }
 };
 
@@ -299,7 +355,24 @@ bool Game::Initialize(const GameConfig& config, std::string& error) {
     if (!next->puzzleRenderer.Initialize(kRendererVertexCapacity, error)) {
         return false;
     }
-    if (!next->ui.Initialize(error)) {
+    if (!next->fontSystem.Initialize(error)) {
+        return false;
+    }
+    std::string fontPath;
+    if (!ResolveUiFontPath(config, fontPath, error)) {
+        return false;
+    }
+    next->uiFont = next->fontSystem.LoadFont(fontPath, error);
+    if (!next->uiFont) {
+        const std::string fontError = std::move(error);
+        error = "Failed to load UI font '" + fontPath + "'";
+        if (!fontError.empty()) {
+            error += ": ";
+            error += fontError;
+        }
+        return false;
+    }
+    if (!next->ui.Initialize(next->fontSystem, next->uiFont, error)) {
         return false;
     }
     next->audio.Initialize(&next->startupWarnings);
@@ -323,6 +396,9 @@ void Game::Finalize() noexcept {
     if (impl_) {
         impl_->audio.Finalize();
         impl_->ui.Finalize();
+        impl_->fontSystem.UnloadFont(impl_->uiFont);
+        impl_->uiFont = {};
+        impl_->fontSystem.Finalize();
         impl_->puzzleRenderer.Finalize();
         impl_->input.Finalize();
     }
