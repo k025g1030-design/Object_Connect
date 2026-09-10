@@ -256,10 +256,12 @@ Windows x64、Visual Studio 2026 C++ Desktop workload、`Visual Studio 18 2026` 
 
 ```powershell
 $env:KAMATA_ENGINE = "D:\path\to\KamataEngine"
+.\Build.ps1
 .\Build.ps1 -Configuration Debug
-.\Build.ps1 -Configuration Release
 .\Run.ps1 -Configuration Debug
 ```
+
+`Build.ps1` の既定構成は配布用の Release です。Debug は MSVC の Debug runtime を使用する開発専用構成なので、配布しないでください。
 
 一時的に環境変数を上書きせず、ビルド単位で別の場所を使う場合は、次のように指定します。
 

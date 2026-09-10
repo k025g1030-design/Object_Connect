@@ -242,7 +242,7 @@ function(configure_object_connect_target target_name)
     )
     set_target_properties(${target_name} PROPERTIES
         CXX_EXTENSIONS OFF
-        MSVC_RUNTIME_LIBRARY "$<$<CONFIG:Debug>:MultiThreadedDebugDLL>$<$<CONFIG:Release>:MultiThreaded>"
+        MSVC_RUNTIME_LIBRARY "$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,MultiThreaded>"
     )
     if(CMAKE_GENERATOR MATCHES "^Visual Studio")
         target_compile_options(${target_name} PRIVATE /MP $<$<CONFIG:Release>:/Zi>)

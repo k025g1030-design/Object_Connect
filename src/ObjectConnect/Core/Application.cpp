@@ -19,7 +19,7 @@
 namespace object_connect {
 namespace {
 
-constexpr const wchar_t* kWindowTitle = L"6008_GC2Bラ_GC2Bヤマモト_GC2Cウエキ_BloodLine";
+constexpr const wchar_t* kWindowTitle = L"6008_BloodLine";
 
 #if defined(_DEBUG)
 constexpr bool kEnableDirectXDebugLayer = true;
