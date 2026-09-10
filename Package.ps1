@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'scripts/BuildTools.ps1')
 . (Join-Path $PSScriptRoot 'scripts/PackageSupport.ps1')
+. (Join-Path $PSScriptRoot 'scripts/ReleasePolicy.ps1')
 
 $inputPath = (Resolve-Path -LiteralPath $InputDirectory).ProviderPath
 $exe = Join-Path $inputPath 'Object_Connect.exe'
@@ -33,11 +34,9 @@ $sourceDirty = ($sourceStatus.Count -gt 0)
 if (-not $Version) { $Version = $buildInfo.commit.Substring(0, 12) }
 if ($Version -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$') { throw 'Version must be a filename-safe label of 1-80 characters.' }
 if ($Version -match '^v') {
-    if ($Version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Official versions must use vMAJOR.MINOR.PATCH (no leading zeroes).' }
-    $tagType = (& git -C $PSScriptRoot cat-file -t "refs/tags/$Version" 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $tagType -cne 'tag') { throw 'Official packages require an existing annotated version tag.' }
-    $tagCommit = (& git -C $PSScriptRoot rev-parse "refs/tags/$Version^{commit}" | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $buildInfo.commit -or $tagCommit -ne $sourceCommit -or $buildInfo.sourceDirty -or $sourceDirty) {
+    Assert-OfficialReleaseVersion $Version
+    $tagCommit = Get-LocalReleaseTagCommit -SourceDirectory $PSScriptRoot -Tag $Version
+    if ($tagCommit -ne $buildInfo.commit -or $tagCommit -ne $sourceCommit -or $buildInfo.sourceDirty -or $sourceDirty) {
         throw 'Official tag, linked EXE, and clean packaging checkout must identify the same commit.'
     }
 }
