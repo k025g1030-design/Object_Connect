@@ -1,9 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet("Debug", "Release")]
-    [string]$Configuration = "Release",
-
-    [string]$KamataEngineRoot = ""
+    [string]$Configuration = "Release"
 )
 
 Set-StrictMode -Version Latest
@@ -82,19 +80,6 @@ Repair-PathEnvironmentVariable
 
 $cmakeExecutable = Get-CompatibleCMake
 $configureArguments = @("--preset", "vs2026-x64")
-
-$requestedEngineRoot = $KamataEngineRoot
-if (-not $requestedEngineRoot) {
-    $requestedEngineRoot = [System.Environment]::GetEnvironmentVariable(
-        "KAMATA_ENGINE",
-        [System.EnvironmentVariableTarget]::Process
-    )
-}
-
-if ($requestedEngineRoot) {
-    $resolvedEngineRoot = [System.IO.Path]::GetFullPath($requestedEngineRoot)
-    $configureArguments += "-DKAMATA_ENGINE_ROOT:PATH=$resolvedEngineRoot"
-}
 
 Write-Host "Using CMake: $cmakeExecutable"
 Write-Host "Configuring Object_Connect..."

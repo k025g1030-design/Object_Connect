@@ -340,14 +340,14 @@ WinMain
        InputSystem::Initialize
        PuzzleRenderer::Initialize
        FontSystem::Initialize
-       FontSystem::LoadFont(Resources/fonts/game.ttf)
+       FontSystem::LoadFont(Resources/fonts/BIZUDPGothic-Regular.ttf)
        GameUiRenderer::Initialize
        MouseCursorRenderer::Initialize (失敗時保留 OS cursor)
        GameAudio::Initialize (intro 立即開始)
   -> frame loop
 ```
 
-`GameConfig::uiFontPath` 預設為 `fonts/game.ttf`，相對於 runtime `Resources/` 解決。它是必要資產：檔案缺失或 TTF 無效時，`Game::Initialize` 失敗，診斷包含解決後的完整路徑。建置系統只負責把 `NoviceResources/fonts/game.ttf` 隨其他資源部署，不把它變成 configure-time 必要檔。
+`GameConfig::uiFontPath` 預設為 `fonts/BIZUDPGothic-Regular.ttf`，相對於 runtime `Resources/` 解決。它是必要資產：CMake 在 configure 時確認原始字體存在，建置時將它隨 `NoviceResources/` 全部部署，打包時再檢查完整資源。檔案缺失或 TTF 無效時，`Game::Initialize` 仍會失敗，診斷包含解決後的完整路徑；建置期存在檢查不能代替 runtime TTF 解析。
 
 Playing frame：
 
@@ -403,3 +403,80 @@ InputSystem::Sample
 - Font shaping、fallback font chain、IME、直書、Ruby 與 rich text。
 
 新增真正的 obstacle collision 不只是 renderer 改圖層：必須先定義 collision shape、preview 行為、constraint solver 穩定性和長度語意。Texture 載入與 sprite lifecycle 應繼續留在 Rendering；不要讓 `PuzzleBoard` 持有 GPU asset。
+
+## 16. 依賴封裝與 CI 發版
+
+本節記錄設計與安全邊界；本機命令、commit 範例、版本選擇、tag 推送及失敗排查以 [README](../README.md#ビルドと実行) 為單一操作來源，避免分別維護兩套指令。
+
+### 16.1 專案內 SDK 與工具鏈邊界
+
+`third_party/KamataEngine/External/` 保存必要的預編譯 SDK 快照：KamataEngine 與 DirectXTex 完整標頭、各自 Debug／Release `.lib` 和對應 `.pdb`，以及 ImGui 標頭與現有授權文件。PDB 是開發連結／除錯資訊，不進入玩家 ZIP。引擎 `.git`、範例、Develop 配置、`.idb`、ImGui 原始專案及重複遊戲資源不屬於此快照。
+
+依賴使用同一 repository 的普通 Git 版本化，不新增 submodule、LFS、下載腳本或依賴倉庫 token。隨快照記錄來源 revision、檔案 SHA-256 與已提供的授權資訊；不得將缺少授權文件解讀為自動取得新授權。更新 SDK 時應把標頭、各構成 library、配套 PDB、來源資訊和雜湊一起更新，並重新驗證四組建置，而非單獨替換一個二進位檔。
+
+CMake 的引擎 root 固定由專案來源目錄推導，配置過程移除舊 `KAMATA_ENGINE_ROOT` cache entry，也不讀取 `KAMATA_ENGINE` 環境變數；Build／Run 不再接受 `-KamataEngineRoot`。因此既有機器的外部 `Runtime` 路徑不能偷偷覆蓋 repository 內的版本。舊 CLion profile 應 reload CMake 並移除外部路徑選項。
+
+這個邊界只封裝 SDK，不封裝編譯工具。MSVC、對應 CMake、Windows SDK 仍由本機或 runner 提供；KamataEngine／DirectXTex 以 imported static targets 連結，不在本專案重編引擎。
+
+| 配置 | MSVC runtime | DXC 部署 | 用途 |
+| --- | --- | --- | --- |
+| Debug | `/MDd`，配合預編譯 Debug library | Windows SDK x64 Redist 的 `dxcompiler.dll`、`dxil.dll` 放在 EXE 旁 | 開發／除錯，不作玩家配布 |
+| Release | `/MT`，配合預編譯 Release library | 不部署上述兩檔，清除輸出中同名殘留 | 玩家 ZIP |
+
+純 Ninja Release configure 不要求 DXC Redist；VS multi-config 同時含 Debug／Release，因此 configure 階段仍須滿足 Debug 的 DXC 檔案。Release 仍需要一般 Windows SDK，靜態 CRT 也不代表不依賴 Windows 系統 DLL。必備資源包括字體 `BIZUDPGothic-Regular.ttf`；來源 `NoviceResources/` 全量部署至 EXE 旁的 `Resources/`，由 configure、部署與 package 分別守住檔案存在、同步和完整性。
+
+Build 預設 Release、Run 預設 Debug，使用者以 `-Configuration` 切換，無須改寫腳本。所有本機 presets 維持輸出 `target/<Configuration>/`；同一 checkout 不應並行建置會寫入相同目錄的不同 generator。
+
+### 16.2 CI 驗證與打包匯合
+
+`Windows build and release` workflow 的入口是 `master` push、以 `master` 為目標的 PR、手動執行和 `v*` tag push。每個 matrix job 使用獨立的 `windows-2025-vs2026` runner，從 checkout 內取得依賴，不使用編譯 cache。runner 標籤固定工具鏈家族，不保證每次 MSVC／SDK patch version 不變；實際版本必須留在建置紀錄。
+
+```text
+checkout（包含 third_party）
+  ├─ VS2026 Debug   → build / 3 CTest suites ─┐
+  ├─ VS2026 Release → build / 3 CTest suites ─┤
+  ├─ Ninja Debug    → build / 3 CTest suites ─┼─ 全部成功
+  └─ Ninja Release  → build / 3 CTest suites ─┘       │
+                                                   ▼
+                     VS2026 Release 產物 → Package.ps1
+                                                   │
+                         玩家 ZIP / SHA-256 / build-info
+                              │                    │
+                         Actions artifact      合法正式 tag
+                                                   │
+                                              GitHub Release
+```
+
+四組都保留 `/W4 /WX` 並執行 `Object_Connect.Core`、`Object_Connect.FontSystemLifecycle`、`Object_Connect.GameAudio`，以及 package 支援腳本測試。Ninja 驗證覆蓋 CLion presets 的建置方式，不另外發布第二份遊戲 ZIP。只要任一組失敗，就不能進入正式打包／發版；日誌仍作為診斷 artifact 保留。PDB 分開放在符號 artifact，不與玩家資源混用。玩家 ZIP、符號與日誌 artifacts 保存 30 天；job 間轉交 VS Release 產物的中間 `release-input` artifact 僅保存 1 天，不作配布。正式版本另由 GitHub Release 附件提供。
+
+`Package.ps1` 是本機與 CI 共用的產物檢查邊界，而非第二套 build 系統。它處理已建置的 Release 目錄，不代替編譯或測試；檢查 EXE、來源／部署資源集合與 import，再建立 ZIP。`-Version` 可指定安全的版本標籤，省略時使用 EXE 連結時記錄的 commit SHA 前 12 位，而不是打包當下 HEAD；`-InputDirectory` 預設 `target/Release`，`-OutputDirectory` 預設 `target/packages`，既存同名輸出不覆寫。一般本機開發包會記錄並警告 source dirty／link 與目前資源來源不同；正式版本與 CI 則拒絕不一致，正式版本另要求已存在且指向同一 commit 的 annotated tag。
+
+缺少 Git、由 source ZIP 取得而沒有 `.git`、尚無首次 commit，或只找到不屬於專案根目錄的父 repository 時，普通 build 以警告並記錄來源／dirty 為 unknown 繼續，不冒用父 repository 的 SHA；可追溯打包則必須具備本專案有效的 Git checkout 與 link-time metadata，未知來源由 `Package.ps1` 明確拒絕，CI 的嚴格驗證不變。
+
+Import 檢查拒絕 Debug CRT、動態 MSVC／OpenMP runtime 及 `dxcompiler.dll`／`dxil.dll`，保留正常 Windows 系統 DLL（例如 `D3DCOMPILER_47.dll`）。ZIP 只包含 `Object_Connect.exe`、完整 `Resources/`、`LICENSES/` 與 `build-info.json`，不包含測試 EXE、PDB 或第三方 library。ZIP 外另提供 `.zip.sha256` 與 `.build-info.json`，便於在下載後核對。
+
+### 16.3 版本來源、權限與不可變性
+
+正式版本只接受 `vMAJOR.MINOR.PATCH`，數字不加多餘前導零，不建立 prerelease 或依 commit type 自動升版。MAJOR 表示不相容變更、MINOR 表示新功能、PATCH 表示修正；實際版本由維護者判定。新 commit 推薦 Conventional Commit 形式，小寫英文 type／scope 配日語描述；這是協作約定而非 commit lint，不重寫既有歷史。完整範例見 [README 的版本規範](../README.md#commit-の規約)。
+
+發版意圖由維護者手動建立、推送的 annotated tag 表達，而不是一般 commit 或 workflow 手動執行。維護者先將變更整合至 `master` 並確認該 commit 的 CI 成功、工作目錄乾淨，再建立 tag 並只推送該 tag。tag job 重新驗證格式、annotated 類型、tag 指向與 build commit 一致，以及該 commit 屬於 `origin/master`；通過四組建置及打包後，才建立 Release 並產生 release notes。
+
+追溯關係固定為：
+
+```text
+annotated tag（正式版）或短 SHA（一般 CI）
+  → 完整 source commit + 同 commit 的 SDK 快照
+  → EXE 連結時的 build metadata + 實際工具鏈版本
+  → BloodLine-windows-x64-<version>.zip + build-info.json
+  → ZIP SHA-256 → Actions run / GitHub Release 附件
+```
+
+一般 job 使用 `contents: read`，PR 採 `pull_request` 而非特權 `pull_request_target`。官方 Actions 固定完整 commit SHA，更新需顯式修改 workflow；僅正式 tag 的發版 job 取得 `contents: write`。不新增私人依賴下載 secrets，也不讓建置本身自動 commit、push 或建立版本 tag。
+
+已發佈的 tag 與附件視為不可變：不得刪除、force push 或移動 tag；同名 Release 已存在時 CI 明確失敗，不自動覆寫附件。暫時性 runner 問題在沒有既存 Release 時可重跑同一 tag；需要變更 source 時，以新 commit 和新版本修正。
+
+### 16.4 驗收邊界
+
+依賴封裝的回歸驗證包含：外部引擎環境變數不存在、舊 cache 指向失效路徑、全新建置目錄，以及 SDK／資源缺檔時的明確錯誤。打包驗證包含禁止 DLL import、ZIP 內容白名單、來源與部署資源一致、SHA-256 和 link-time metadata。文件中的參數、命名、觸發條件必須與實際腳本和 workflow 一致。
+
+本機 build／CTest 成功不等於 GitHub Actions 已通過；首次 push 後仍須確認真實雲端 run。Hosted runner 裝有開發工具，headless 測試與 import 檢查不能證明乾淨使用者環境、GPU 或音訊一定正常。發版前仍須在沒有開發環境的 Windows 機器解壓完整 ZIP，驗證啟動、畫面、日文字體、音效和基本關卡流程，這項結果須與 CI 結果分別記錄。

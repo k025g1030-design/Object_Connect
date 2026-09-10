@@ -1,0 +1,171 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: ${{ matrix.generator }} / ${{ matrix.configuration }}
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        generator: [vs2026, ninja]
+        configuration: [Debug, Release]
+    steps:
+      - name: Check out the exact event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate official release tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./scripts/Assert-ReleaseTag.ps1 -Tag $env:RELEASE_TAG
+      - name: Configure, build and test
+        env:
+          BUILD_GENERATOR: ${{ matrix.generator }}
+          BUILD_CONFIGURATION: ${{ matrix.configuration }}
+        run: ./scripts/Invoke-CiBuild.ps1 -Generator $env:BUILD_GENERATOR -Configuration $env:BUILD_CONFIGURATION
+      - name: Preserve canonical Release input for the gated packaging job
+        if: matrix.generator == 'vs2026' && matrix.configuration == 'Release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-input-${{ github.sha }}
+          path: |
+            target/Release/Object_Connect.exe
+            target/Release/build-info.json
+            target/Release/Resources/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Preserve symbols separately from the player package
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: symbols-${{ matrix.generator }}-${{ matrix.configuration }}-${{ github.sha }}
+          path: |
+            target/${{ matrix.configuration }}/Object_Connect.pdb
+            target/${{ matrix.configuration }}/build-info.json
+            third_party/KamataEngine/External/KamataEngine/lib/${{ matrix.configuration }}/*.pdb
+            third_party/KamataEngine/External/DirectXTex/lib/${{ matrix.configuration }}/*.pdb
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve logs even when a build fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: logs-${{ matrix.generator }}-${{ matrix.configuration }}-${{ github.sha }}
+          path: |
+            target/ci-logs/
+            build/**/Testing/Temporary/
+            build/**/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
+          retention-days: 30
+
+  package:
+    name: Package verified Release
+    needs: build
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-input-${{ github.sha }}
+          path: target/Release
+      - name: Validate imports, resources and provenance; create ZIP and checksum
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          ./scripts/Test-PackageIntegration.ps1
+          if ($env:EVENT_NAME -eq 'push' -and $env:EVENT_REF.StartsWith('refs/tags/v')) {
+            ./Package.ps1 -Version $env:RELEASE_TAG
+          } else {
+            ./Package.ps1
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: player-package-${{ github.sha }}
+          path: target/packages/BloodLine-windows-x64-*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release:
+    name: Publish tagged GitHub Release
+    needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      # No repository code executes in the write-permission job.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: player-package-${{ github.sha }}
+          path: package
+      - name: Create release without replacing an existing tag or release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw 'Invalid official release version.'
+          }
+          $remoteRefJson = gh api "repos/$env:GH_REPO/git/ref/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the current remote release tag.' }
+          $remoteRef = $remoteRefJson | ConvertFrom-Json
+          if ($remoteRef.object.type -ne 'tag' -or $remoteRef.object.sha -notmatch '^[a-f0-9]{40}$') {
+            throw 'The current remote release tag must be annotated.'
+          }
+          $remoteTagJson = gh api "repos/$env:GH_REPO/git/tags/$($remoteRef.object.sha)"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the current remote annotated tag.' }
+          $remoteTag = $remoteTagJson | ConvertFrom-Json
+          if ($remoteTag.object.type -ne 'commit' -or $remoteTag.object.sha -ne $env:RELEASE_COMMIT) {
+            throw 'The remote tag no longer points to the tested commit. No release will be published.'
+          }
+          gh release view $env:RELEASE_TAG --repo $env:GH_REPO *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw 'This release already exists. Published tags and assets must not be replaced; use a new version.'
+          }
+          $baseName = "BloodLine-windows-x64-$env:RELEASE_TAG"
+          $assets = @("package/$baseName.zip", "package/$baseName.zip.sha256", "package/$baseName.build-info.json")
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Missing release asset: $asset" }
+          }
+          $expectedHash = (Get-Content -LiteralPath $assets[1] -Raw).Split(' ')[0]
+          if ($expectedHash -ne (Get-FileHash -LiteralPath $assets[0] -Algorithm SHA256).Hash) { throw 'ZIP checksum mismatch.' }
+          $info = Get-Content -LiteralPath $assets[2] -Raw | ConvertFrom-Json
+          if ($info.version -ne $env:RELEASE_TAG -or $info.built.commit -ne $env:RELEASE_COMMIT -or $info.built.sourceDirty) {
+            throw 'Release package provenance does not match the tag event.'
+          }
+          gh release create $env:RELEASE_TAG @assets --repo $env:GH_REPO --verify-tag --generate-notes --title $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release creation failed. No existing assets were overwritten.' }

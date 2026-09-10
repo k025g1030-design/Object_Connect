@@ -31,23 +31,12 @@ endif()
 string(REPLACE "/O2" "/O1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 string(REPLACE "/Ob2" "/Ob1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 
-set(KAMATA_ENGINE_ROOT "" CACHE PATH
-    "KamataEngine runtime root (defaults to the KAMATA_ENGINE environment variable)"
-)
-if(KAMATA_ENGINE_ROOT STREQUAL "")
-    if(DEFINED ENV{KAMATA_ENGINE} AND NOT "$ENV{KAMATA_ENGINE}" STREQUAL "")
-        set(KAMATA_ENGINE_ROOT "$ENV{KAMATA_ENGINE}")
-    else()
-        message(FATAL_ERROR
-            "KamataEngine could not be located. Set the KAMATA_ENGINE environment "
-            "variable, or configure with -DKAMATA_ENGINE_ROOT=<path>."
-        )
-    endif()
-endif()
-cmake_path(ABSOLUTE_PATH KAMATA_ENGINE_ROOT NORMALIZE
-    BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE KAMATA_ENGINE_ROOT
-)
+# Invalidate machine-specific paths retained by old CLion/CMake caches. The SDK
+# is part of this checkout; neither command-line cache values nor environment
+# variables may redirect it to an unrelated installation.
+unset(KAMATA_ENGINE_ROOT CACHE)
+set(KAMATA_ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/KamataEngine")
+message(STATUS "Using bundled KamataEngine: ${KAMATA_ENGINE_ROOT}")
 
 set(KAMATA_INCLUDE_DIR "${KAMATA_ENGINE_ROOT}/External/KamataEngine/include")
 set(DIRECTXTEX_INCLUDE_DIR "${KAMATA_ENGINE_ROOT}/External/DirectXTex/include")
@@ -59,12 +48,18 @@ set(OBJECT_CONNECT_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/$<CONFIG>")
 set(_required_engine_paths
     "${KAMATA_INCLUDE_DIR}/KamataEngine.h"
     "${DIRECTXTEX_INCLUDE_DIR}"
+    "${DIRECTXTEX_INCLUDE_DIR}/DirectXTex.h"
+    "${DIRECTXTEX_INCLUDE_DIR}/d3dx12.h"
     "${IMGUI_INCLUDE_DIR}/imgui.h"
     "${IMGUI_INCLUDE_DIR}/imstb_truetype.h"
     "${KAMATA_ENGINE_ROOT}/External/KamataEngine/lib/Debug/KamataEngine.lib"
     "${KAMATA_ENGINE_ROOT}/External/KamataEngine/lib/Release/KamataEngine.lib"
     "${KAMATA_ENGINE_ROOT}/External/DirectXTex/lib/Debug/DirectXTex.lib"
     "${KAMATA_ENGINE_ROOT}/External/DirectXTex/lib/Release/DirectXTex.lib"
+    "${KAMATA_ENGINE_ROOT}/External/KamataEngine/lib/Debug/KamataEngine.pdb"
+    "${KAMATA_ENGINE_ROOT}/External/KamataEngine/lib/Release/KamataEngine.pdb"
+    "${KAMATA_ENGINE_ROOT}/External/DirectXTex/lib/Debug/DirectXTex.pdb"
+    "${KAMATA_ENGINE_ROOT}/External/DirectXTex/lib/Release/DirectXTex.pdb"
 )
 foreach(_required_path IN LISTS _required_engine_paths)
     if(NOT EXISTS "${_required_path}")
@@ -75,84 +70,92 @@ endforeach()
 # The DirectX debug layer loads DXC at runtime. An IDE toolchain may expose an
 # SDK copy through PATH, but every launch mode must use the redistributable pair
 # from the Windows SDK instead of relying on an IDE-specific environment.
-set(_windows_kits_hints)
-if(DEFINED CMAKE_WINDOWS_KITS_10_DIR
-   AND NOT "${CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
-    cmake_path(CONVERT "${CMAKE_WINDOWS_KITS_10_DIR}" TO_CMAKE_PATH_LIST
-        _windows_kits_cmake_hints NORMALIZE
-    )
-    list(APPEND _windows_kits_hints ${_windows_kits_cmake_hints})
-endif()
-if(DEFINED CMAKE_RC_COMPILER AND IS_ABSOLUTE "${CMAKE_RC_COMPILER}")
-    cmake_path(GET CMAKE_RC_COMPILER PARENT_PATH _windows_sdk_arch_bin)
-    cmake_path(GET _windows_sdk_arch_bin PARENT_PATH _windows_sdk_version_bin)
-    cmake_path(GET _windows_sdk_version_bin PARENT_PATH _windows_sdk_bin)
-    cmake_path(GET _windows_sdk_bin PARENT_PATH _windows_sdk_from_rc)
-    list(APPEND _windows_kits_hints "${_windows_sdk_from_rc}")
-endif()
-if(DEFINED ENV{CMAKE_WINDOWS_KITS_10_DIR}
-   AND NOT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
-    cmake_path(CONVERT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" TO_CMAKE_PATH_LIST
-        _windows_kits_environment_hints NORMALIZE
-    )
-    list(APPEND _windows_kits_hints ${_windows_kits_environment_hints})
-endif()
-if(DEFINED ENV{WindowsSdkDir} AND NOT "$ENV{WindowsSdkDir}" STREQUAL "")
-    cmake_path(CONVERT "$ENV{WindowsSdkDir}" TO_CMAKE_PATH_LIST
-        _windows_sdk_environment_hints NORMALIZE
-    )
-    list(APPEND _windows_kits_hints ${_windows_sdk_environment_hints})
-endif()
-cmake_host_system_information(
-    RESULT _windows_kits_registry
-    QUERY WINDOWS_REGISTRY
-          "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots"
-          VALUE "KitsRoot10"
-          VIEW 64_32
-          ERROR_VARIABLE _windows_kits_registry_error
-)
-if(_windows_kits_registry)
-    foreach(_windows_kits_registry_path IN LISTS _windows_kits_registry)
-        cmake_path(CONVERT "${_windows_kits_registry_path}" TO_CMAKE_PATH_LIST
-            _windows_kits_registry_hints NORMALIZE
+set(OBJECT_CONNECT_DXC_RUNTIME_FILES)
+set(_object_connect_dxcompiler_source "")
+set(_object_connect_dxil_source "")
+if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_windows_kits_hints)
+    if(DEFINED CMAKE_WINDOWS_KITS_10_DIR
+       AND NOT "${CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
+        cmake_path(CONVERT "${CMAKE_WINDOWS_KITS_10_DIR}" TO_CMAKE_PATH_LIST
+            _windows_kits_cmake_hints NORMALIZE
         )
-        list(APPEND _windows_kits_hints ${_windows_kits_registry_hints})
-    endforeach()
-endif()
-list(REMOVE_DUPLICATES _windows_kits_hints)
-
-find_path(OBJECT_CONNECT_DXC_REDIST_DIR
-    NAMES dxcompiler.dll
-    HINTS ${_windows_kits_hints}
-    PATH_SUFFIXES "Redist/D3D/x64"
-    NO_DEFAULT_PATH
-    DOC "Windows SDK x64 DirectX Shader Compiler redistributable directory"
-)
-if(NOT OBJECT_CONNECT_DXC_REDIST_DIR)
-    message(FATAL_ERROR
-        "The Windows SDK x64 DirectX Shader Compiler redistributable directory "
-        "was not found. Install a Windows 10/11 SDK with the D3D/DXC "
-        "redistributable files, or configure with "
-        "-DOBJECT_CONNECT_DXC_REDIST_DIR=<path>."
+        list(APPEND _windows_kits_hints ${_windows_kits_cmake_hints})
+    endif()
+    if(DEFINED CMAKE_RC_COMPILER AND IS_ABSOLUTE "${CMAKE_RC_COMPILER}")
+        cmake_path(GET CMAKE_RC_COMPILER PARENT_PATH _windows_sdk_arch_bin)
+        cmake_path(GET _windows_sdk_arch_bin PARENT_PATH _windows_sdk_version_bin)
+        cmake_path(GET _windows_sdk_version_bin PARENT_PATH _windows_sdk_bin)
+        cmake_path(GET _windows_sdk_bin PARENT_PATH _windows_sdk_from_rc)
+        list(APPEND _windows_kits_hints "${_windows_sdk_from_rc}")
+    endif()
+    if(DEFINED ENV{CMAKE_WINDOWS_KITS_10_DIR}
+       AND NOT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" STREQUAL "")
+        cmake_path(CONVERT "$ENV{CMAKE_WINDOWS_KITS_10_DIR}" TO_CMAKE_PATH_LIST
+            _windows_kits_environment_hints NORMALIZE
+        )
+        list(APPEND _windows_kits_hints ${_windows_kits_environment_hints})
+    endif()
+    if(DEFINED ENV{WindowsSdkDir} AND NOT "$ENV{WindowsSdkDir}" STREQUAL "")
+        cmake_path(CONVERT "$ENV{WindowsSdkDir}" TO_CMAKE_PATH_LIST
+            _windows_sdk_environment_hints NORMALIZE
+        )
+        list(APPEND _windows_kits_hints ${_windows_sdk_environment_hints})
+    endif()
+    cmake_host_system_information(
+        RESULT _windows_kits_registry
+        QUERY WINDOWS_REGISTRY
+              "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots"
+              VALUE "KitsRoot10"
+              VIEW 64_32
+              ERROR_VARIABLE _windows_kits_registry_error
     )
-endif()
-message(STATUS "Using Windows SDK DXC runtime: ${OBJECT_CONNECT_DXC_REDIST_DIR}")
-set(OBJECT_CONNECT_DXC_RUNTIME_FILES
-    "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxcompiler.dll"
-    "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxil.dll"
-)
-foreach(_required_path IN LISTS OBJECT_CONNECT_DXC_RUNTIME_FILES)
-    if(NOT EXISTS "${_required_path}")
+    if(_windows_kits_registry)
+        foreach(_windows_kits_registry_path IN LISTS _windows_kits_registry)
+            cmake_path(CONVERT "${_windows_kits_registry_path}" TO_CMAKE_PATH_LIST
+                _windows_kits_registry_hints NORMALIZE
+            )
+            list(APPEND _windows_kits_hints ${_windows_kits_registry_hints})
+        endforeach()
+    endif()
+    list(REMOVE_DUPLICATES _windows_kits_hints)
+
+    find_path(OBJECT_CONNECT_DXC_REDIST_DIR
+        NAMES dxcompiler.dll
+        HINTS ${_windows_kits_hints}
+        PATH_SUFFIXES "Redist/D3D/x64"
+        NO_DEFAULT_PATH
+        DOC "Windows SDK x64 DirectX Shader Compiler redistributable directory"
+    )
+    if(NOT OBJECT_CONNECT_DXC_REDIST_DIR)
         message(FATAL_ERROR
-            "The DirectX Shader Compiler runtime directory is incomplete. "
-            "Expected file:\n  ${_required_path}"
+            "The Windows SDK x64 DirectX Shader Compiler redistributable directory "
+            "was not found. Install a Windows 10/11 SDK with the D3D/DXC "
+            "redistributable files, or configure with "
+            "-DOBJECT_CONNECT_DXC_REDIST_DIR=<path>."
         )
     endif()
-endforeach()
+    message(STATUS "Using Windows SDK DXC runtime: ${OBJECT_CONNECT_DXC_REDIST_DIR}")
+    set(OBJECT_CONNECT_DXC_RUNTIME_FILES
+        "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxcompiler.dll"
+        "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxil.dll"
+    )
+    foreach(_required_path IN LISTS OBJECT_CONNECT_DXC_RUNTIME_FILES)
+        if(NOT EXISTS "${_required_path}")
+            message(FATAL_ERROR
+                "The DirectX Shader Compiler runtime directory is incomplete. "
+                "Expected file:\n  ${_required_path}"
+            )
+        endif()
+    endforeach()
+    set(_object_connect_dxcompiler_source "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxcompiler.dll")
+    set(_object_connect_dxil_source "${OBJECT_CONNECT_DXC_REDIST_DIR}/dxil.dll")
+endif()
 
 set(_required_project_resources
     "${OBJECT_CONNECT_RESOURCE_DIR}/white1x1.png"
     "${OBJECT_CONNECT_RESOURCE_DIR}/kamata.ico"
+    "${OBJECT_CONNECT_RESOURCE_DIR}/fonts/BIZUDPGothic-Regular.ttf"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/levels.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/data/nodes.csv"
     "${OBJECT_CONNECT_RESOURCE_DIR}/assets/textures/mouse/mouse_icon_01.png"
@@ -332,6 +335,28 @@ set_target_properties(Object_Connect PROPERTIES
 )
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT Object_Connect)
 
+find_program(OBJECT_CONNECT_POWERSHELL NAMES powershell.exe REQUIRED)
+set(_build_info_script "${CMAKE_CURRENT_SOURCE_DIR}/scripts/Write-BuildInfo.ps1")
+set(_build_info_sdk_arguments)
+if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
+    list(APPEND _build_info_sdk_arguments
+        -WindowsSdkVersion "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+endif()
+set_property(TARGET Object_Connect APPEND PROPERTY LINK_DEPENDS "${_build_info_script}")
+add_custom_command(TARGET Object_Connect POST_BUILD
+    COMMAND "${OBJECT_CONNECT_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+        -File "${_build_info_script}"
+        -Executable "$<TARGET_FILE:Object_Connect>"
+        -SourceDirectory "${CMAKE_CURRENT_SOURCE_DIR}"
+        -Configuration "$<CONFIG>"
+        -CompilerVersion "${CMAKE_CXX_COMPILER_VERSION}"
+        -Generator "${CMAKE_GENERATOR}"
+        -CMakeVersion "${CMAKE_VERSION}"
+        ${_build_info_sdk_arguments}
+    COMMENT "Recording executable build provenance"
+    VERBATIM
+)
+
 file(GLOB_RECURSE OBJECT_CONNECT_RESOURCE_FILES CONFIGURE_DEPENDS LIST_DIRECTORIES false
     "${OBJECT_CONNECT_RESOURCE_DIR}/*"
 )
@@ -343,12 +368,12 @@ add_custom_target(Object_Connect_Resources ALL
     COMMAND "${CMAKE_COMMAND}"
             "-DCONFIGURATION=$<CONFIG>"
             "-DOUTPUT_DIRECTORY=${OBJECT_CONNECT_OUTPUT_DIR}"
-            "-DDXCOMPILER_SOURCE=${OBJECT_CONNECT_DXC_REDIST_DIR}/dxcompiler.dll"
-            "-DDXIL_SOURCE=${OBJECT_CONNECT_DXC_REDIST_DIR}/dxil.dll"
+            "-DDXCOMPILER_SOURCE=${_object_connect_dxcompiler_source}"
+            "-DDXIL_SOURCE=${_object_connect_dxil_source}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeployDxcRuntime.cmake"
     DEPENDS
         ${OBJECT_CONNECT_RESOURCE_FILES}
-        ${OBJECT_CONNECT_DXC_RUNTIME_FILES}
+        "$<$<CONFIG:Debug>:${OBJECT_CONNECT_DXC_RUNTIME_FILES}>"
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeployDxcRuntime.cmake"
     COMMENT "Deploying Object_Connect resources and runtime dependencies"
     VERBATIM

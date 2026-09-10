@@ -3,8 +3,6 @@ param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Debug",
 
-    [string]$KamataEngineRoot = "",
-
     [switch]$SkipBuild
 )
 
@@ -13,10 +11,6 @@ $ErrorActionPreference = "Stop"
 
 if (-not $SkipBuild) {
     $buildArguments = @("-Configuration", $Configuration)
-    if ($KamataEngineRoot) {
-        $buildArguments += @("-KamataEngineRoot", $KamataEngineRoot)
-    }
-
     & (Join-Path $PSScriptRoot "Build.ps1") @buildArguments
 }
 

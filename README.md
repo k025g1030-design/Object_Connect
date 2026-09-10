@@ -222,7 +222,7 @@ UI とレベルの描画処理は、同じ参照カウント付きの一覧を�
 
 HUD とメニューの文字は KamataEngine の固定 ASCII `DebugText` ではなく、runtime の `FontSystem` が描画します。入力は UTF-8 として厳密にデコードされ、Unicode scalar value、glyph layout、glyph cache、`R8_UNORM` atlas、文字に依存しない textured quad、DirectX 12 draw call の順に処理されます。ASCII、日本語、改行を同じ API で扱い、幅と baseline は TTF の advance、bearing、kerning、ascent、descent、line gap から計算します。画面上のゲーム title `OBJECT CONNECT` は維持し、メニュー見出し、項目、操作案内と HUD は日本語で表示します。
 
-フォントファイルは `NoviceResources/fonts/game.ttf` に置いてください。ビルド後の必須 runtime asset は `Resources/fonts/game.ttf` で、`GameConfig::uiFontPath` の初期値 `fonts/game.ttf` から解決されます。ファイルがない、または有効な TTF として読み込めない場合は、解決後のフルパスを含むエラーでゲームの初期化に失敗します。この TTF はゲームに同梱した信頼できるファイルだけを使用してください。FontSystem は KamataEngine に付属する `imstb_truetype.h` 1.26 を private 実装として使い、FreeType、SDL_ttf、OS のシステムフォント、追加 DLL には依存しません。
+同梱フォントは `NoviceResources/fonts/BIZUDPGothic-Regular.ttf` です。ビルド後の必須 runtime asset は `Resources/fonts/BIZUDPGothic-Regular.ttf` で、`GameConfig::uiFontPath` の初期値から解決されます。CMake は configure 時にファイルの存在を検査します。有効な TTF として読み込めない場合は、解決後のフルパスを含むエラーでゲームの初期化に失敗します。この TTF はゲームに同梱した信頼できるファイルだけを使用してください。FontSystem は KamataEngine に付属する `imstb_truetype.h` 1.26 を private 実装として使い、FreeType、SDL_ttf、OS のシステムフォント、追加 DLL には依存しません。
 
 Glyph は `{font, pixel size, code point}` ごとに初回だけ rasterize し、1px の透明 padding を付けて 1024×1024 の atlas page へ順に格納します。最初の page は font load 時に GPU resource failure を検出するため作成し、満杯になった後の page は必要時にだけ増やします。既存の領域は移動も上書きもしません。同じフォントパスを複数回ロードした場合は参照カウント付きの font record を共有し、最後の unload で atlas、upload buffer、descriptor と glyph cache をまとめて解放します。layout は 256 件の LRU cache を使い、1 frame に queue できる glyph は最大 4096 個です。欠けている文字は U+FFFD、さらに存在しなければ glyph 0 へ安全に置き換えます。
 
@@ -252,30 +252,42 @@ runtime の `GameAudio` は `Resources/audio/` の `bgm_start.wav`、`bgm_loop.w
 
 ## ビルドと実行
 
-Windows x64、Visual Studio 2026 C++ Desktop workload、`Visual Studio 18 2026` generator に対応した CMake、KamataEngine が必要です。KamataEngine のルートは、環境変数 `KAMATA_ENGINE` で指定します。プロジェクト内にマシン固有の初期パスはありません。
+Windows x64、Visual Studio 2026 の C++ Desktop workload と Windows SDK、`Visual Studio 18 2026` generator に対応した CMake が必要です。KamataEngine SDK は `third_party/KamataEngine/` に同梱しているため、外部の `Runtime` ディレクトリ、別の依存リポジトリ、submodule、Git LFS は不要です。通常の Git clone でヘッダー、Debug／Release の library と対応する PDB を取得します。
+
+以下はリポジトリのルートで実行します。`Build.ps1` は Visual Studio に付属する対応 CMake を優先して探します。
 
 ```powershell
-$env:KAMATA_ENGINE = "D:\path\to\KamataEngine"
 .\Build.ps1
 .\Build.ps1 -Configuration Debug
-.\Run.ps1 -Configuration Debug
+.\Run.ps1
+.\Run.ps1 -Configuration Release -SkipBuild
 ```
 
-`Build.ps1` の既定構成は配布用の Release です。Debug は MSVC の Debug runtime を使用する開発専用構成なので、配布しないでください。
+`Build.ps1` の既定構成は配布用の Release、`Run.ps1` の既定構成は開発用の Debug です。構成を切り替えるためにスクリプトを書き換える必要はありません。`Run.ps1` は通常ビルドしてから実行し、`-SkipBuild` を付けた場合だけ既存 EXE を使います。Debug は `/MDd`、Release は `/MT` で、同梱するエンジンの構成と合わせています。Debug EXE は開発用 runtime が必要なので配布しないでください。
 
-一時的に環境変数を上書きせず、ビルド単位で別の場所を使う場合は、次のように指定します。
+旧 `KAMATA_ENGINE` 環境変数は参照しません。旧 `KAMATA_ENGINE_ROOT` cache entry は configure 時に削除し、CMake は常にプロジェクト内の SDK を使います。Build／Run の `-KamataEngineRoot` 引数も廃止しています。古い CLion profile に残っている外部パスの CMake option は取り除き、CMake を reload してください。
+
+CLion では Visual Studio の x64 toolchain と `clion-debug`／`clion-release` presets を選びます。Ninja を直接使う場合は、x64 の Visual Studio Developer PowerShell で次を実行します。
 
 ```powershell
-.\Build.ps1 -Configuration Debug -KamataEngineRoot "D:\your\KamataEngine"
+cmake --preset clion-debug
+cmake --build --preset clion-debug
+ctest --test-dir build/clion-debug --output-on-failure
+
+cmake --preset clion-release
+cmake --build --preset clion-release
+ctest --test-dir build/clion-release --output-on-failure
 ```
 
-実行ファイルは `target/<Configuration>/Object_Connect.exe` に作られます。ビルド時に `NoviceResources/` を、実行ファイルと同じ場所にある `Resources/` へコピーします。必須の `NoviceResources/fonts/game.ttf` も、この処理で `Resources/fonts/game.ttf` になります。プログラムの開始時に、作業フォルダーを実行ファイルのある場所へ設定します。
+実行ファイルは `target/<Configuration>/Object_Connect.exe` に作られます。ビルド時に `NoviceResources/` 全体を、実行ファイルと同じ場所にある `Resources/` へ同期します。必須の `fonts/BIZUDPGothic-Regular.ttf` も含みます。プログラムの開始時に、作業フォルダーを実行ファイルのある場所へ設定します。同一 checkout で VS と Ninja を同じ構成に対して並列ビルドすると出力先が重なるので、順番に実行してください。CI の各組み合わせは別の runner で処理します。
 
-Debug の DirectX debug layer が必要とする `dxcompiler.dll` と `dxil.dll` は、CMake が Windows SDK の x64 Redist から Debug 実行ファイルと同じ場所へコピーします。Release は debug layer を有効にしないため、この 2 ファイルを配置せず、以前のビルドで残った副本もデプロイ時に削除します。Release の CRT、KamataEngine、DirectXTex は静的リンクされるため、配布物は `Object_Connect.exe` と `Resources/` だけです。この処理は Visual Studio と CLion／Ninja で共通です。SDK を標準外の場所に置く場合は、CMake の `OBJECT_CONNECT_DXC_REDIST_DIR` に 2 つの DLL があるディレクトリを指定してください。
+Debug の DirectX debug layer が必要とする `dxcompiler.dll` と `dxil.dll` は、CMake が Windows SDK の x64 Redist から Debug EXE の横へコピーします。Release では配置せず、以前のビルドで残った同名の 2 ファイルもデプロイ時に削除します。純粋な Ninja Release configure はこの DXC Redist を必要としません。VS の multi-config preset は Debug を含むため、configure 時に DXC Redist が必要です。標準外の SDK を使う場合は、`OBJECT_CONNECT_DXC_REDIST_DIR` に 2 ファイルのあるディレクトリを指定します。Windows SDK 自体は Release のコンパイルにも必要です。
 
 プロジェクトは C++20 を使い、MSVC には `/W4 /WX /sdl /permissive- /utf-8` を設定しています。
 
 ## テスト
+
+`ctest` を含む CMake の `bin` を PATH に設定した PowerShell、または Visual Studio Developer PowerShell で実行します。各構成を先にビルドしてください。
 
 ```powershell
 ctest --test-dir build/vs2026-x64 -C Debug --output-on-failure
@@ -286,7 +298,92 @@ ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
 
 文字まわりの headless tests は、ASCII と 2／3／4-byte UTF-8、日本語の混在、overlong／surrogate／範囲外／途中で切れた不正列の U+FFFD 置換、CR／LF／CRLF、複数行の baseline と alignment を確認します。さらに、production と共通の lazy-residency／atlas seam を fake work で駆動し、同じ glyph が frame をまたいで一度だけ rasterize／upload されること、font と pixel size の cache 分離、layout cache hit、LRU eviction、missing glyph、atlas 作成失敗、font ID の非再利用と安全な枯渇を検証します。CSV の日本語 `level_name`／`display_name` も round-trip の対象です。別の headless lifecycle test は未初期化／invalid handle と複数回の `Finalize` を検証します。実際にロードした font の stale handle、同じパスの参照カウント、GPU unload lifetime は runtime integration review の対象です。
 
-GPU を使った画面、ドラッグの感触、重なり方、HUD の配置は、人の目と操作で確認する必要があります。特に `game.ttf` が必要な日本語 glyph を含むこと、`ステージ選択` が tofu にならず中央に配置されること、DirectX 12 debug layer に resource-state error や終了時の live-object leak がないことは実機で確認します。`Flush` は現在の command list に draw を記録する処理なので、最後に使用した frame の `DirectXCommon::PostDraw` が完了してから font を unload／finalize します。
+GPU を使った画面、ドラッグの感触、重なり方、HUD の配置は、人の目と操作で確認する必要があります。特に `BIZUDPGothic-Regular.ttf` が必要な日本語 glyph を含むこと、`ステージ選択` が tofu にならず中央に配置されること、DirectX 12 debug layer に resource-state error や終了時の live-object leak がないことは実機で確認します。`Flush` は現在の command list に draw を記録する処理なので、最後に使用した frame の `DirectXCommon::PostDraw` が完了してから font を unload／finalize します。
+
+## Release ZIP の作成
+
+`Package.ps1` は既にビルドした Release 成果物を検査して ZIP にします。ビルドやテストは代行しないため、次の順で実行してください。
+
+```powershell
+.\Build.ps1 -Configuration Release
+ctest --test-dir build/vs2026-x64 -C Release --output-on-failure
+if ($LASTEXITCODE -ne 0) { throw 'Release tests failed.' }
+.\Package.ps1
+```
+
+テストが成功したことを確認してからパッケージ化します。`-Version` を省略すると EXE のリンク時に記録した commit SHA の先頭 12 桁を使います。Git がない、ソース ZIP に `.git` がない、初回 commit 前、または親ディレクトリの別 repository しか見つからない場合も通常のビルドは警告と出典 `unknown` で継続しますが、`Package.ps1` は本プロジェクトの有効な Git checkout と出典 metadata を必須とし、出典不明の成果物はパッケージ化しません。現在の HEAD がビルド後に変わっていても、成果物を新しい commit のものとして扱いません。正式タグに対応する検証済み成果物を手動で再現する場合は `-Version v1.2.3` のように明示できます。この場合、既存の annotated tag、リンク時の commit、変更のない作業ツリーの HEAD が一致している必要があります。引数だけでは Git tag や Release は作成されません。
+
+`-InputDirectory` の既定値は `target/Release`、`-OutputDirectory` の既定値は `target/packages` です。既存の同名出力は上書きしません。再検証には `-OutputDirectory target/packages/recheck` のように新しい出力先を指定します。PowerShell 5.1 以降に対応し、`dumpbin` は Visual Studio から自動検出するため、このスクリプトのためだけに Developer PowerShell を開く必要はありません。通常のローカル作業用 package では未コミットの変更やリンク後のソース変更をビルド情報に明記して警告しますが、正式タグと CI ではソースと EXE の不一致を拒否します。
+
+プレイヤー向けファイルは `BloodLine-windows-x64-<tagまたは短commit>.zip` です。ZIP のルートには `Object_Connect.exe`、完全な `Resources/`、適用される第三者ライセンス情報の `LICENSES/` と `build-info.json` を収録します。PDB、テスト EXE、third-party library、Debug 用 DXC DLL は収録しません。ZIP の横に `.zip.sha256` と `.build-info.json` を出力し、成果物を追跡します。シンボルはプレイヤー ZIP と分けて扱います。
+
+スクリプトは資源の欠損を検出し、`dumpbin` で Debug CRT、動的 MSVC／OpenMP runtime、`dxcompiler.dll`／`dxil.dll` への依存を拒否します。Windows の標準 DLL（`D3DCOMPILER_47.dll` など）は除外対象ではありません。静的リンクは「Windows の DLL を一切使わない」という意味ではなく、import 検査だけで GPU や遅延ロードの動作まで保証できるわけでもありません。
+
+## GitHub Actions と配布
+
+### 実行と成果物の取得
+
+`Windows build and release` workflow は `master` への push、`master` 宛ての pull request、Actions 画面からの手動実行、`v*` tag の push で動きます。PR は通常の `pull_request` として実行し、リリース用の書き込み権限を渡しません。
+
+`windows-2025-vs2026` 上で VS2026／Ninja × Debug／Release の 4 組を独立に configure・build し、各組で 3 件の CTest suite と package 検査用スクリプトのテストを実行します。`/W4 /WX` は解除しません。4 組すべて成功してから VS2026 Release を共通の `Package.ps1` でパッケージ化します。Ninja Release は互換性検証用で、別のプレイヤー ZIP は作りません。ビルド cache は使用せず、実際の MSVC、CMake、Windows SDK バージョンを記録します。runner 名の固定はコンパイラの更新停止を意味しません。
+
+GitHub の **Actions → 対象 run → Artifacts** から成果物を取得します。`player-package-<sha>` がプレイヤー用 ZIP と SHA-256 チェックサム、`symbols-<generator>-<config>-<sha>` がシンボル、`logs-<generator>-<config>-<sha>` がログです。GitHub が artifact 全体を ZIP に包んでダウンロードする場合は、その内側にある `BloodLine-windows-x64-...zip` が配布用です。これらの保存期間は 30 日です。job 間転送専用の `release-input-<sha>` は 1 日だけ保持し、配布には使いません。失敗した run はログを確認し、途中の EXE を正式成果物として配布しません。
+
+正式タグの run は、4 組の検証と package が成功した後、同じタグの GitHub Release を作成し、ZIP、チェックサム、ビルド情報の 3 ファイルを添付します。リリースノートは GitHub が生成します。通常の push／PR／手動 run は Release を作りません。Release の書き込み権限はタグのリリース job だけが持ち、追加の依存ダウンロード token は不要です。
+
+### commit の規約
+
+新しい commit の推奨形式は `<type>(<scope>): <description>` です。scope は省略可能、type／scope は小文字英語、説明は日本語にします。type は `feat`、`fix`、`docs`、`refactor`、`test`、`build`、`ci`、`chore` から選びます。
+
+```text
+feat(results): ステージごとの臓器達成率を表示
+fix(data): stage_05 の臓器配置を修正
+build(deps): KamataEngine をプロジェクト内に同梱
+ci: Release ZIP の依存検査を追加
+docs: タグによるリリース手順を追記
+```
+
+一つの commit は説明できる一つの目的にまとめます。既存の `update:`／`hotfix:` 履歴は書き換えず、この規約のための commit lint も追加しません。commit の type からバージョンを自動更新する仕組みはありません。
+
+### バージョンと正式タグ
+
+正式バージョンは `vMAJOR.MINOR.PATCH` とします。互換性のない変更は MAJOR、新機能は MINOR、修正は PATCH を上げます。最初の実際のバージョンと変更内容の分類は維持管理者が決定します。今回は prerelease（`-rc.1` など）を扱わず、各数値の不要な先頭ゼロも使いません。`v*` に一致しても正式形式でないタグは CI が拒否します。
+
+正式タグは annotated tag とし、変更を `master` に統合してその CI が成功した commit に付けます。タグ CI も正式形式、annotated tag、ビルド対象との commit 一致、`origin/master` に含まれる commit であることを検査します。リリース前に作業ツリーに未コミットの変更がないこと、対象 commit と差分、テスト、配布 ZIP の実機確認をチェックしてください。次は PowerShell 用の手動手順です。`v1.2.3` は例なので、決定済みの未使用バージョンに置き換えます。
+
+```powershell
+git switch master
+git pull --ff-only origin master
+git status --short
+git log -1 --oneline
+```
+
+`git status --short` に何も出ないことを確認し、GitHub 上でこの commit の CI が成功していることを確認してから、次へ進みます。
+
+```powershell
+$releaseVersion = 'v1.2.3'
+git tag -a $releaseVersion -m "Release $releaseVersion"
+git show --no-patch $releaseVersion
+git push origin $releaseVersion
+```
+
+`git push --tags` は使わず、意図した一つのタグだけを送信します。タグ run が成功して GitHub の **Releases** に同じバージョンと添付ファイルが現れたことを確認します。ダウンロードした ZIP の SHA-256 をチェックサムの値と比較し、ZIP 全体を展開してください。
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\BloodLine-windows-x64-v1.2.3.zip
+```
+
+公開済みタグを削除・移動・force push してはいけません。公開後に修正が必要なら新しいバージョンを作ります。同名 Release が既にある場合、CI は停止して既存添付を上書きしません。
+
+### 失敗時の確認
+
+- configure／link 失敗：該当 matrix のログで SDK、CMake、compiler バージョンと欠損パスを確認します。外部 `Runtime` のパスを戻して回避しません。
+- テスト／package 失敗：原因を修正して通常の CI を通します。依存チェックを外す、Debug EXE を配布する、DLL を手作業で寄せ集める対応はしません。
+- 一時的な runner 障害：既存 Release がなければ同じタグ run を再実行できます。コード変更が必要なら新しい commit と新しいバージョンを使います。
+- 同名 Release 存在：再実行によるものか既存の公開物かを確認します。添付不足などであっても自動上書きはせず、維持管理者が状態を確認して新バージョンの要否を判断します。
+- 他の PC で起動失敗：配布 ZIP 全体を展開したか、Release か、実行環境と表示された DLL 名を確認します。CI runner は開発環境なので、開発ツールを入れていない Windows 機での起動・画面・音声確認は別途必要です。
+
+CI の導入だけではクラウド実行や実機検証の完了を意味しません。最初の push 後に実際の Actions 結果を確認してください。依存関係、権限、成果物の追跡設計は [アーキテクチャ文書](Docs/Architecture.md#16-依賴封裝與-ci-發版) を参照してください。
 
 ## プログラムの構成
 
@@ -307,8 +404,11 @@ tests/                         engine に依存しない core tests
 NoviceResources/data/          levels、presets、レベルごとの maps
 NoviceResources/assets/        32×32 cursor と 48×48 node textures
 NoviceResources/audio/         intro／loop BGM と line hold／relax WAV
-NoviceResources/fonts/         必須の信頼済み game.ttf
+NoviceResources/fonts/         必須の BIZUDPGothic-Regular.ttf
 NoviceResources/shaders/       flat-color 2D shaders
+third_party/KamataEngine/      同梱 SDK、出典、ファイルのハッシュとライセンス
+.github/workflows/             4 構成の検証、ZIP とタグ Release の生成
+Package.ps1                   ローカル／CI 共通の Release package 検査
 Docs/Architecture.md           担当範囲、データの流れ、機能追加の境界
 ```
 
