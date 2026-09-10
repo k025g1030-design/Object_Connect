@@ -1,4 +1,5 @@
 name: Windows build and release
+run-name: ${{ github.event_name }} / ${{ github.ref_name }}
 
 on:
   push:
@@ -13,6 +14,14 @@ on:
 permissions:
   contents: read
 
+# Tag push and release.published can describe the same version. Hold the lock
+# across validation, build, package AND upload; a later event then checks the
+# completed release before deciding to build. Never interrupt an active upload.
+# Use a different key from the publisher job lock (also used by older workflows).
+concurrency:
+  group: ${{ (github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))) && format('release-workflow-{0}', github.ref_name) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: false
+
 defaults:
   run:
     shell: pwsh
@@ -22,11 +31,15 @@ jobs:
     name: Prepare event
     runs-on: windows-2025-vs2026
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     outputs:
       publish: ${{ steps.event.outputs.publish }}
       tag: ${{ steps.event.outputs.tag }}
       commit: ${{ steps.event.outputs.commit }}
       release_id: ${{ steps.event.outputs.release_id }}
+      needs_build: ${{ steps.event.outputs.needs_build }}
     steps:
       - name: Check out the exact event commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,14 +47,19 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate event, official version and tag provenance
+      - name: Validate event and check for an already verified release
         id: event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: ./scripts/Prepare-CiEvent.ps1
       - name: Test release policies and safe publishing without remote writes
         run: |
           ./scripts/Test-PackageSupport.ps1
           ./scripts/Test-ReleasePolicy.ps1
           ./scripts/Test-ReleasePublish.ps1
+          ./scripts/Test-ReleaseBuild.ps1
+          ./scripts/Test-CiValidation.ps1
       - name: Preserve event validation logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -55,6 +73,7 @@ jobs:
   build:
     name: ${{ matrix.generator }} / ${{ matrix.configuration }}
     needs: prepare
+    if: needs.prepare.outputs.needs_build == 'true'
     runs-on: windows-2025-vs2026
     timeout-minutes: 40
     strategy:
@@ -115,6 +134,7 @@ jobs:
   package:
     name: Package verified Release
     needs: [prepare, build]
+    if: needs.prepare.outputs.needs_build == 'true'
     runs-on: windows-2025-vs2026
     timeout-minutes: 15
     steps:
@@ -147,10 +167,42 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+  validation:
+    name: CI validation
+    # A skipped matrix must not accidentally satisfy a required branch check.
+    # Only a verified, already-published formal release may skip the build.
+    needs: [prepare, build, package]
+    if: always()
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 5
+    steps:
+      - name: Require all necessary validation jobs to pass
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          NEEDS_BUILD: ${{ needs.prepare.outputs.needs_build }}
+          PUBLISH_RELEASE: ${{ needs.prepare.outputs.publish }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PREPARE_RESULT -cne 'success') { throw 'Event validation failed or was cancelled.' }
+          if ($env:PUBLISH_RELEASE -cnotin @('true', 'false')) { throw 'Missing or invalid event classification.' }
+          if ($env:NEEDS_BUILD -ceq 'true') {
+            if ($env:BUILD_RESULT -cne 'success' -or $env:PACKAGE_RESULT -cne 'success') {
+              throw 'All four builds/tests and the package checks must succeed.'
+            }
+            Write-Host 'CI validation passed: all four builds/tests and package checks succeeded.'
+          } elseif ($env:NEEDS_BUILD -ceq 'false' -and $env:PUBLISH_RELEASE -ceq 'true' -and
+                    $env:BUILD_RESULT -ceq 'skipped' -and $env:PACKAGE_RESULT -ceq 'skipped') {
+            Write-Host 'CI validation passed: this exact release was already built, tested and verified. Duplicate build skipped.'
+          } else {
+            throw 'Unexpected validation state; a skipped build cannot pass the required check.'
+          }
+
   release:
     name: Publish or complete GitHub Release
-    needs: [prepare, package]
-    if: needs.prepare.outputs.publish == 'true'
+    needs: [prepare, package, validation]
+    if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.needs_build == 'true'
     runs-on: windows-2025-vs2026
     timeout-minutes: 10
     permissions:

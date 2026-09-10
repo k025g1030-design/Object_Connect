@@ -323,40 +323,43 @@ if ($LASTEXITCODE -ne 0) { throw 'Release tests failed.' }
 
 ## GitHub Actions と配布
 
-### 正式発版の 2 つの入口
+### 操作ごとの役割と正式発版の入口
 
 **GitHub の画面だけで発版できます。コマンドで tag を push する方法も引き続き使えます。** どちらの入口でも同じ正式バージョン、commit、4 構成の build・test、package 検査を通します。画面で Release を公開した直後は、検証と添付の完了を待ってください。Release が見えることだけでは、ゲーム ZIP が配布可能になったとは限りません。
 
 | 操作 | build・test・ZIP | GitHub Release への反映 |
 | --- | --- | --- |
-| 新しい commit を `master` へ push | 実行する | しない |
+| ローカルの `git commit`／`git tag` | 実行しない。GitHub へはまだ送信されない | しない |
+| 新しい commit を `git push origin master` で送信 | push が受理された後に実行する | しない。CI は受理済み push を取り消せない |
 | `master` 宛ての PR | 実行する | しない |
 | Actions の `Run workflow` | 実行する | しない。実行対象に tag を選んでも正式発版にはならない |
-| 小文字 `v` で始まる tag を push | 入口検査に合格した場合だけ実行する | Release がなければ作成する。公開済みなら安全条件を確認して不足添付だけ追加する |
-| GitHub 上で正式 Release を公開（`release: published`） | 同じ入口検査に合格した場合だけ実行する | 公開した Release に不足添付だけ追加する。タイトル、説明、手動添付は保持する |
+| 小文字 `v` で始まる tag を push | 入口検査後、検証済みの完成添付がなければ実行する | Release がなければ作成する。公開済みなら安全条件を確認して不足添付だけ追加する |
+| GitHub 上で正式 Release を公開（`release: published`） | 同上 | 公開した Release に不足添付だけ追加する。タイトル、説明、手動添付は保持する |
 | Release を draft として保存／公開済み Release の説明だけ編集 | そのイベントでは実行しない | しない。draft は実際に公開した時点で起動する |
 | prerelease として公開 | 入口検査で拒否する | prerelease は未対応 |
 
 手動 run が成功しても、正式 tag の検査や Release 作成まで成功したことにはなりません。変更のない `git push`（`Everything up-to-date`）も、新しい run を起動しません。
 
-同じ tag に対して push と Release 公開の両イベントが届くと、build が 2 回走る場合があります。公開処理は tag 単位で直列化し、既に完全で正しい 3 添付がある場合は何も変更せず成功します。重複イベントを避けるために tag や Release を削除する必要はありません。
+**画面で新しい tag を作りながら Release を公開する操作は正常です。** 同じ tag の push と Release 公開は別イベントなので、Actions に 2 件の run が表示されることはあります。workflow 全体を tag 単位で直列化し、後から実行する `Prepare event` が遠隔 tag／commit と完成済みの 3 添付を読み取り検証します。さらに同じ workflow・tag・commit の正式 run が既に成功していることを確認し、両条件を満たす場合だけ `needs_build=false` として build・package・publish をスキップします。先行 run の成功後にもう一度完全ビルドすることはありません。Release ページや手動添付があるだけでは CI 成功の代わりにしません。通常の branch push／PR／手動 run はこの省略の対象外です。[GitHub の concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency) を使用しており、実行中の同版 run は後発イベントでキャンセルしません。
 
 ### CI の強制ルール
 
-以下は推奨事項ではなく、**tag push と Release 公開の両方**に対してスクリプトが実際に検査して停止する条件です。上から順に通過が必要です。
+以下は推奨事項ではなく、**tag push と Release 公開の両方**に対してスクリプトが実際に検査して停止する条件です。各段階の条件を満たす必要があります。
 
 | 段階 | 必須条件 | 違反した場合 |
 | --- | --- | --- |
 | コンパイル前：`Prepare event` | tag 名は小文字 `v` + 数値 3 段の `vMAJOR.MINOR.PATCH`、全体 80 文字以内。各数値は `0` または先頭が `0` 以外。prerelease／build metadata は使わず、Release の prerelease 指定も不可 | 準備 job で失敗し、4 組の build と後続 job は実行しない |
 | 同上 | annotated／lightweight tag のどちらでもよいが、対象は commit とする。別 tag を指す nested tag は不可。tag が解決する commit と checkout の HEAD が一致すること | 不正な対象や、tag と実際に検査するソースの不一致を拒否する |
 | 同上 | tag commit が `origin/master` の履歴に含まれること。現在の先頭 commit と同じである必要はない | 未統合の feature branch の commit は発版できない |
-| build・test | VS2026／Ninja × Debug／Release の 4 組すべてで build とテストが成功すること | package と release job はスキップする |
+| コンパイル前の重複検査 | 完成済みの遠隔 ZIP、`.zip.sha256`、`.build-info.json` の version／commit、相互の hash と ZIP 内の metadata／資源を検証し、同じ workflow・tag・commit の正式 run の成功履歴も確認する | 両方が正しければ後続の build・package・publish を省略。添付不足や成功履歴なしでは通常の全検証を実行。不整合や API エラーは停止する |
+| build・test（新規／未完了版） | VS2026／Ninja × Debug／Release の 4 組すべてで build とテストが成功すること | package と release job はスキップする |
 | package | Release x64、既知の link-time commit、EXE の SHA-256、ソースと配布資源の集合／SHA-256 が一致すること。CI の build 元と package 元は同一 commit で、双方に未コミット変更がないこと | ZIP を正式成果物にしない。正式版は tag の commit も一致が必要 |
 | package | 必須資源・ライセンスが揃い、禁止する DLL 依存や Debug sidecar、資源内の開発用 binary がないこと。同名の ZIP／チェックサム／build-info を上書きしないこと | package を停止する。DLL 条件は [Release ZIP の作成](#release-zip-の作成) を参照 |
 | 公開直前 | 遠隔 tag が現在も検証済み commit に解決すること。添付 ZIP の SHA-256 と build metadata の version／commit が一致すること | tag の移動や添付の不一致を検出したら発版を停止する |
 | 公開直前 | 既存 Release を使う場合、同じ tag の公開済み正式 Release であること。Release 公開イベントでは ID もイベント時と同じこと。draft／prerelease を CI が勝手に正式公開しない | 既存 draft／prerelease、削除・作り直しされたイベント元 Release は拒否する。公開済みのタイトル、説明、手動添付は変更しない |
 | 既存添付の照合 | 管理対象は ZIP、`.zip.sha256`、`.build-info.json` の 3 ファイル。3 つ揃っている場合、遠隔の 3 ファイルを取得して相互の hash、version、commit を検証する | 正しければ再アップロードせず成功。不整合なら停止する |
 | 不足添付の追加 | 3 ファイルの一部だけがある場合、既存分は今回の候補ファイルと byte 単位で一致すること。その上で不足分のみ追加する | 同名の中身が異なる場合は停止する。削除、`--clobber`、上書きはしない |
+| 集約結果：`CI validation` | 通常 CI では準備、4 組の build、package がすべて成功すること。正式版の重複省略だけは、準備の完成添付／過去 CI 検証に成功し、build／package が意図どおり skipped であること | 依存 job の失敗・キャンセルや、通常 CI の想定外の skipped を成功にしない。publish もこの成功を必須とする |
 
 `git tag v1.1.0` と GitHub の画面で作った lightweight tag は、種類を理由に拒否しません。コマンド操作では記録を残せる `git tag -a` を推奨しますが強制ではありません。一方、`git tag -a v1.1 -m "Release v1.1"` は annotated でも名前の段数が不足するため拒否します。
 
@@ -368,15 +371,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Release tests failed.' }
 | `v1.1.0-rc.1`、`v1.1.0+build.1` | 接尾辞に未対応のため拒否 |
 | `1.1.0`、`V1.1.0` | tag push の入口には一致しない。Release 公開で起動した場合も名前の検査で拒否 |
 
-検査の実装は [ReleasePolicy.ps1](scripts/ReleasePolicy.ps1)、[Assert-ReleaseTag.ps1](scripts/Assert-ReleaseTag.ps1)、[Package.ps1](Package.ps1)、[ReleasePublishSupport.ps1](scripts/ReleasePublishSupport.ps1)、[windows-build.yml](.github/workflows/windows-build.yml) にあります。これらの条件と「以下の commit 命名の推奨」を混同しないでください。
+検査の実装は [ReleasePolicy.ps1](scripts/ReleasePolicy.ps1)、[Assert-ReleaseTag.ps1](scripts/Assert-ReleaseTag.ps1)、[ReleaseBuildSupport.ps1](scripts/ReleaseBuildSupport.ps1)、[Package.ps1](Package.ps1)、[ReleasePublishSupport.ps1](scripts/ReleasePublishSupport.ps1)、[windows-build.yml](.github/workflows/windows-build.yml) にあります。これらの条件と「以下の commit 命名の推奨」を混同しないでください。
 
 ### 実行と成果物の取得
 
 `Windows build and release` workflow は `master` への push、`master` 宛ての pull request、Actions 画面からの手動実行、`v*` tag の push、Release の `published` で動きます。PR は通常の `pull_request` として実行し、リリース用の書き込み権限を渡しません。
 
-`Prepare event` で入口と出典を確認し、package／発版ポリシー／公開処理のテストを遠隔への書き込みなしで実行します。その後、`windows-2025-vs2026` 上で VS2026／Ninja × Debug／Release の 4 組を独立に configure・build し、各組で 3 件の CTest suite と package 検査用スクリプトのテストを実行します。`/W4 /WX` は解除しません。4 組すべて成功してから VS2026 Release を共通の `Package.ps1` でパッケージ化します。Ninja Release は互換性検証用で、別のプレイヤー ZIP は作りません。ビルド cache は使用せず、実際の MSVC、CMake、Windows SDK バージョンを記録します。runner 名の固定はコンパイラの更新停止を意味しません。
+`Prepare event` で入口と出典、正式版の既存添付を確認し、package／発版ポリシー／公開処理のテストを遠隔への書き込みなしで実行します。通常 CI と未完了の正式版では、その後 `windows-2025-vs2026` 上で VS2026／Ninja × Debug／Release の 4 組を独立に configure・build し、各組で 3 件の CTest suite と package 検査用スクリプトのテストを実行します。`/W4 /WX` は解除しません。4 組すべて成功してから VS2026 Release を共通の `Package.ps1` でパッケージ化します。`CI validation` は依存 job の失敗時にも結果を集約する固定名の check です。Ninja Release は互換性検証用で、別のプレイヤー ZIP は作りません。ビルド cache は使用せず、実際の MSVC、CMake、Windows SDK バージョンを記録します。runner 名の固定はコンパイラの更新停止を意味しません。
 
 GitHub の **Actions → 対象 run → Artifacts** から成果物を取得します。`player-package-<sha>` がプレイヤー用 ZIP と SHA-256 チェックサム、`symbols-<generator>-<config>-<sha>` がシンボル、`logs-<generator>-<config>-<sha>` が build ログ、`logs-prepare-<sha>` が入口検証ログです。GitHub が artifact 全体を ZIP に包んでダウンロードする場合は、その内側にある `BloodLine-windows-x64-...zip` が配布用です。これらの保存期間は 30 日です。job 間転送専用の `release-input-<sha>` は 1 日だけ保持し、配布には使いません。失敗した run はログを確認し、途中の EXE を正式成果物として配布しません。
+
+完成済み版を検証してスキップした run には、新しい `player-package` や build ログはありません。準備ログと `CI validation` の結果を確認し、既存の GitHub Release から配布 ZIP を取得します。2 件目の run の build が skipped であることは、この場合だけ正常です。
 
 同じ Actions run の job を再実行するときは、同名の **CI artifact だけ**を `overwrite: true` で置き換えます。これは artifact 名の重複による 409 を避けるためで、**GitHub Release の 3 添付を上書きしてよいという意味ではありません**。Release 添付の照合・不足分のみ追加という規則は変わりません。
 
@@ -404,38 +409,57 @@ docs: タグによるリリース手順を追記
 
 発版担当者は次の運用ルールも必ず守ってください。これらはチームの手順であり、すべてが CI で自動検査されるわけではありません。
 
-- `master` に統合し、発版対象 commit の通常 CI 成功を先に確認する。正式発版 CI は自分の 4 組を再実行するが、過去の `master` run の成功履歴までは照合しない。
+- `master` に統合し、発版対象 commit の通常 CI 成功を先に確認する。新規版の正式 CI は自分の 4 組を実行するが、過去の `master` run の成功履歴までは照合しない。完成済み版の重複イベントは上記の検証後にスキップする。
 - コマンドから発版するときはローカル作業ツリーを clean にしてから tag を作る。未コミット変更は push に含まれず、CI が開発者の PC の状態を検出することはできない。
 - 未使用のバージョンを決め、GitHub 画面では対象を `master` にする。コマンドでは対象 commit に tag を付ける（nested tag の禁止自体は上表の CI 強制条件）。annotated tag は記録のための推奨であり、lightweight も使用可能。
 - 下記の画面操作か tag push のどちらかで起動し、CI の完了と添付を確認する。コマンドでは対象 tag だけを push し、`git push --tags` は使わない。
 - 公開済み tag を移動・削除・force push しない。コード修正は新しい commit と新しいバージョンで出す。
 - 配布 ZIP 全体を展開し、開発環境のない Windows 機で起動・画面・音声を確認する。CI 成功だけでは代替しない。
 
+### リリースフロー
+
+普段の変更は **作業 branch に commit／push → `master` 宛ての PR → `CI validation` 成功後に merge → `master` の CI 確認 → 下記 A または B で発版** の順に進めます。作業 branch への push だけでは、この workflow の branch 条件に一致しません。PR を作成すると検証が始まります。`git commit` は変更の記録、`git tag` は版の目印の作成、`git push` はそれらを GitHub に送る操作であり、同じものではありません。
+
+#### 事前設定：未検証の変更を `master` に入れない
+
+**Actions は push 後に動くため、CI ファイルだけでは「失敗する commit の直接 push を拒否する」保証はできません。** その保証が必要な本プロジェクトでは、管理者が **Settings → Branches → Branch protection rule** で `master` に次を設定することを必須とします。この文書／workflow の変更だけでは遠隔設定は有効になりません。
+
+- **Require a pull request before merging** を有効にし、直接 push を禁止する運用にします。
+- **Require status checks to pass before merging** で、GitHub Actions が出す **`CI validation`** を必須にします。初回 run 後に選択し、可能な場合は期待する発行元を GitHub Actions に固定します。
+- **Require branches to be up to date before merging** と **Do not allow bypassing the above settings** を有効にします。管理者も例外にせず、force push／branch 削除は許可しません。
+
+保護設定後の通常変更は PR 経由です。`git push origin master` は正式発版コマンドではなく、保護条件を満たさない直接 push は拒否されるのが正常です。これにより merge 前の build・test・package を必須にできますが、テストに含まれないゲーム挙動や全 PC での動作まで保証するものではありません。[GitHub の protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) を参照してください。
+
 #### 方法 A：GitHub の画面で Release を公開する
 
-1. 発版したい変更を `master` へ commit／push し、その commit の通常 CI が成功したことを確認します。
+1. 発版したい変更を上記の PR 手順で `master` に統合し、その commit の通常 CI が成功したことを確認します。
 2. GitHub の **Releases → Draft a new release** を開きます。
 3. **Choose a tag** で未使用の `v1.2.3` のような名前を入力し、新しい tag を作成します。**Target は `master`** にします。既存 tag を選ぶ場合は、その commit に今回使う workflow が含まれることを確認します。
 4. タイトルと説明を入力します。**Set as a pre-release は選択しません。** ZIP を手作業で用意する必要はありません。
 5. **Publish release** を押します。draft 保存だけでは起動しません。
-6. **Actions → Windows build and release** で Release イベントの run を確認します。4 組の build、package、publish が成功すると、公開した Release の Assets に 3 ファイルが追加されます。
+6. **Actions → Windows build and release** を確認します。tag push と Release 公開の 2 件が見えても正常です。同じ版は直列処理され、先行 run の 4 組の build、package、publish が成功すると Assets に 3 ファイルが追加されます。後続 run は完成添付を検証して build 以降をスキップします。
 
 GitHub 自動生成の `Source code (zip)`／`Source code (tar.gz)` はゲームの実行パッケージではありません。配布には `BloodLine-windows-x64-v1.2.3.zip` を使います。画面で作った lightweight tag を annotated tag に作り直す必要はありません。
+
+新規 tag と Release を同じ画面で作るのは [GitHub 公式の公開手順](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release) です。ただし、現在の自動化は「公開後に添付を追加」するため、repository の **Immutable releases** オプションを前提にしていません。このオプションを有効にすると公開後の添付追加は禁止されます。有効な場合は勝手に解除せず、先に draft へ全添付を揃えてから公開する別設計が必要です。ここでの「tag／添付を上書きしない運用」と GitHub の同名オプションは区別してください。
 
 #### 方法 B：コマンドで tag を push する
 
 次は PowerShell 用の手動手順です。`v1.2.3` は例なので、ローカル／遠隔 tag と GitHub Releases のどちらにも存在しない、決定済みのバージョンに置き換えます。以下のコマンドが失敗した場合は、その場で停止して原因を確認してください。
 
 ```powershell
+$releaseWorkingTree = @(git status --porcelain)
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the working tree.' }
+if ($releaseWorkingTree.Count -ne 0) { throw 'Commit or preserve local changes before releasing.' }
 git switch master
 if ($LASTEXITCODE -ne 0) { throw 'Cannot switch to master.' }
 git pull --ff-only origin master
 if ($LASTEXITCODE -ne 0) { throw 'Cannot synchronize master.' }
-git status --short
 git log -1 --oneline
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the release commit.' }
 ```
 
-`git status --short` に何も出ないことを確認し、GitHub 上でこの commit の CI が成功していることを確認してから、次へ進みます。
+作業ツリーの clean と同期を確認した上で、GitHub 上で表示された commit の `CI validation` が成功していることを確認してから、次へ進みます。
 
 ```powershell
 $releaseVersion = 'v1.2.3'
@@ -460,16 +484,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Tag push failed. Do not force push.' }
 Get-FileHash -Algorithm SHA256 .\BloodLine-windows-x64-v1.2.3.zip
 ```
 
-公開済みタグを削除・移動・force push してはいけません。公開後にコード修正が必要なら新しいバージョンを作ります。既存 Release そのものはエラーではありません。管理対象の 3 添付が完全で相互に正しければ、遠隔の version／commit／hash を確認して再実行を成功扱いにします。
+公開済みタグを削除・移動・force push してはいけません。公開後にコード修正が必要なら新しいバージョンを作ります。既存 Release そのものはエラーではありません。管理対象の 3 添付の version／commit／hash が正しく、同じ正式版の CI 成功履歴も確認できれば、準備段階で再ビルド不要と判断します。添付が揃っていても成功履歴がなければ全検証を実行します。
 
 一部の管理添付だけが既にある場合は、今回の候補と既存分が byte 単位で同じときだけ不足分を追加します。同じ commit を再ビルドしても時刻や toolchain の違いで ZIP が同一にならない場合があり、そのときは安全に停止します。手動添付は保持しますが、上記 3 ファイルと同じ名前で別の内容をアップロードしないでください。衝突を解消するために CI が自動削除・上書きすることはありません。
 
 #### 旧 workflow からの移行
 
-**最初に、この変更を commit／push して `master` の通常 CI を通してください。その後、この workflow を含む commit から新しいバージョンの Release または tag を作ります。** 古い tag は古い workflow とスクリプトを参照するため、以前の失敗 run で **Re-run jobs** を押しても新ルールへ切り替わりません。旧 run の annotated 必須／既存 Release 拒否は、その run 当時の仕様です。既存 tag を移動したり Release を削除したりせず、新バージョンで移行してください。
+**最初に、この変更を `master` に統合して通常 CI を通してください。その後、この workflow を含む commit から新しいバージョンの Release または tag を作ります。** 古い tag は古い workflow とスクリプトを参照するため、以前の run で **Re-run jobs** を押しても新ルールへ切り替わりません。旧 run の annotated 必須／既存 Release 拒否や、2 回とも完全ビルドする動作は、その run 当時の仕様です。既存 tag を移動したり Release を削除したりせず、新バージョンで移行してください。
 
 ### 失敗時の確認
 
+- 同じ版に 2 件の run がある：イベント名を確認する。1 件目が進行中なら 2 件目の待機は正常。完成後の重複 run は準備検証と `CI validation` が成功し、build／package／publish が skipped になる。先行 run の失敗、添付不足、正式 CI 成功履歴なしではスキップ成功にしない。
 - 入口検査で失敗して build がスキップされる：最初の準備 job の失敗 step と診断ログを確認する。ログは入口検査より先に用意するため、バージョンや commit の不一致を build 失敗と区別できる。checkout 自体の失敗など、ログ開始前の問題は Actions の step 表示を読む。
 - `Official versions must use vMAJOR.MINOR.PATCH`：`v1.1` のような形式を確認する。再実行だけでは直らない。
 - `A release requires an annotated tag`／`This release already exists`：旧 workflow の run かを確認する。新 workflow は lightweight と公開済み Release に対応している。古い run の再実行では切り替わらないので、上の移行手順に従う。

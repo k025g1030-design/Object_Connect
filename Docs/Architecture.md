@@ -429,28 +429,27 @@ Build 預設 Release、Run 預設 Debug，使用者以 `-Configuration` 切換�
 
 ### 16.2 CI 驗證與打包匯合
 
-`Windows build and release` workflow 的入口是 `master` push、以 `master` 為目標的 PR、手動執行、`v*` tag push，以及 GitHub Release 的 `published`。前置準備 job 解析事件，正式發版的兩個入口共用版本、tag commit 與 `master` ancestry 檢查，並將固定 commit 傳給後續工作。每個 matrix job 使用獨立的 `windows-2025-vs2026` runner，從 checkout 內取得依賴，不使用編譯 cache。runner 標籤固定工具鏈家族，不保證每次 MSVC／SDK patch version 不變；實際版本必須留在建置紀錄。
+`Windows build and release` workflow 的入口是 `master` push、以 `master` 為目標的 PR、手動執行、`v*` tag push，以及 GitHub Release 的 `published`。正式事件先取得同 tag 的 workflow-level concurrency 鎖，再由前置準備 job 共用版本、tag commit 與 `master` ancestry 檢查，並將固定 commit 傳給後續工作。只有完整遠端附件驗證通過，且同 workflow、tag、commit 已有成功的正式 run 時，才輸出 `needs_build=false` 省略重複建置。一般 branch／PR／手動 run 永遠正常建置。每個 matrix job 使用獨立的 `windows-2025-vs2026` runner，從 checkout 內取得依賴，不使用編譯 cache。runner 標籤固定工具鏈家族，不保證每次 MSVC／SDK patch version 不變；實際版本必須留在建置紀錄。
 
 ```text
-事件準備／正式版本檢查 → 固定 source commit
-checkout（包含 third_party）
-  ├─ VS2026 Debug   → build / 3 CTest suites ─┐
-  ├─ VS2026 Release → build / 3 CTest suites ─┤
-  ├─ Ninja Debug    → build / 3 CTest suites ─┼─ 全部成功
-  └─ Ninja Release  → build / 3 CTest suites ─┘       │
-                                                   ▼
-                     VS2026 Release 產物 → Package.ps1
-                                                   │
-                         玩家 ZIP / SHA-256 / build-info
-                              │                    │
-                         Actions artifact      tag push / release.published
-                                                   │
-                                    按 tag 串行的 publish job
-                                      ├─ 無 Release → 建立並添付
-                                      └─ 已公開 → 驗證／補缺，不覆寫
+正式雙入口：取得同 tag 的 workflow 鎖
+  → Prepare event：版本／出典／遠端三附件／先前正式 CI
+      ├─ 完整且已有成功同版 CI → needs_build=false
+      │    → CI validation → 成功；不再 build／package／publish
+      └─ 未完成，或一般 CI → needs_build=true
+           ├─ VS2026 Debug   → build / 3 CTest suites ─┐
+           ├─ VS2026 Release → build / 3 CTest suites ─┤
+           ├─ Ninja Debug    → build / 3 CTest suites ─┼─ 全部成功
+           └─ Ninja Release  → build / 3 CTest suites ─┘
+                → VS2026 Release → Package.ps1
+                     → 玩家 ZIP / SHA-256 / build-info artifact
+                     → CI validation
+                     → 僅正式版 publish：建立／安全補缺，不覆寫
 ```
 
-`Prepare event` 執行 package 支援、事件／tag 政策和 fake-backend 發布測試，不產生遠端寫入。四組 build 都保留 `/W4 /WX` 並執行 `Object_Connect.Core`、`Object_Connect.FontSystemLifecycle`、`Object_Connect.GameAudio`，以及 package 支援腳本測試。Ninja 驗證覆蓋 CLion presets 的建置方式，不另外發布第二份遊戲 ZIP。準備 job 失敗時不啟動 matrix；只要任一組失敗，就不能進入正式打包／發版。入口驗證前即建立診斷日誌，與建置日誌分開保存，見 16.3.4。PDB 分開放在符號 artifact，不與玩家資源混用。玩家 ZIP、符號與日誌 artifacts 保存 30 天；job 間轉交 VS Release 產物的中間 `release-input` artifact 僅保存 1 天，不作配布。正式版本另由 GitHub Release 附件提供。
+`Prepare event` 執行 package 支援、事件／tag 政策和 fake-backend 發布測試，不產生遠端寫入。四組 build 都保留 `/W4 /WX` 並執行 `Object_Connect.Core`、`Object_Connect.FontSystemLifecycle`、`Object_Connect.GameAudio`，以及 package 支援腳本測試。Ninja 驗證覆蓋 CLion presets 的建置方式，不另外發布第二份遊戲 ZIP。準備 job 失敗時不啟動 matrix；只要任一組失敗，就不能進入正式打包／發版。固定名稱的 `CI validation` job 以 `always()` 匯總 prepare／build／package 結果，不能因上游失敗導致下游 skipped 而誤報成功；publish 也以其成功為前提。只有正式版已完成驗證的去重分支可接受 build／package skipped。
+
+入口驗證前即建立診斷日誌，與建置日誌分開保存，見 16.3.4。PDB 分開放在符號 artifact，不與玩家資源混用。玩家 ZIP、符號與日誌 artifacts 保存 30 天；job 間轉交 VS Release 產物的中間 `release-input` artifact 僅保存 1 天，不作配布。正式版本另由 GitHub Release 附件提供。去重 run 只保留準備驗證紀錄，不另建玩家包或 build 日誌；玩家仍下載既存 Release 的成品。
 
 所有 `upload-artifact` 設定 `overwrite: true`，只允許同一 Actions run 重跑 job 時替換同名 CI artifact，避免 API 409 名稱衝突。此生命週期與 GitHub Release 附件不同：Release 的三個管理附件仍不可覆寫，只能驗證或安全補缺，不能把 artifact 的替換選項延伸到正式附件。
 
@@ -462,7 +461,7 @@ Import 檢查拒絕 Debug CRT、動態 MSVC／OpenMP runtime 及 `dxcompiler.dll
 
 ### 16.3 版本來源、權限與不可變性
 
-#### 16.3.1 發版雙入口：推 tag 或在 GitHub 公開 Release
+#### 16.3.1 發佈流程：程式整合、版本標記與雙入口
 
 兩條正式流程共用同一套驗證與發布邊界：維護者可推送 tag，由 CI 建立 Release；也可直接在 GitHub 網頁公開 Release，由 `release: published` 觸發 CI 並補上附件。**網頁流程不需要命令列，也不要求把 GitHub 產生的 lightweight tag 改成 annotated。** Release 頁面已公開不等於遊戲包已通過 CI，團隊須等 publish 完成與三個附件齊全才配布。
 
@@ -470,31 +469,40 @@ Import 檢查拒絕 Debug CRT、動態 MSVC／OpenMP runtime 及 `dxcompiler.dll
 | --- | --- | --- | --- |
 | 推送 `master`、PR 目標為 `master` | 執行 | 不執行 | 不執行 |
 | `workflow_dispatch`／Run workflow | 執行 | 不執行 | 不執行 |
-| 推送小寫 `v*` tag | guard 成功後才執行 | 前置準備 job 共用檢查 | 無 Release 時建立；已公開時驗證並補缺 |
-| 公開正式 GitHub Release（`published`） | guard 成功後才執行 | 同上，另拒絕 prerelease | 保留現有 Release，驗證並補缺 |
+| 本機 commit／建立 tag | 不執行，尚未送到 GitHub | 不執行 | 不執行 |
+| 推送小寫 `v*` tag | guard 成功且未完成去重驗證時執行 | 前置準備 job 共用檢查 | 無 Release 時建立；已公開時驗證並補缺 |
+| 公開正式 GitHub Release（`published`） | 同上 | 同上，另拒絕 prerelease | 保留現有 Release，驗證並補缺 |
 | 保存 draft、僅 `edited` | 該事件不觸發 | 不執行 | 不執行；draft 真正公開時才觸發 |
 | 公開 prerelease | guard 拒絕 | 不支援預發版 | 不添附 |
 
 因此手動 CI 成功，只證明該次建置及一般打包通過，**不等於正式 guard 或發版檢查已通過**。大寫 `V1.1.0`、沒有 `v` 的 `1.1.0` 不符合 tag push 入口；即使透過 Release 公開事件啟動，也會被正式格式檢查拒絕。`v*` 只是事件篩選，不代表 `v1.1` 等所有名稱都是合法版本。
 
-同一 tag 的 push 與 Release 公開可能各啟動一次完整建置；不以覆寫或移動 tag 消除重複。publish 以 tag 為 concurrency key 串行執行，後來的 run 驗證已存在的完整附件後成功返回，不重複覆寫。這不宣稱編譯產物可逐 byte 重現，也不依賴永遠只收到一個 GitHub 事件。
+標準整合順序為「工作 branch 的 commit／push → PR → 必要 CI 成功 → 合併 `master` → 確認該版 CI → 網頁公開 Release 或推送版本 tag」。`git tag` 只建立本機參照，tag push 才是正式入口；`master` push 只驗證程式，不自動發版。網頁同時建立新 tag 並公開 Release 是 [GitHub 官方支援的操作](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release)，不要求拆成命令列步驟。操作指令集中在 [README 的リリースフロー](../README.md#リリースフロー)。
+
+雙事件仍可留下兩筆 Actions run，但在整個 workflow 層級使用同 tag 的 `release-workflow-<tag>` concurrency group，`cancel-in-progress: false` 不打斷正在建置的同版流程。後一輪於取得鎖後才檢查完整附件與先前同 workflow／tag／SHA 的正式成功紀錄；兩者俱備才省略 build、package、publish。完整附件但沒有先前成功 CI 時仍必須完整建置，不能把手工填寫的 metadata 視為 CI 證據。第一輪失敗或僅部分附件也不是完成狀態。一般 CI 使用 run ID 隔離，不因同 SHA 的 Release 存在而免測試。publish 層仍保留另一個 `release-<tag>` 鎖，與可能還在執行的舊 workflow 協調附件寫入，不能和 workflow 鎖使用同 key 而自我等待。此設計使用 [GitHub 官方 concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)，不保證事件只到一次或編譯產物逐 byte 可重現。
+
+「線上 `master` 不接受未驗證修改」需要 repository 的保護規則，而非事後 Actions。必要設定為要求 PR、要求固定 **`CI validation`** status check、合併前與目標 branch 保持最新、禁止繞過規則（含管理者），並不允許 force push／刪除。準備、任一 matrix 或 package 失敗都必須由此集約 check 回報失敗，不能將可能 skipped 的 package job 單獨當作合併保證。這些是管理者需另外啟用的 [GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) 設定；本次檔案修改沒有設定遠端保護，也不能撤回已受理的直接 push。具體操作與檢查清單以 README 為準。
+
+目前流程於 Release 公開後添加附件，因此不相容於 repository 的 **Immutable releases** 選項；該選項在公開後禁止增加附件。若要啟用，須先另行改為 draft → 上傳全部附件 → 公開，不可誤把本專案「不覆寫既有附件」規則當成已支援 GitHub 的 immutable 發布生命週期，也不自行變更遠端設定。
 
 #### 16.3.2 CI 強制規則與失敗階段
 
-以下是程式實際執行的 gate，不是可選建議。來源為 `.github/workflows/windows-build.yml`、`scripts/ReleasePolicy.ps1`、`scripts/Assert-ReleaseTag.ps1`、`Package.ps1` 與 `scripts/ReleasePublishSupport.ps1`。
+以下是程式實際執行的 gate，不是可選建議。來源為 `.github/workflows/windows-build.yml`、`scripts/ReleasePolicy.ps1`、`scripts/Assert-ReleaseTag.ps1`、`scripts/ReleaseBuildSupport.ps1`、`Package.ps1` 與 `scripts/ReleasePublishSupport.ps1`。
 
 | 檢查階段 | 強制條件 | 不符合時的結果 |
 | --- | --- | --- |
 | `Prepare event`，在 configure／build 前 | 正式名稱必須是 `vMAJOR.MINOR.PATCH` 三段非負整數，總長度不超過 80 字元；各段只能是 `0` 或不以 `0` 起頭的數字。不接受 prerelease 或 build metadata，Release 也不能標記為 prerelease。 | 準備 job 明確失敗；matrix、package／release 不執行。 |
 | 同一 tag guard | annotated／lightweight 均可，但必須直接以 commit 為目標，不支援指向另一個 tag 的 nested tag；解出的 commit 必須等於 checkout `HEAD`。 | 拒絕非 commit 的目標與事件／checkout 不一致的來源，而非因 lightweight 類型拒絕。 |
 | 同一 tag guard | tag commit 必須已在 `origin/master` 的歷史中（ancestor 檢查），不要求一定等於目前 branch tip。 | 尚未合併至 `master` 的 commit 不得發版。 |
-| 四組 `Configure, build and test` | VS2026／Ninja × Debug／Release 全部 build、三項 CTest suites 與 package 支援測試成功。 | 任一 matrix job 失敗，後續 package／release 不執行。 |
+| 準備階段的去重檢查 | 下載完整三附件，驗證版本／commit／hash／ZIP 內容，且有相同 workflow、tag、SHA 的正式 run 成功紀錄。 | 兩者皆成立才 `needs_build=false`；沒有完整附件或成功紀錄則完整驗證，API 錯誤或附件不自洽則停止。 |
+| 四組 `Configure, build and test`（新版本／未完成版） | VS2026／Ninja × Debug／Release 全部 build、三項 CTest suites 與 package 支援測試成功。 | 任一 matrix job 失敗，後續 package／release 不執行。 |
 | `Package verified Release` | Package 整合測試成功；輸入為 Release x64，具有效完整 commit 和 link-time metadata；EXE SHA-256 與 metadata 相符。CI 的建置 commit、打包 checkout 必須相同且兩者均為 clean；正式版本的 tag 也必須解出該 commit。 | 不建立可發布的玩家包，release 不執行。未知來源、髒工作目錄及混用舊 EXE 都會被拒絕。 |
 | 同一 package 階段 | 原始與部署資源的檔案集合、逐檔 SHA-256 相符，必要字體／CSV 和授權資料齊全；通過 DLL import／sidecar／開發二進位檢查，且輸出檔案不存在。 | 拒絕缺檔、資源被改動、不合規依賴或覆寫已有 ZIP；具體邊界見 16.2。 |
 | publish 的遠端重驗 | tag 仍解出本次已測試的 commit；若已有 Release，必須為相同 tag 的公開正式 Release。Release 事件另綁定原始 Release ID。 | tag 被移動／替換、既有 Release 是 draft／prerelease、事件 Release 消失或被刪除重建時停止，不自動重建或改狀態。 |
 | 同一 publish 階段 | ZIP、校驗檔及外部 build-info 三個候選附件皆存在；ZIP SHA-256 正確，build-info 的 version／built commit 與事件相同且建置來源為 clean。 | 不發佈不一致的包；API／權限／建立 Release 出錯也會明確失敗。 |
 | 完整既有管理附件 | 下載遠端 ZIP、`.zip.sha256`、`.build-info.json`，驗證相互 hash、version、commit 正確。 | 正確則 no-op 成功；不要求與重新 build 的候選逐 byte 相同。不自洽則停止。 |
 | 部分既有管理附件 | 現有的每個管理附件均須與本次候選逐 byte 相同，才上傳缺少的檔案。 | 任何同名衝突都停止；不使用 clobber、不刪除、不覆寫。新舊 build 的時間／工具鏈差異可能造成安全停止。 |
+| `CI validation` 匯總 | prepare 成功，且所需 build／package 全成功；或正式版已完成去重驗證、兩者依預期 skipped。 | 上游失敗、取消、非去重原因的 skipped 都回報失敗；publish 必須等待此 check 成功。 |
 
 名稱範例：`v1.1.0`、`v0.0.1` 合法；`v1.1`、`v01.1.0`、`v1.01.0`、`v1.1.00`、`v1.1.0-rc.1`、`v1.1.0+build.1` 都會在正式 guard 被拒絕。lightweight tag 與已存在的公開 Release 本身不再是錯誤；其他 gate 不因網頁入口而放寬。
 
@@ -504,7 +512,7 @@ Import 檢查拒絕 Debug CRT、動態 MSVC／OpenMP runtime 及 `dxcompiler.dll
 
 以下操作要求由維護者遵守，**目前沒有全部自動強制**，不得與上表的 CI gate 混為一談：
 
-- 發版前先將變更整合至 `master`，確認該 commit 的通常 CI 成功。正式流程會重新測試，但不查詢先前的 `master` CI 結果。命令列操作時另須同步本機並確認工作目錄乾淨；CI 的 clean checkout 檢查不能證明操作者本機當時沒有未提交檔案。
+- 發版前先以 PR 將變更整合至 `master`，確認該 commit 的通常 CI 成功。新版本正式流程會重新測試，但不查詢先前的 `master` CI 結果；去重分支查的是同版本正式流程的成功。命令列操作時另須同步本機並確認工作目錄乾淨；CI 的 clean checkout 檢查不能證明操作者本機當時沒有未提交檔案。
 - 網頁操作選定 `master` 作為新 tag 的 target；命令列推薦 `git tag -a` 保留註記，但不是 CI 強制。只推送指定 tag，不使用 `git push --tags`；workflow 不檢查一次推送了幾個 tag。
 - 已發佈 tag／附件視為不可變，不得刪除、force push、移動或手動覆蓋。CI 會比對當下遠端 tag、只安全補缺，但不等於 repository 已設定禁止維護者修改 tag 的保護規則。
 - MAJOR 表示不相容變更、MINOR 表示新功能、PATCH 表示修正；版本高低與變更內容由維護者判定，CI 不自動升版，也不檢查新版本是否大於所有既有版本。
@@ -521,7 +529,7 @@ annotated / lightweight tag（正式版）或短 SHA（一般 CI）
   → ZIP SHA-256 → Actions run / GitHub Release 附件
 ```
 
-一般 job 使用 `contents: read`，PR 採 `pull_request` 而非特權 `pull_request_target`。官方 Actions 固定完整 commit SHA，更新需顯式修改 workflow；僅正式 tag push／Release 公開的 publish job 取得 `contents: write`。該 job 只 checkout 已通過四組驗證、且屬於 `master` 歷史的固定 commit 之 `scripts`，不執行遊戲；checkout 不保存憑證，`GH_TOKEN` 只注入公開 step。不新增私人依賴下載 secrets，也不讓建置本身自動 commit、push 或建立版本 tag。
+一般 job 使用 `contents: read`，prepare 另有 `actions: read` 查詢成功 run，遠端去重僅有讀權限。PR 採 `pull_request` 而非特權 `pull_request_target`。官方 Actions 固定完整 commit SHA，更新需顯式修改 workflow；僅正式 tag push／Release 公開的 publish job 取得 `contents: write`。該 job 只 checkout 已通過四組驗證、且屬於 `master` 歷史的固定 commit 之 `scripts`，不執行遊戲；checkout 不保存憑證，`GH_TOKEN` 僅注入必要的遠端檢查／公開 step，準備階段使用唯讀 token。不新增私人依賴下載 secrets，也不讓建置本身自動 commit、push 或建立版本 tag。
 
 #### 16.3.4 診斷與重試界線
 
@@ -529,11 +537,13 @@ annotated / lightweight tag（正式版）或短 SHA（一般 CI）
 
 前置 job 在入口驗證前建立 transcript／診斷目錄，以 `always()` 保存 `logs-prepare-<sha>`。建置 job 另保存 CMake／CTest／build 日誌，入口失敗不再依賴尚未開始的 `Invoke-CiBuild.ps1` 建立日誌。checkout 或日誌系統本身先失敗仍可能沒有 artifact，應讀 Actions 原始 step；不能以缺少附件警告替代真正錯誤。
 
-暫時性 runner／網路問題可在 tag 與 source 都未變時重跑正式 run，不因已有公開 Release 而拒絕；完整附件驗證後 no-op，部分附件仍須與候選一致才能補齊。若候選因重建而與部分附件不一致，安全停止並用新版本發版，不能自動清除既存附件。需要修改 source 或修正非法版本時也用新 commit／版本，不移動已發佈 tag。
+同 tag 有兩筆 run 時先區分事件與進度；等待同版 workflow 鎖，以及第二筆通過準備驗證後的 build／package／publish skipped 都是正常去重結果。不能用 Actions 列表筆數判斷有沒有重複編譯。
+
+暫時性 runner／網路問題可在 tag 與 source 都未變時重跑正式 run，不因已有公開 Release 而拒絕；完整附件及先前正式 CI 驗證後可在編譯前 no-op，部分附件仍須與候選一致才能補齊。若候選因重建而與部分附件不一致，安全停止並用新版本發版，不能自動清除既存附件。需要修改 source 或修正非法版本時也用新 commit／版本，不移動已發佈 tag。
 
 只有 publish 失敗時，優先 `Re-run failed jobs` 重用原始 `player-package`，不要先重跑全部 job 而產生可能不同的 ZIP bytes。artifact 已過期／缺失時，須以新版本發版或重新通過完整 build、test、package；完整重跑仍受既有部分附件的逐 byte 一致限制，衝突就用新版本，不放寬內容檢查。
 
-本次規則只隨包含新 workflow／腳本的 commit 生效。先將修改 commit／push 至 `master` 並通過通常 CI，再從該版本建立新 Release 或 tag。GitHub 對舊失敗 run 的重跑仍使用舊 workflow 與來源；不會因 `master` 後來更新而移除舊的 annotated-only／既有 Release 禁止條件。遷移不刪除或重指歷史 tag，操作步驟集中於 README。
+本次規則只隨包含新 workflow／腳本的 commit 生效。先將修改整合至 `master` 並通過通常 CI，再從該版本建立新 Release 或 tag。GitHub 對舊 run 的重跑仍使用舊 workflow 與來源；不會因 `master` 後來更新而移除舊的 annotated-only／既有 Release 禁止條件，也不會自動取得新的編譯前去重。遷移不刪除或重指歷史 tag，操作步驟集中於 README。
 
 ### 16.4 驗收邊界
 
